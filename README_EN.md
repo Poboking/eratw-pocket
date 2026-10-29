@@ -23,34 +23,6 @@ standalone on desktop.
 
 ---
 
-## Architecture & Design Decisions
-
-**Zero knowledge of game semantics.** The shell never parses scripts and knows
-nothing about built-in behavior; it consumes the engine's display lists and
-callbacks only. Upstream semantic fixes therefore sync into this repo at zero
-cost — there is no game logic to chase. If a fix seems to require touching the
-engine, please file the issue on
-[eraKcore](https://github.com/Poboking/eraKcore) instead of working around it
-here — a workaround in the shell is usually the next bug.
-
-**Display-list rendering boundary.** `render-canvas` paints eraKcore's display
-lists onto the Android Canvas; hit testing, scrolling, and input pre-fill all
-come from the engine-side pure-JVM `render` model. Desktop preview and a real
-device run the same layout computation — UI differences can only originate in
-the adapter itself.
-
-**Composite-build wiring + build-time version reconciliation.** eraKcore is
-wired in via `includeBuild`, so after dependency substitution the engine inside
-the APK is always built from the sibling checkout. erbcc's version and compiler
-source fingerprint are verified during the app build; drift fails the build.
-There is no window where the engine is upgraded but the bytecode is not
-rebuilt.
-
-**Packaging self-checks.** After packing, `pack_release.py` reads back the
-actual strings and configuration inside the APK (report endpoint, token, corpus
-package integrity) and verifies them item by item; any mismatch exits non-zero.
-Problems like a silently broken reporting chain are stopped at packaging time,
-not discovered by players first.
 
 ## Repository Layout
 
@@ -98,6 +70,35 @@ Error-report endpoint and token go into `local.report.properties`
 (template: `local.report.properties.example`, gitignored; leaving it
 unconfigured only disables reporting — packaging is unaffected).
 
+## Architecture & Design Decisions
+
+**Zero knowledge of game semantics.** The shell never parses scripts and knows
+nothing about built-in behavior; it consumes the engine's display lists and
+callbacks only. Upstream semantic fixes therefore sync into this repo at zero
+cost — there is no game logic to chase. If a fix seems to require touching the
+engine, please file the issue on
+[eraKcore](https://github.com/Poboking/eraKcore) instead of working around it
+here — a workaround in the shell is usually the next bug.
+
+**Display-list rendering boundary.** `render-canvas` paints eraKcore's display
+lists onto the Android Canvas; hit testing, scrolling, and input pre-fill all
+come from the engine-side pure-JVM `render` model. Desktop preview and a real
+device run the same layout computation — UI differences can only originate in
+the adapter itself.
+
+**Composite-build wiring + build-time version reconciliation.** eraKcore is
+wired in via `includeBuild`, so after dependency substitution the engine inside
+the APK is always built from the sibling checkout. erbcc's version and compiler
+source fingerprint are verified during the app build; drift fails the build.
+There is no window where the engine is upgraded but the bytecode is not
+rebuilt.
+
+**Packaging self-checks.** After packing, `pack_release.py` reads back the
+actual strings and configuration inside the APK (report endpoint, token, corpus
+package integrity) and verifies them item by item; any mismatch exits non-zero.
+Problems like a silently broken reporting chain are stopped at packaging time,
+not discovered by players first.
+
 ## Corpus & Copyright
 
 This repo distributes no EraTW game data (scripts, images, audio, saves,
@@ -134,3 +135,4 @@ compatible and lawful); see its
 [NOTICE.md](https://github.com/Poboking/eraKcore/NOTICE.md) for Emuera
 attribution. Game data remains the property of its original authors — neither
 repo includes or replaces it.
+
