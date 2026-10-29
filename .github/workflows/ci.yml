@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 引擎仓必须与本仓同级检出（settings.gradle.kts 的 includeBuild("../eraKcore")）
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/eraKcore
+          ref: main
+          path: eraKcore
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: 把 eraKcore 链接到本仓同级
+        run: ln -s "$GITHUB_WORKSPACE/eraKcore" "$GITHUB_WORKSPACE/../eraKcore"
+
+      - name: 编译 debug 包 + 单测（-PeratwSkipAssets：CI 无语料）
+        run: ./gradlew --no-daemon :app:assembleDebug -PeratwSkipAssets :app:testDebugUnitTest :platform:testDebugUnitTest

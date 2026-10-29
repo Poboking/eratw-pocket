@@ -1,6 +1,6 @@
 # EraTW Pocket — EraTW 安卓移植版
 
-把 EraTW（era 系）移植到 Android 的玩家端壳层：Compose 界面、资源解包、存档、音频、设置，游戏语义引擎在姊妹仓 **[eraKcore](https://github.com/OWNER/eraKcore)**（Kotlin 重写的纯 JVM ERA 运行时）。
+把 EraTW（era 系）移植到 Android 的玩家端壳层：Compose 界面、资源解包、存档、音频、设置，游戏语义引擎在姊妹仓 **[eraKcore](https://github.com/Poboking/eraKcore)**（Kotlin 重写的纯 JVM ERA 运行时）。
 
 ## 仓库结构
 
@@ -50,4 +50,6 @@ python devtools/pack_release.py --skip-assets
 
 ## 许可
 
-TODO：LICENSE 待定（需先确认与 Emuera 原许可的兼容性）。在 LICENSE 落地前，本仓库内容按默认版权保留。
+- 本仓库以 [GPL-3.0](LICENSE) 发布：壳层与装配代码防闭源分叉。
+- 引擎仓 eraKcore 以 MIT 发布（MIT 与 GPL-3 兼容，组合合法）；引擎侧对 Emuera 的归因声明见其 [NOTICE.md](https://github.com/Poboking/eraKcore/NOTICE.md)。
+- 本仓库不分发游戏数据；游戏本体的版权归其原作者所有。
