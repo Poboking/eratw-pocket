@@ -11,15 +11,27 @@
 ![Jetpack Compose](https://img.shields.io/badge/UI-Jetpack_Compose-4285F4?style=flat-square)
 ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)
 
-**EraTW 的安卓移植版。**
+**EraTW 的安卓原生移植版。**
 
-壳层只做壳层的事：Compose 界面、资源解包、存档、音频、设置。
-游戏语义一丝不动地交给 [eraKcore](https://github.com/Poboking/eraKcore) 引擎——
-两边零语义耦合，引擎可在桌面独立验证。
+本项目只负责壳层：Compose 界面、资源解包、存档、音频、设置。游戏语义一律交给
+[eraKcore](https://github.com/Poboking/eraKcore) 引擎处理——两边零语义耦合，
+引擎可以在桌面端独立验证。
 
 </div>
 
 ---
+
+## 设计边界
+
+本项目对游戏语义零知识：脚本行为、内建函数、存档格式的权威定义全部位于
+[eraKcore](https://github.com/Poboking/eraKcore) 的 `core-vm` 与 `specs/`。
+由此约定：
+
+1. 壳层的改动不应改变任何游戏行为；
+2. 如果一个问题看起来必须改引擎才能修，请到 eraKcore 仓库提 issue，
+   而不是在本仓库绕过；
+3. 引擎以显示列表对外输出画面，本仓库的 `render-canvas` 只负责消费它，
+   不自行推导游戏状态。
 
 ## 仓库结构
 
@@ -31,9 +43,26 @@
 | `devtools/` | 出包体检脚本（`pack_release.py`）与调试工具 |
 | `docs/` | 设计稿与运行手册 |
 
+## 架构与设计取舍
+
+**对游戏语义零知识。** 壳层不解析脚本、不知道内建函数的行为，只消费引擎的显示
+列表与回调。这保证上游语义修正在本仓零成本同步——不需要跟改任何一行游戏逻辑。
+
+**显示列表渲染边界。** `render-canvas` 把 eraKcore 的显示列表画到 Android Canvas，
+命中区、滚动、输入预填都来自引擎侧的纯 JVM `render` 模型：桌面预览与真机看到的
+是同一套布局计算，UI 语义在两端的差异只会来自适配器本身。
+
+**composite build 接线 + 构建期版本对账。** eraKcore 以 `includeBuild` 接入，依赖
+替换后 APK 里的引擎永远是同级检出的那份源码编出来的；erbcc 版本与编译器源码指纹
+在 app 构建时校验，漂移即失败，不存在「引擎升了、字节码没重编」的错配窗口。
+
+**出包自检。** `pack_release.py` 打包后回读 APK 内的真实字符串与配置逐项核对
+（上报端点、令牌、语料包完整性），不合格非零退出——上报链静默失效这类问题
+在出包阶段就会被拦下，而不是等玩家崩溃。
+
 ## 构建
 
-需要 JDK 17+ 与 Android SDK（AGP 8.8.2）。
+需要 JDK 17+ 与 Android SDK（AGP 8.8.2）。所有命令默认从仓库根目录执行。
 
 **引擎仓必须与本仓同级检出**（Gradle composite build）：
 
@@ -63,23 +92,33 @@ python devtools/pack_release.py --skip-assets
 ```
 
 报错上报的端点与令牌放 `local.report.properties`
-（模板见 `local.report.properties.example`，已被 gitignore；不配置则仅关闭上报链，出包不受影响）。
-
-## 与引擎的边界
-
-本仓对游戏语义零知识：脚本行为、内建函数、存档格式的权威定义全在
-[eraKcore](https://github.com/Poboking/eraKcore) 的 `core-vm` 与 `specs/`。
-壳层的改动不应改变任何游戏行为；如果发现需要改引擎才能修的问题，请去引擎仓提 issue。
+（模板见 `local.report.properties.example`，已被 gitignore；不配置则仅关闭上报链，
+出包不受影响）。
 
 ## 语料与版权
 
-本仓不分发 EraTW 游戏本体（脚本、图片、音频、存档、配置），请自备合法获得的游戏数据。
-出包时它们经变量进入产物，不进仓库。
+本仓不分发 EraTW 游戏本体（脚本、图片、音频、存档、配置），请自备合法获得的
+游戏数据。出包时它们经变量进入产物，不进仓库。
 
 ## 状态
 
 仍在活跃开发中，部分平台能力（音频焦点验收、边界机型冒烟）尚未收口。
-issue 与 PR 均欢迎；涉及游戏行为的反馈请附上原版（Emuera / PC 版）的对照表现。
+issue 与 PR 均欢迎；涉及游戏行为的反馈请附上原版（Emuera / PC 版）的对照表现，
+便于定位是壳层还是引擎的问题。
+
+## 致谢
+
+本项目的实现离不开下列项目与作者：
+
+- **eraKcore 的贡献者**：游戏语义的全部权威定义所在，本仓只是它的一个前端。
+- **MinorShift** 与 **妊）|дﾟ)の中の人**：Emuera 的著作者。游戏行为的兼容性
+  以 Emuera 的表现为参考。
+- **まだ名前は無い人** 与 **eraTW 的口上与内容作者、改编者**：游戏本体与内容
+  的创作者。本仓不包含游戏本体，其著作权与使用条件以原项目随附的说明和许可
+  文件为准。
+- **所有 era 社区的脚本／内容作者与工具维护者**。
+
+以上致谢不改变外部第三方材料的著作权、署名、许可或使用条件。
 
 ## 许可
 
