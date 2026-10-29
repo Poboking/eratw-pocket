@@ -13,27 +13,44 @@
 
 **A native Android port of EraTW.**
 
-This repo is the shell only: Compose UI, asset unpacking, saves, audio, settings.
-Game semantics are handed, untouched, to the [eraKcore](https://github.com/Poboking/eraKcore)
-engine — zero semantic coupling between the two, and the engine verifies
+Run EraTW natively on your phone, without an emulator. This repo is the shell
+only: Compose UI, asset unpacking, saves, audio, settings. Game semantics are
+handled entirely by the [eraKcore](https://github.com/Poboking/eraKcore) engine;
+the two repos have no coupling at the semantic level, and the engine verifies
 standalone on desktop.
 
 </div>
 
 ---
 
-## Design Boundary
+## Architecture & Design Decisions
 
-This repo has zero knowledge of game semantics: the authoritative definitions of
-script behavior, built-in functions, and save formats all live in
-[eraKcore](https://github.com/Poboking/eraKcore)'s `core-vm` and `specs/`. From
-this follow our conventions:
+**Zero knowledge of game semantics.** The shell never parses scripts and knows
+nothing about built-in behavior; it consumes the engine's display lists and
+callbacks only. Upstream semantic fixes therefore sync into this repo at zero
+cost — there is no game logic to chase. If a fix seems to require touching the
+engine, please file the issue on
+[eraKcore](https://github.com/Poboking/eraKcore) instead of working around it
+here — a workaround in the shell is usually the next bug.
 
-1. Shell changes must not alter any game behavior;
-2. If a fix seems to require touching the engine, please file the issue on the
-   eraKcore repo instead of working around it here;
-3. The engine renders output as a display list; this repo's `render-canvas` only
-   consumes it and never derives game state on its own.
+**Display-list rendering boundary.** `render-canvas` paints eraKcore's display
+lists onto the Android Canvas; hit testing, scrolling, and input pre-fill all
+come from the engine-side pure-JVM `render` model. Desktop preview and a real
+device run the same layout computation — UI differences can only originate in
+the adapter itself.
+
+**Composite-build wiring + build-time version reconciliation.** eraKcore is
+wired in via `includeBuild`, so after dependency substitution the engine inside
+the APK is always built from the sibling checkout. erbcc's version and compiler
+source fingerprint are verified during the app build; drift fails the build.
+There is no window where the engine is upgraded but the bytecode is not
+rebuilt.
+
+**Packaging self-checks.** After packing, `pack_release.py` reads back the
+actual strings and configuration inside the APK (report endpoint, token, corpus
+package integrity) and verifies them item by item; any mismatch exits non-zero.
+Problems like a silently broken reporting chain are stopped at packaging time,
+not discovered by players first.
 
 ## Repository Layout
 
@@ -45,33 +62,10 @@ this follow our conventions:
 | `devtools/` | Release health-check scripts (`pack_release.py`) and debugging tools |
 | `docs/` | Design docs and runbooks |
 
-## Architecture & Design Decisions
-
-**Zero knowledge of game semantics.** The shell never parses scripts and knows nothing
-about built-in behavior; it consumes the engine's display lists and callbacks only.
-Upstream semantic fixes therefore sync into this repo at zero cost — no game logic to
-chase.
-
-**Display-list rendering boundary.** `render-canvas` paints eraKcore's display lists
-onto the Android Canvas; hit testing, scrolling, and input pre-fill all come from the
-engine-side pure-JVM `render` model. Desktop preview and a real device run the same
-layout computation — UI differences can only originate in the adapter itself.
-
-**Composite-build wiring + build-time version reconciliation.** eraKcore is wired in
-via `includeBuild`, so after dependency substitution the engine inside the APK is always
-built from the sibling checkout. erbcc's version and compiler source fingerprint are
-verified during the app build; drift fails the build. There is no window where the
-engine is upgraded but the bytecode is not rebuilt.
-
-**Packaging self-checks.** After packing, `pack_release.py` reads back the actual
-strings and configuration inside the APK (report endpoint, token, corpus package
-integrity) and verifies them item by item; any mismatch exits non-zero. A silently
-disabled crash-report chain gets caught at packaging time, not after a player's crash.
-
 ## Build
 
-Requires JDK 17+ and the Android SDK (AGP 8.8.2). All commands run from the
-repository root by default.
+Requires JDK 17+ and the Android SDK (AGP 8.8.2). Run all commands from the
+repository root.
 
 **The engine repo must be checked out as a sibling** (Gradle composite build):
 
@@ -101,42 +95,42 @@ python devtools/pack_release.py --skip-assets
 ```
 
 Error-report endpoint and token go into `local.report.properties`
-(template: `local.report.properties.example`, gitignored; leaving it unconfigured
-only disables reporting — packaging is unaffected).
+(template: `local.report.properties.example`, gitignored; leaving it
+unconfigured only disables reporting — packaging is unaffected).
 
 ## Corpus & Copyright
 
-This repo distributes no EraTW game data (scripts, images, audio, saves, configs) —
-bring your own legally obtained copy. At packaging time they enter the artifact via
-properties, never the repository.
+This repo distributes no EraTW game data (scripts, images, audio, saves,
+configs) — bring your own legally obtained copy. At packaging time they enter
+the artifact via properties, never the repository.
 
-## Status
+## Status & Feedback
 
 Under active development; some platform capabilities (audio-focus acceptance,
-edge-device smoke) are not yet closed out. Issues and PRs are welcome. For
-game-behavior reports, please include a comparison against the original
-(Emuera / PC build), so we can tell whether the shell or the engine is at fault.
+edge-device smoke) are not yet closed out. Issues and PRs are welcome. When
+reporting a game-behavior problem, please include a comparison against the
+original (Emuera / PC build) — it makes it much easier to tell whether the
+shell or the engine is at fault.
 
 ## Acknowledgments
 
-This project would not exist without the following projects and authors:
+- The **eraKcore contributors** — the authoritative definitions of game
+  semantics live there; this repo is just one of its frontends.
+- **MinorShift** and **妊）|дﾟ)の中の人**, authors of Emuera — the reference for
+  game-behavior compatibility.
+- **まだ名前は無い人**, and everyone who has written eraTW dialogues, events,
+  data, and documentation. This repo does not include the game itself; its
+  copyright and terms of use are governed by the files that accompany the
+  original project.
+- The era community's script authors, content creators, and tool maintainers.
 
-- the **eraKcore contributors** — the authoritative definitions of all game
-  semantics live there; this repo is just one of its frontends;
-- **MinorShift** and **妊）|дﾟ)の中の人**, the authors of Emuera, whose behavior
-  serves as the reference for game-behavior compatibility;
-- **まだ名前は無い人** and the writers and porters behind eraTW's character
-  dialogues, events, and data — the creators of the game itself. This repo does
-  not include the game; its copyright and terms of use are governed by the files
-  that accompany the original project;
-- every script/content author and tool maintainer in the era community.
-
-These acknowledgments do not alter the copyright, attribution, license, or terms
-of use of any third-party material.
+These acknowledgments do not alter the copyright or license terms of any
+third-party material.
 
 ## License
 
 [GPL-3.0](LICENSE). The eraKcore engine is MIT-licensed (the combination is
-compatible and lawful); see its [NOTICE.md](https://github.com/Poboking/eraKcore/NOTICE.md)
-for Emuera attribution. Game data remains the property of its original authors —
-neither repo includes or replaces it.
+compatible and lawful); see its
+[NOTICE.md](https://github.com/Poboking/eraKcore/NOTICE.md) for Emuera
+attribution. Game data remains the property of its original authors — neither
+repo includes or replaces it.
