@@ -1,0 +1,9 @@
+# 报错上报端点配置（devtools/pack_release.py 读；gitignore 挡住，绝不入库）。
+# 复制本文件为 local.report.properties 并填入真实值。
+#
+# 端点由 tools/report-endpoint/ 的 Cloudflare Worker 提供：
+#   cd tools/report-endpoint && wrangler deploy
+#   wrangler kv namespace create REPORTS   # 把输出的 id 填进 wrangler.toml
+#   wrangler secret put REPORT_TOKEN
+endpoint=https://eratw-report-endpoint.<你的子域>.workers.dev/report
+token=<REPORT_TOKEN 的值>

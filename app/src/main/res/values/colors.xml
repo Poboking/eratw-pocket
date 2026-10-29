@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 桌面图标的自适应底：取自语料 icon.ico 里角色衣服的那支粉（234,206,222）提亮一档。
+         旧式 mipmap-* 直接把它铺满方图，API 26+ 的 adaptive 层用它做 background。 -->
+    <color name="ic_launcher_background">#EBD3DE</color>
+</resources>

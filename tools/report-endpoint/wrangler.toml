@@ -1,0 +1,10 @@
+# eratw 报错收集端点（方案③）的 wrangler 配置。
+# 部署 runbook（含 KV id 与 secret 的填法）见同目录 worker.js 头注。
+name = "eratw-report-endpoint"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+[[kv_namespaces]]
+binding = "REPORTS"
+# wrangler kv namespace create REPORTS 输出的 id 填到这里（不要提交真实 id 到公开仓）：
+id = "TODO_REPLACE_WITH_YOUR_KV_NAMESPACE_ID"

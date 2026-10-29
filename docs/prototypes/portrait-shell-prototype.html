@@ -1,0 +1,1396 @@
+<div id="eratw-portrait-proto">
+<meta charset="utf-8">
+<style>
+  #eratw-portrait-proto {
+    --ep-bg: #000;
+    --ep-panel: #161616;
+    --ep-panel2: #1b1b1b;
+    --ep-line: #2a2a2a;
+    --ep-ink: #ededed;
+    --ep-dim: #8a8a8a;
+    --ep-green: #7faf7f;
+    --ep-green-deep: #24382a;
+    --ep-cyan: #6fc7e8;
+    --ep-purple: #8f86e0;
+    --ep-orange: #e0a04f;
+    --ep-blue: #5a8fd8;
+    --ep-red: #e86e7a;
+    --ep-pink: #e86e8a;
+    --ep-yellow: #efd27c;
+    font-family: system-ui, "Microsoft YaHei", sans-serif;
+    color: var(--ep-ink);
+  }
+  #eratw-portrait-proto * { box-sizing: border-box; margin: 0; }
+
+  /* ── 预览台（产品外） ─────────────────────────── */
+  .ep-controls {
+    display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center;
+    padding: 10px 4px 14px;
+  }
+  .ep-ctl-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .ep-ctl-label { font-size: 12px; color: var(--ep-dim); margin-right: 2px; }
+  .ep-pill {
+    font: 12.5px/1 system-ui, "Microsoft YaHei", sans-serif;
+    color: var(--ep-ink); background: transparent;
+    border: 1px solid #555; border-radius: 999px;
+    padding: 7px 13px; cursor: pointer;
+  }
+  .ep-pill[aria-pressed="true"] {
+    background: var(--ep-green-deep); border-color: var(--ep-green); color: #cfe8cf;
+  }
+  .ep-readout {
+    font-family: ui-monospace, Consolas, "Microsoft YaHei", monospace;
+    font-size: 12px; color: var(--ep-dim); line-height: 1.9;
+    min-width: 250px; max-width: 330px; flex: 1 1 250px;
+  }
+  .ep-readout b { color: var(--ep-ink); font-weight: 500; }
+  .ep-readout .ep-ro-title { color: var(--ep-green); }
+  .ep-stage {
+    display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; justify-content: center;
+  }
+  @media (max-width: 760px) { .ep-stage { justify-content: flex-start; } }
+
+  /* ── 手机壳 ─────────────────────────────────── */
+  .ep-phone {
+    flex: none; border-radius: 34px; padding: 10px;
+    background: #0d0d0f; border: 1px solid #2e2e33;
+    box-shadow: 0 18px 50px rgba(0,0,0,.55);
+    transition: width .25s ease, height .25s ease;
+  }
+  .ep-screen {
+    position: relative;
+    /*
+     * overflow: clip 而不是 hidden：隐藏态输入条用 translateY(102%) 滑出底边，
+     * 而「变换后的盒子」会计入 scrollable overflow ⇒ hidden 下 scrollHeight 被撑大 92px，
+     * 之后任何 click/focus 都会把手机框内部滚起来，把 HUD 顶出可视区（呈现为「HUD 缺一截」）。
+     * clip 不创建滚动容器、scrollTop 恒 0，等价于「这是块固定画布」。
+     */
+    overflow: hidden; overflow: clip; border-radius: 24px;
+    background: var(--ep-bg);
+    display: flex; flex-direction: column;
+    transition: width .25s ease, height .25s ease;
+  }
+  .ep-screen.has-notch { padding-top: 34px; }
+  .ep-notch {
+    display: none; position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+    width: 118px; height: 17px; border-radius: 999px; background: #0d0d0f;
+    border: 1px solid #222; z-index: 9;
+  }
+  .ep-screen.has-notch .ep-notch { display: block; }
+
+  /* ── 顶部状态 HUD（DoL 式，G0/G1/G2 分级共用骨架） ── */
+  .ep-hud {
+    flex: none; background: rgba(22,22,22,.96); border-bottom: 1px solid var(--ep-line);
+    border-radius: 0 0 14px 14px; padding: 9px 11px 7px; z-index: 3;
+  }
+  .ep-hud-row1 { display: flex; align-items: center; gap: 9px; }
+  .ep-avatar {
+    flex: none; width: 38px; height: 38px; border-radius: 50%;
+    background: #262626; border: 2px solid var(--ep-green);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; color: var(--ep-green);
+  }
+  .ep-who { min-width: 0; flex: 1 1 auto; }
+  .ep-name-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .ep-name { font-size: 14px; font-weight: 500; color: var(--ep-ink); }
+  .ep-money { font-size: 11px; color: var(--ep-yellow); font-family: ui-monospace, Consolas, monospace; }
+  .ep-chip {
+    font-size: 10px; padding: 2px 7px; border-radius: 999px;
+    background: rgba(127,175,127,.16); color: #a8d0a8; border: 1px solid rgba(127,175,127,.4);
+  }
+  .ep-chip.warn { background: rgba(232,110,122,.14); color: #e8a0a8; border-color: rgba(232,110,122,.45); }
+  .ep-chip.preg { background: rgba(232,110,138,.16); color: #f0b0c0; border-color: rgba(232,110,138,.45); }
+  .ep-chip.buff { background: rgba(111,199,232,.12); color: #a8d8ec; border-color: rgba(111,199,232,.4); }
+  .ep-chip.loc { background: rgba(224,160,79,.12); color: #ecd2a8; border-color: rgba(224,160,79,.4); }
+  .ep-sub { font-size: 10.5px; color: var(--ep-dim); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ep-hud-btns { margin-left: auto; display: flex; gap: 5px; }
+  .ep-iconbtn {
+    min-width: 34px; height: 30px; padding: 0 8px; border-radius: 8px;
+    background: var(--ep-panel2); border: 1px solid #3a3a3a; color: #bdbdbd;
+    font-size: 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 3px;
+  }
+  .ep-iconbtn.active { background: rgba(185,211,185,.14); border-color: var(--ep-green); color: #cfe8cf; }
+  .ep-hud-bars {
+    display: grid; gap: 5px 14px; margin-top: 8px;
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .ep-screen[data-size="l"] .ep-hud-bars, .ep-screen[data-size="xl"] .ep-hud-bars { grid-template-columns: repeat(6, 1fr); }
+  .ep-bar-label { display: flex; justify-content: space-between; font-size: 10px; color: #b5b5b5; }
+  .ep-bar-label .v { font-family: ui-monospace, Consolas, monospace; color: var(--ep-ink); }
+  .ep-track { height: 4px; border-radius: 2px; background: rgba(255,255,255,.09); margin-top: 3px; overflow: hidden; }
+  .ep-fill { height: 100%; border-radius: 2px; }
+  /* ── HUD 主体切换（当前角色 / 主角）───────────── */
+  .ep-hudswitch {
+    display: flex; gap: 4px; margin-top: 8px; padding: 3px;
+    background: #0e0e0e; border: 1px solid #2a2a2a; border-radius: 999px;
+  }
+  .ep-hs {
+    flex: 1 1 0; min-width: 0; min-height: 26px; border: 0; border-radius: 999px;
+    cursor: pointer; background: transparent; color: #8a8a8a;
+    font-size: 11px; font-family: inherit; padding: 0 8px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ep-hs[aria-pressed="true"] { background: rgba(127,175,127,.18); color: #d8ecd8; }
+
+  .ep-hud-more {
+    margin-top: 7px; width: 100%; border: 0; background: transparent; color: var(--ep-dim);
+    font-size: 11px; cursor: pointer; padding: 3px 0 1px;
+  }
+  .ep-hud-more:hover { color: var(--ep-green); }
+
+  /* ── 状态详情抽屉（G2 角色交互页才有内容） ──── */
+  .ep-sheet {
+    display: none; margin-top: 8px; border-top: 1px dashed #333; padding-top: 8px;
+    max-height: 232px; overflow-y: auto;
+  }
+  .ep-sheet.open { display: block; }
+  /* 抽屉展开时数值条让位：用户此时要看的是抽屉里的细节，HUD 总高不再叠加 */
+  .ep-hud.sheet-open [data-h-bars] { display: none; }
+  .ep-screen[data-size="s"] .ep-sheet { max-height: 190px; }
+  .ep-sheet-sec { font-size: 10.5px; color: var(--ep-green); margin: 6px 0 4px; }
+  .ep-sheet-sec:first-child { margin-top: 0; }
+  .ep-expchips { display: flex; flex-wrap: wrap; gap: 4px 6px; }
+  .ep-expchip {
+    font-size: 10px; color: #cfcfcf; background: #101010; border: 1px solid #303030;
+    border-radius: 6px; padding: 3px 7px; font-family: ui-monospace, Consolas, "Microsoft YaHei", monospace;
+  }
+  .ep-expchip b { color: var(--ep-yellow); font-weight: 400; }
+  .ep-palam-grid { display: grid; gap: 4px 14px; grid-template-columns: repeat(2, 1fr); }
+  .ep-screen[data-size="m"] .ep-palam-grid { grid-template-columns: repeat(3, 1fr); }
+  .ep-screen[data-size="l"] .ep-palam-grid, .ep-screen[data-size="xl"] .ep-palam-grid { grid-template-columns: repeat(4, 1fr); }
+  .ep-palam .ep-bar-label { font-size: 9.5px; }
+
+  /* ── 角色条（多角色页）：横滑，最多 10 人 ────── */
+  .ep-roster {
+    display: flex; gap: 6px; overflow-x: auto; margin-top: 8px;
+    padding-bottom: 2px; scrollbar-width: none;
+  }
+  .ep-roster:empty { display: none; }
+  .ep-roster::-webkit-scrollbar { display: none; }
+  .ep-rc {
+    flex: none; display: flex; align-items: center; gap: 5px;
+    padding: 4px 9px 4px 5px; border-radius: 999px; cursor: pointer;
+    background: #101010; border: 1px solid #303030; color: #cfcfcf;
+    font-size: 11.5px; font-family: inherit; white-space: nowrap;
+  }
+  .ep-rc.sel { background: rgba(127,175,127,.16); border-color: var(--ep-green); color: #d8ecd8; }
+  .ep-rc .rcav {
+    flex: none; width: 20px; height: 20px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; background: #262626; border: 1px solid #3a3a3a; color: #bdbdbd;
+  }
+  .ep-rc.sel .rcav { border-color: var(--ep-green); color: var(--ep-green); }
+  .ep-rc .dot { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--ep-red); }
+  .ep-rc .dot.safe { background: var(--ep-green); }
+  .ep-roster-note { flex: none; display: flex; align-items: center; font-size: 10px; color: var(--ep-dim); padding: 0 3px; }
+
+  /* ── 立绘舞台（多角色，最多 10 张，横滑） ────── */
+  .ep-stripwrap { flex: none; background: #050505; border-top: 1px solid #1c1c1c; padding: 4px 0 0; }
+  .ep-striphead {
+    display: flex; align-items: baseline; gap: 8px; padding: 0 10px 4px;
+    font-size: 9.5px; color: var(--ep-dim);
+  }
+  .ep-striphead b { color: var(--ep-ink); font-weight: 500; }
+  .ep-striphead .ep-stripnote { color: #5f5f5f; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ep-stripfold {
+    margin-left: auto; flex: none; border: 0; background: transparent; cursor: pointer;
+    color: var(--ep-green); font-size: 10px; padding: 2px 4px; font-family: inherit;
+  }
+  .ep-stripwrap.collapsed .ep-stage-strip { display: none; }
+  .ep-stripwrap.collapsed { padding-bottom: 5px; }
+  .ep-stage-strip {
+    display: flex; gap: 7px; overflow-x: auto; padding: 0 10px 6px;
+    scrollbar-width: thin; scrollbar-color: #2a2a2a transparent;
+  }
+  .ep-stage-strip::-webkit-scrollbar { height: 4px; }
+  .ep-stage-strip::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 2px; }
+  .ep-sp {
+    flex: none; width: 92px; border-radius: 10px; overflow: hidden;
+    border: 1px solid #2a2a2a; background: #0a0a0a; position: relative; cursor: pointer;
+    padding: 0; font-family: inherit;
+  }
+  /* 立绘宽度按在场人数自适应：人少放大，人多收窄（横滑托底） */
+  .ep-stage-strip[data-count="1"] .ep-sp { width: 190px; }
+  .ep-stage-strip[data-count="2"] .ep-sp { width: 138px; }
+  .ep-stage-strip[data-count="3"] .ep-sp { width: 108px; }
+  .ep-stage-strip[data-count="4"] .ep-sp { width: 92px; }
+  .ep-stage-strip[data-count="5"] .ep-sp,
+  .ep-stage-strip[data-count="6"] .ep-sp { width: 84px; }
+  .ep-stage-strip[data-count="7"] .ep-sp,
+  .ep-stage-strip[data-count="8"] .ep-sp,
+  .ep-stage-strip[data-count="9"] .ep-sp,
+  .ep-stage-strip[data-count="10"] .ep-sp { width: 76px; }
+  .ep-sp.sel { border-color: var(--ep-green); }
+  .ep-sp svg { display: block; width: 100%; height: auto; }
+  .ep-sp .spname {
+    position: absolute; left: 0; right: 0; bottom: 0; padding: 2px 0;
+    font-size: 10px; text-align: center; color: #cfcfcf; background: rgba(0,0,0,.62);
+  }
+  .ep-sp.sel .spname { color: #d8ecd8; background: rgba(36,56,42,.9); }
+
+  /* ── 正文控制台 ─────────────────────────────── */
+  .ep-console {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    padding: 8px 10px 10px; scrollbar-width: thin; scrollbar-color: #333 transparent;
+    font-family: ui-monospace, Consolas, "Microsoft YaHei", monospace;
+    line-height: 1.62;
+  }
+  .ep-cl { margin: 1px 0; word-break: break-all; }
+  .ep-cl.dim { color: var(--ep-dim); }
+  .ep-cl.green { color: var(--ep-green); }
+  .ep-cl.cyan { color: var(--ep-cyan); }
+  .ep-cl.say { color: var(--ep-cyan); }
+  .ep-cl.yel { color: var(--ep-yellow); }
+  .ep-cl .lab { color: var(--ep-green); }
+  .ep-cl .n { color: var(--ep-dim); }
+  .ep-cl .hl { color: var(--ep-yellow); }
+  .ep-statwrap { display: flex; flex-wrap: wrap; gap: 3px 10px; }
+  .ep-stat { display: inline-flex; align-items: baseline; gap: 4px; }
+  .ep-stat .nm { color: #b5b5b5; }
+  .ep-stat .val { color: var(--ep-ink); font-family: ui-monospace, Consolas, monospace; }
+  .ep-stat .mnibar {
+    display: inline-block; width: 34px; height: 5px; border-radius: 2.5px;
+    background: rgba(255,255,255,.08); vertical-align: 2px; overflow: hidden;
+  }
+  .ep-stat .mnibar i { display: block; height: 100%; }
+  .ep-lnk {
+    background: transparent; border: 0; padding: 0; cursor: pointer;
+    font: inherit; color: var(--ep-green); text-decoration: underline dotted; text-underline-offset: 3px;
+  }
+  .ep-lnk.yel { color: var(--ep-yellow); }
+  .ep-lnk:active { color: #fff; }
+  .ep-sprite {
+    margin: 8px auto 4px; display: block; width: min(46%, 170px); border-radius: 10px;
+  }
+  .ep-sprite.off { display: none; }
+
+  /* ── 底部指令盘 ─────────────────────────────── */
+  /*
+   * 高度用「相对手机框的百分比」而不是 vh：vh 是浏览器视口高度，与手机框无关，
+   * 展开时指令区会把收起按钮顶出框外（真机 = 点不到、看起来无法收起）。
+   * 现在 footer 自身 max-height 封顶，.ep-cmds 在内部滚动，收起按钮恒在屏内。
+   */
+  .ep-tray {
+    flex: none; display: flex; flex-direction: column; max-height: 46%;
+    background: rgba(20,20,20,.97); border-top: 1px solid var(--ep-line);
+    border-radius: 14px 14px 0 0; padding: 7px 9px calc(9px + env(safe-area-inset-bottom, 0px));
+  }
+  .ep-ctx {
+    display: flex; gap: 8px; align-items: center; margin-bottom: 7px;
+    font-size: 10.5px; color: var(--ep-dim);
+  }
+  .ep-ctx .run {
+    flex: none; color: #ffd9a0; background: rgba(224,160,79,.12);
+    border: 1px solid rgba(224,160,79,.4); border-radius: 6px; padding: 2px 7px;
+    max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .ep-ctx .last { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ep-cmds {
+    display: flex; flex-direction: column; gap: 7px;
+    flex: 0 1 auto; min-height: 0; overflow-y: auto;
+    max-height: 150px; scrollbar-width: thin; scrollbar-color: #333 transparent;
+  }
+  .ep-tray.open .ep-cmds { max-height: none; flex: 1 1 auto; }
+  /* 小屏把展开上限再收紧一档：360×740 下 46% 会把正文压到 29%，收到 40% 回到 33% */
+  .ep-screen[data-size="s"] .ep-tray { max-height: 40%; }
+  /* 指令盘展开 / 状态详情展开时，立绘舞台让位：三者抢同一块高度，读数据时文字优先 */
+  .ep-form.tray-expanded [data-stripwrap],
+  .ep-form.sheet-expanded [data-stripwrap] { display: none; }
+  .ep-cmd-group { display: none; }
+  .ep-cmd-group.peek { display: block; }
+  .ep-tray.open .ep-cmd-group { display: block; }
+  .ep-tray.open .ep-cmd-group.peek { display: none; }
+  .ep-grouplab { font-size: 10px; color: var(--ep-green); margin: 2px 0 4px; }
+  .ep-cmdgrid { display: grid; gap: 5px; grid-template-columns: repeat(2, 1fr); }
+  .ep-screen[data-size="m"] .ep-cmdgrid, .ep-screen[data-size="l"] .ep-cmdgrid { grid-template-columns: repeat(3, 1fr); }
+  .ep-screen[data-size="xl"] .ep-cmdgrid { grid-template-columns: repeat(4, 1fr); }
+  .ep-cmd {
+    display: flex; align-items: baseline; justify-content: center; gap: 4px;
+    min-height: 34px; padding: 4px 4px; border-radius: 8px; cursor: pointer;
+    background: var(--ep-green-deep); border: 1px solid rgba(127,175,127,.55); color: #d8ecd8;
+    font-size: 12px; font-family: inherit;
+    -webkit-user-select: none; user-select: none; touch-action: manipulation;
+  }
+  .ep-cmd:active { background: #2e4a36; }
+  .ep-cmd .num { font-size: 9px; color: rgba(216,236,216,.55); font-family: ui-monospace, Consolas, monospace; }
+  .ep-cmd.sys { background: #1f1f1f; border-color: #3a3a3a; color: #c9c9c9; }
+  .ep-cmd.sys .num { color: #6a6a6a; }
+  .ep-cmd.sys:active { background: #2a2a2a; }
+  .ep-cmd.flash { outline: 2px solid var(--ep-yellow); }
+  .ep-tray-toggle {
+    margin-top: 7px; width: 100%; min-height: 30px; border-radius: 8px; cursor: pointer;
+    background: transparent; border: 1px dashed #3a3a3a; color: var(--ep-dim); font-size: 11.5px;
+  }
+  .ep-tray-toggle:hover { color: var(--ep-green); border-color: var(--ep-green); }
+
+  /* ── 输入条 / 抓手 / 提示卡 ─────────────────── */
+  .ep-inputbar {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 6;
+    background: var(--ep-panel2); border-top: 1px solid var(--ep-line);
+    border-radius: 12px 12px 0 0; padding: 4px 8px 8px;
+    transform: translateY(102%); visibility: hidden;
+    transition: transform .22s ease, visibility 0s .22s;
+  }
+  .ep-inputbar.open {
+    transform: translateY(0); visibility: visible;
+    transition: transform .22s ease, visibility 0s 0s;
+  }
+  .ep-grab { width: 46px; height: 12px; margin: 2px auto 4px; border-radius: 999px; background: #333; border: 0; cursor: ns-resize; display: block; }
+  .ep-macros { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 5px; scrollbar-width: none; }
+  .ep-macros::-webkit-scrollbar { display: none; }
+  .ep-macro {
+    flex: none; font-size: 11px; color: #dcdcdc; background: #242424;
+    border: 1px solid #3a3a3a; border-radius: 999px; padding: 4px 11px; cursor: pointer;
+  }
+  .ep-macro.grp { color: #b9d3b9; }
+  .ep-inrow { display: flex; gap: 6px; }
+  .ep-in {
+    flex: 1; min-width: 0; height: 34px; border-radius: 8px; padding: 0 10px;
+    background: #0d0d0d; border: 1px solid #3a3a3a; color: var(--ep-ink);
+    font: 13px ui-monospace, Consolas, "Microsoft YaHei", monospace;
+  }
+  .ep-in:focus { outline: 1px solid var(--ep-green); border-color: var(--ep-green); }
+  .ep-send {
+    flex: none; width: 52px; border-radius: 8px; border: 1px solid var(--ep-green);
+    background: var(--ep-green-deep); color: #d8ecd8; font-size: 12.5px; cursor: pointer;
+  }
+  .ep-knob {
+    position: absolute; right: 14px; bottom: 0; z-index: 5;
+    width: 54px; height: 15px; border-radius: 8px 8px 0 0;
+    background: rgba(27,27,27,.85); border: 1px solid #333; border-bottom: 0;
+    color: #9a9a9a; font-size: 9px; line-height: 13px; text-align: center; cursor: pointer;
+  }
+  .ep-tipmask {
+    display: none; position: absolute; inset: 0; z-index: 8;
+    background: rgba(0,0,0,.45); align-items: center; justify-content: center;
+  }
+  .ep-tipmask.open { display: flex; }
+  .ep-tipcard {
+    width: 86%; max-height: 46%; overflow-y: auto; border-radius: 12px;
+    background: #2a2a2a; border: 1px solid #454545; padding: 14px;
+    font-size: 12.5px; line-height: 1.7; color: #e6e6e6;
+  }
+  .ep-tipcard .closehint { margin-top: 9px; font-size: 10px; color: var(--ep-dim); }
+
+  /* ── 形态切换 ──────────────────────────────── */
+  .ep-form { display: none; flex: 1 1 auto; min-height: 0; flex-direction: column; }
+  .ep-form.active { display: flex; }
+</style>
+
+<div class="ep-controls">
+  <div class="ep-ctl-group" role="group" aria-label="屏幕形态">
+    <span class="ep-ctl-label">形态</span>
+    <button class="ep-pill" type="button" data-form="menu" aria-pressed="false">起床菜单页</button>
+    <button class="ep-pill" type="button" data-form="explore" aria-pressed="false">探索页</button>
+    <button class="ep-pill" type="button" data-form="interact" aria-pressed="true">角色交互页</button>
+    <button class="ep-pill" type="button" data-form="multi" aria-pressed="false">多角色页</button>
+  </div>
+  <div class="ep-ctl-group" role="group" aria-label="设备尺寸">
+    <span class="ep-ctl-label">设备</span>
+    <button class="ep-pill" type="button" data-dev="small" aria-pressed="false">小屏 360×740</button>
+    <button class="ep-pill" type="button" data-dev="norm" aria-pressed="true">常规 390×844</button>
+    <button class="ep-pill" type="button" data-dev="big" aria-pressed="false">大屏 412×915</button>
+    <button class="ep-pill" type="button" data-dev="fold" aria-pressed="false">平板 600×960</button>
+  </div>
+  <div class="ep-ctl-group" role="group" aria-label="字号档位">
+    <span class="ep-ctl-label">字号（列数）</span>
+    <button class="ep-pill" type="button" data-cols="50" aria-pressed="true">特大 50</button>
+    <button class="ep-pill" type="button" data-cols="62" aria-pressed="false">大 62</button>
+    <button class="ep-pill" type="button" data-cols="75" aria-pressed="false">标准 75</button>
+    <button class="ep-pill" type="button" data-cols="90" aria-pressed="false">小 90</button>
+  </div>
+  <div class="ep-ctl-group" role="group" aria-label="刘海屏">
+    <span class="ep-ctl-label">刘海</span>
+    <button class="ep-pill" type="button" id="ep-notch-btn" aria-pressed="true">开</button>
+  </div>
+  <div class="ep-ctl-group" role="group" aria-label="在场人数">
+    <span class="ep-ctl-label">在场</span>
+    <button class="ep-pill" type="button" data-chars="2" aria-pressed="true">2 人</button>
+    <button class="ep-pill" type="button" data-chars="6" aria-pressed="false">6 人</button>
+    <button class="ep-pill" type="button" data-chars="10" aria-pressed="false">10 人（上限）</button>
+  </div>
+</div>
+
+<div class="ep-stage viz-dotted-background" style="border-radius: 18px; padding: 26px 18px;">
+  <div class="ep-phone" id="ep-phone">
+    <div class="ep-screen has-notch" id="ep-screen" data-size="m" style="width: 390px; height: 844px;">
+      <div class="ep-notch"></div>
+
+      <!-- ═══════════ 形态A：起床菜单页（图1） ═══════════ -->
+      <div class="ep-form" data-form-body="menu" aria-label="起床菜单页形态">
+        <header class="ep-hud">
+          <div class="ep-hud-row1">
+            <div class="ep-avatar">灵</div>
+            <div class="ep-who">
+              <div class="ep-name-row">
+                <span class="ep-name">第47日 (五)</span>
+                <span class="ep-money">¥5,177,463,124</span>
+                <span class="ep-chip loc">筹码 664CM</span>
+              </div>
+              <div class="ep-sub">[自宅位置] 命莲寺-别馆 ・ [起床时间] 9时00分 ・ [日历]</div>
+            </div>
+            <div class="ep-hud-btns">
+              <button class="ep-iconbtn" type="button" data-action="kb" aria-label="键盘（输入条）">键</button>
+              <button class="ep-iconbtn" type="button" aria-label="设置">设</button>
+            </div>
+          </div>
+          <div class="ep-hud-bars">
+            <div class="ep-bar"><div class="ep-bar-label"><span>体力</span><span class="v">3249/3845</span></div><div class="ep-track"><div class="ep-fill" style="width:84%;background:var(--ep-green)"></div></div></div>
+            <div class="ep-bar"><div class="ep-bar-label"><span>气力</span><span class="v">4245/4545</span></div><div class="ep-track"><div class="ep-fill" style="width:93%;background:var(--ep-purple)"></div></div></div>
+            <div class="ep-bar"><div class="ep-bar-label"><span>法力</span><span class="v">3052/3052</span></div><div class="ep-track"><div class="ep-fill" style="width:100%;background:var(--ep-orange)"></div></div></div>
+            <div class="ep-bar"><div class="ep-bar-label"><span>TSP</span><span class="v">1645/1645</span></div><div class="ep-track"><div class="ep-fill" style="width:100%;background:var(--ep-blue)"></div></div></div>
+            <div class="ep-bar"><div class="ep-bar-label"><span>精力</span><span class="v">120/2420</span></div><div class="ep-track"><div class="ep-fill" style="width:5%;background:var(--ep-cyan)"></div></div></div>
+          </div>
+        </header>
+
+        <div class="ep-console">
+          <div class="ep-cl yel">温馨提示:侍丧神的情欲极限上升、因此妊娠率及其低下、但是会随着玩家的道具经验上升而慢慢恢复正常生育能力。</div>
+        </div>
+
+        <footer class="ep-tray open" data-tray>
+          <div class="ep-cmds">
+            <div class="ep-cmd-group">
+              <div class="ep-grouplab">【主菜单】</div>
+              <div class="ep-cmdgrid">
+                <button class="ep-cmd" type="button" data-tip="睁开眼睛[100]：进入日常画面（探索页形态）。">睁开眼睛<span class="num">[100]</span></button>
+                <button class="ep-cmd sys" type="button">居住环境设定<span class="num">[102]</span></button>
+                <button class="ep-cmd sys" type="button">搬家<span class="num">[120]</span></button>
+                <button class="ep-cmd sys" type="button">能力显示<span class="num">[101]</span></button>
+                <button class="ep-cmd sys" type="button">随访商店<span class="num">[103]</span></button>
+                <button class="ep-cmd sys" type="button">所持道具一览<span class="num">[104]</span></button>
+                <button class="ep-cmd sys" type="button">收集<span class="num">[105]</span></button>
+                <button class="ep-cmd sys" type="button">入手的乐谱<span class="num">[106]</span></button>
+                <button class="ep-cmd sys" type="button">收到的礼物<span class="num">[107]</span></button>
+                <button class="ep-cmd sys" type="button">钓鱼列表<span class="num">[108]</span></button>
+                <button class="ep-cmd sys" type="button">狩猎鸟兽列表<span class="num">[109]</span></button>
+                <button class="ep-cmd sys" type="button">捕虫列表<span class="num">[110]</span></button>
+                <button class="ep-cmd sys" type="button">固有料理列表<span class="num">[111]</span></button>
+                <button class="ep-cmd sys" type="button">战斗履历列表<span class="num">[112]</span></button>
+                <button class="ep-cmd sys" type="button">实体解除<span class="num">[150]</span></button>
+                <button class="ep-cmd sys" type="button">农家设定<span class="num">[151]</span></button>
+              </div>
+            </div>
+            <div class="ep-cmd-group">
+              <div class="ep-grouplab">【系统菜单】</div>
+              <div class="ep-cmdgrid">
+                <button class="ep-cmd sys" type="button">重置委托<span class="num">[160]</span></button>
+                <button class="ep-cmd sys" type="button">重置服装<span class="num">[161]</span></button>
+                <button class="ep-cmd sys" type="button">OPTION<span class="num">[400]</span></button>
+                <button class="ep-cmd sys" type="button">采集列表<span class="num">[410]</span></button>
+                <button class="ep-cmd sys" type="button">出现场所列表<span class="num">[411]</span></button>
+                <button class="ep-cmd sys" type="button">单独指导<span class="num">[420]</span></button>
+                <button class="ep-cmd sys" type="button">SAVE<span class="num">[200]</span></button>
+                <button class="ep-cmd sys" type="button">档案操作<span class="num">[300]</span></button>
+                <button class="ep-cmd sys" type="button">UPDATE<span class="num">[500]</span></button>
+                <button class="ep-cmd sys" type="button">幻想乡之主<span class="num">[666]</span></button>
+                <button class="ep-cmd sys" type="button">卖出筹码<span class="num">[600]</span></button>
+              </div>
+            </div>
+          </div>
+          <button class="ep-tray-toggle" type="button" data-action="tray" aria-expanded="true">▼ 收起指令列表</button>
+        </footer>
+      </div>
+
+      <!-- ═══════════ 形态B：探索页（图2） ═══════════ -->
+      <div class="ep-form" data-form-body="explore" aria-label="探索页形态">
+        <header class="ep-hud">
+          <div class="ep-hud-row1">
+            <div class="ep-avatar">清</div>
+            <div class="ep-who">
+              <div class="ep-name-row">
+                <span class="ep-name">夏之月 17日 (六) 9:00</span>
+                <span class="ep-chip">可吃饭</span>
+                <span class="ep-chip buff">Ｃ敏感</span>
+              </div>
+              <div class="ep-sub">已时一点-小昼 ・ 气温20.0℃ ・ 别馆 清洁度:高</div>
+            </div>
+            <div class="ep-hud-btns">
+              <button class="ep-iconbtn" type="button" data-action="kb" aria-label="键盘（输入条）">键</button>
+              <button class="ep-iconbtn" type="button" data-action="tray" aria-label="指令盘开关">盘</button>
+              <button class="ep-iconbtn" type="button" aria-label="设置">设</button>
+            </div>
+          </div>
+          <div class="ep-hud-bars">
+            <div class="ep-bar"><div class="ep-bar-label"><span>体力</span><span class="v">3845</span></div><div class="ep-track"><div class="ep-fill" style="width:100%;background:var(--ep-green)"></div></div></div>
+            <div class="ep-bar"><div class="ep-bar-label"><span>气力</span><span class="v">4545</span></div><div class="ep-track"><div class="ep-fill" style="width:100%;background:var(--ep-purple)"></div></div></div>
+            <div class="ep-bar"><div class="ep-bar-label"><span>法力</span><span class="v">3052</span></div><div class="ep-track"><div class="ep-fill" style="width:100%;background:var(--ep-orange)"></div></div></div>
+            <div class="ep-bar"><div class="ep-bar-label"><span>TSP</span><span class="v">1645</span></div><div class="ep-track"><div class="ep-fill" style="width:100%;background:var(--ep-blue)"></div></div></div>
+            <div class="ep-bar"><div class="ep-bar-label"><span>精</span><span class="v">2420</span></div><div class="ep-track"><div class="ep-fill" style="width:100%;background:var(--ep-cyan)"></div></div></div>
+          </div>
+          <div class="ep-name-row" style="margin-top:6px">
+            <span class="ep-chip buff">[调和魔药]</span>
+            <span class="ep-chip buff">[时间停止可]</span>
+            <span class="ep-chip buff">[使用魔法]</span>
+            <span class="ep-chip buff">[常识改变变动可]</span>
+          </div>
+        </header>
+
+        <div class="ep-console">
+          <div class="ep-cl"><span class="lab">▼--[Status]</button><span class="lab">--------</span><button class="ep-lnk" type="button">[能力显示]</button></div>
+          <div class="ep-cl ep-statwrap">
+            <span class="ep-stat"><span class="nm">清醒裾裾</span><span class="val">1000</span></span>
+            <span class="ep-stat"><span class="nm">体</span><span class="mnibar"><i style="width:100%;background:var(--ep-green)"></i></span><span class="val">3845</span></span>
+            <span class="ep-stat"><span class="nm">气</span><span class="mnibar"><i style="width:100%;background:var(--ep-purple)"></i></span><span class="val">4545</span></span>
+            <span class="ep-stat"><span class="nm">法</span><span class="mnibar"><i style="width:100%;background:var(--ep-orange)"></i></span><span class="val">3052</span></span>
+            <span class="ep-stat"><span class="nm">酒</span><span class="val">0</span></span>
+            <span class="ep-stat"><span class="nm">精</span><span class="mnibar"><i style="width:100%;background:var(--ep-cyan)"></i></span><span class="val">2420</span></span>
+          </div>
+          <div class="ep-cl dim">昂: [今日运势: 171&gt;]　执行中: [带着零感的水]</div>
+          <div class="ep-cl"><span class="lab">▼--[Look]</button><span class="lab">-------</span>
+            <button class="ep-lnk" type="button">[显示立绘]</button>
+            <button class="ep-lnk" type="button">[显示设定]</button>
+            <button class="ep-lnk" type="button">[显示自机立绘]</button>
+          </div>
+          <div class="ep-cl dim">-用途间有着能够窥貌浴室的秘密装置</div>
+          <div class="ep-cl dim">◇供香客借宿的简朴宿屋，导致个个会擅自进入</div>
+        </div>
+
+        <footer class="ep-tray" data-tray>
+          <div class="ep-ctx">
+            <span class="run">执行中:「带着零感的水」</span>
+            <span class="last">&lt;上回指令:&gt;</span>
+          </div>
+          <div class="ep-cmds">
+            <div class="ep-cmd-group peek">
+              <div class="ep-cmdgrid">
+                <button class="ep-cmd" type="button" data-tip="休息[403]：恢复体力气力，推进时间。">休息<span class="num">[403]</span></button>
+                <button class="ep-cmd" type="button">日记本<span class="num">[406]</span></button>
+                <button class="ep-cmd" type="button">扫除<span class="num">[410]</span></button>
+                <button class="ep-cmd" type="button">[+]随心演奏<span class="num">[416]</span></button>
+              </div>
+            </div>
+            <div class="ep-cmd-group">
+              <div class="ep-grouplab">─ Act_COM（日常功能）─</div>
+              <div class="ep-cmdgrid">
+                <button class="ep-cmd" type="button" data-tip="休息[403]：恢复体力气力，推进时间。">休息<span class="num">[403]</span></button>
+                <button class="ep-cmd" type="button">日记本<span class="num">[406]</span></button>
+                <button class="ep-cmd" type="button">扫除<span class="num">[410]</span></button>
+                <button class="ep-cmd" type="button">[+]随心演奏<span class="num">[416]</span></button>
+                <button class="ep-cmd" type="button">自慰<span class="num">[451]</span></button>
+                <button class="ep-cmd" type="button">道具<span class="num">[490]</span></button>
+                <button class="ep-cmd" type="button">眺望天空<span class="num">[495]</span></button>
+                <button class="ep-cmd" type="button">使用收音机<span class="num">[496]</span></button>
+              </div>
+            </div>
+            <div class="ep-cmd-group">
+              <div class="ep-grouplab">─ Ex_COM（移动・系统）─</div>
+              <div class="ep-cmdgrid">
+                <button class="ep-cmd sys" type="button">移动<span class="num">[400]</span></button>
+                <button class="ep-cmd sys" type="button">外出<span class="num">[405]</span></button>
+                <button class="ep-cmd sys" type="button">幻想乡之主<span class="num">[777]</span></button>
+                <button class="ep-cmd sys" type="button">污渍显示<span class="num">[801]</span></button>
+                <button class="ep-cmd sys" type="button">能力显示<span class="num">[803]</span></button>
+                <button class="ep-cmd sys" type="button">能力显示(主角)<span class="num">[804]</span></button>
+                <button class="ep-cmd sys" type="button">道具确认<span class="num">[805]</span></button>
+                <button class="ep-cmd sys" type="button">所在地察觉<span class="num">[811]</span></button>
+                <button class="ep-cmd sys" type="button">脏房间察觉<span class="num">[812]</span></button>
+                <button class="ep-cmd sys" type="button">日历<span class="num">[993]</span></button>
+                <button class="ep-cmd sys" type="button">自动时停移动<span class="num">[995]</span></button>
+                <button class="ep-cmd sys" type="button">自动扫除<span class="num">[996]</span></button>
+              </div>
+            </div>
+          </div>
+          <button class="ep-tray-toggle" type="button" data-action="tray" aria-expanded="false">▲ 全部指令（日常功能 / 移动・系统）　更多指令 ▾</button>
+        </footer>
+      </div>
+
+      <!-- ═══════════ 形态D：多角色交互页（图3，在场多人，立绘上限 10） ═══════════ -->
+      <div class="ep-form" data-form-body="multi" aria-label="多角色交互页形态">
+        <header class="ep-hud" data-hud>
+          <div class="ep-hud-row1">
+            <div class="ep-avatar" data-h-avatar>·</div>
+            <div class="ep-who">
+              <div class="ep-name-row">
+                <span class="ep-name" data-h-name>·</span>
+                <span class="ep-chip" data-h-chip hidden></span>
+                <span class="ep-chip" data-h-chip2 hidden></span>
+              </div>
+              <div class="ep-sub" data-h-sub></div>
+            </div>
+            <div class="ep-hud-btns">
+              <button class="ep-iconbtn" type="button" data-action="kb" aria-label="键盘（输入条）">键</button>
+              <button class="ep-iconbtn" type="button" data-action="tray" aria-label="指令盘开关">盘</button>
+              <button class="ep-iconbtn" type="button" aria-label="设置">设</button>
+            </div>
+          </div>
+          <div class="ep-roster" role="group" aria-label="在场角色" data-roster></div>
+          <div class="ep-hudswitch" role="group" aria-label="状态面板对象">
+            <button class="ep-hs" type="button" data-hud-target="char" aria-pressed="true"><span data-hs-char>角色</span></button>
+            <button class="ep-hs" type="button" data-hud-target="player" aria-pressed="false"><span data-hs-player>主角</span></button>
+          </div>
+          <div class="ep-hud-bars" data-h-bars></div>
+          <div class="ep-sheet" data-sheet></div>
+          <button class="ep-hud-more" type="button" data-action="sheet" aria-expanded="false">▼ 状态详情</button>
+        </header>
+
+        <div class="ep-console" data-console>
+          <div class="ep-cl dim">绀野琳私室　清洁度:中</div>
+          <div class="ep-cl"><span class="lab">[白莲]</span><span class="ep-chip" style="margin:0 4px">同行中</span><span class="lab">[一轮]</span></div>
+          <div class="ep-cl dim">[白莲] 好感度: S 29201　信赖度: A 2377　欲求不满度: 100%　孩子个数: 0　受孕: ○　可吃饭 可吃点心</div>
+          <div class="ep-cl dim">工作情报　劝诱活动 周一、四 12～16时　女子会 第二周周周　工作地点: 人里广场 人里居酒屋(18～21时)　战斗能力: A 4</div>
+          <div class="ep-cl"><span class="lab">▼—</span><button class="ep-lnk" type="button" data-action="sheet-open">[Status]</button><span class="lab">——　能力显示　——</span></div>
+          <div class="ep-cl ep-statwrap">
+            <span class="ep-stat"><span class="nm">昂</span><span class="mnibar"><i style="width:100%;background:var(--ep-green)"></i></span><span class="val">3845</span></span>
+            <span class="ep-stat"><span class="nm">气</span><span class="val">4495</span></span>
+            <span class="ep-stat"><span class="nm">法</span><span class="val">3052</span></span>
+            <span class="ep-stat"><span class="nm">精</span><span class="val">2420</span></span>
+          </div>
+          <div class="ep-cl dim">(主角)清醒裾裾 1020</div>
+          <div class="ep-cl ep-statwrap">
+            <span class="ep-stat"><span class="nm">白莲</span><span class="mnibar"><i style="width:69%;background:var(--ep-green)"></i></span><span class="val">2666</span></span>
+            <span class="ep-stat"><span class="nm">气</span><span class="val">2370</span></span>
+            <span class="ep-stat"><span class="nm">法</span><span class="val">754</span></span>
+            <span class="ep-stat"><span class="nm">酒</span><span class="val">0</span></span>
+          </div>
+          <div class="ep-cl dim">情绪:　理性: ★★★★　<span class="hl">危险日前</span></div>
+          <div class="ep-cl dim">昂: [今日运势: 712]</div>
+          <div class="ep-cl dim">执行中 (昂) [带着雾之湖的水]</div>
+          <div class="ep-cl"><span class="lab">▼—</span><button class="ep-lnk" type="button" data-action="sheet-open">[Palam]</button><span class="lab">——</span></div>
+          <div class="ep-cl"><span class="lab">▼--[Look]</span><span class="lab">-----</span>
+            <button class="ep-lnk" type="button" data-action="sprite">[显示立绘]</button>
+            <button class="ep-lnk" type="button">[显示设定]</button>
+            <button class="ep-lnk" type="button">[显示自机立绘]</button>
+          </div>
+          <div class="ep-cl"><span class="lab">【上半身】</span>哥特泰丽塔裙</div>
+          <div class="ep-cl"><span class="lab">【下半身】</span>哥特洛丽塔裙</div>
+          <div class="ep-cl"><span class="hl">【★ 789】</span>秩序的破子</div>
+          <div class="ep-cl cyan">[白莲]</div>
+          <div class="ep-cl cyan">[一轮]</div>
+        </div>
+
+        <div class="ep-stripwrap" data-stripwrap>
+          <div class="ep-striphead">
+            <span>立绘 <b data-spritelabel>2</b>/10</span>
+            <span class="ep-stripnote">独立横滑舞台（点立绘切显示对象）</span>
+            <button class="ep-stripfold" type="button" data-action="strip" aria-expanded="true">收起 ▾</button>
+          </div>
+          <div class="ep-stage-strip" data-spritestrip aria-label="立绘舞台（横滑，最多 10 张）"></div>
+        </div>
+
+        <footer class="ep-tray" data-tray>
+          <div class="ep-ctx">
+            <span class="run">执行中:「带着雾之湖的水」</span>
+            <span class="last">&lt;上回指令:移动&gt;</span>
+          </div>
+          <div class="ep-cmds">
+            <div class="ep-cmd-group peek">
+              <div class="ep-cmdgrid">
+                <button class="ep-cmd" type="button" data-tip="会话[300]：与在场角色搭话，推进好感与对话。">会话<span class="num">[300]</span></button>
+                <button class="ep-cmd" type="button" data-tip="身体接触[302]：轻度肌肤接触，提升情欲。">身体接触<span class="num">[302]</span></button>
+                <button class="ep-cmd" type="button" data-tip="劝酒[332]：请对方喝酒，提升酒醉度。">劝酒<span class="num">[332]</span></button>
+              </div>
+            </div>
+            <div class="ep-cmd-group">
+              <div class="ep-grouplab">─ Act_COM（会话・劝诱）─</div>
+              <div class="ep-cmdgrid">
+                <button class="ep-cmd" type="button" data-tip="会话[300]：与在场角色搭话，推进好感与对话。">会话<span class="num">[300]</span></button>
+                <button class="ep-cmd" type="button">身体接触<span class="num">[302]</span></button>
+                <button class="ep-cmd" type="button">劝酒<span class="num">[332]</span></button>
+                <button class="ep-cmd" type="button">带出去<span class="num">[351]</span></button>
+                <button class="ep-cmd" type="button">邀请去阴暗处<span class="num">[356]</span></button>
+                <button class="ep-cmd" type="button">日记本<span class="num">[406]</span></button>
+                <button class="ep-cmd" type="button">扫除<span class="num">[410]</span></button>
+                <button class="ep-cmd" type="button">[+]随心演奏<span class="num">[416]</span></button>
+                <button class="ep-cmd" type="button">道具<span class="num">[490]</span></button>
+                <button class="ep-cmd" type="button">眺望天空<span class="num">[495]</span></button>
+                <button class="ep-cmd" type="button">使用收音机<span class="num">[496]</span></button>
+              </div>
+            </div>
+            <div class="ep-cmd-group">
+              <div class="ep-grouplab">─ Ex_COM（移动・对象・系统）─</div>
+              <div class="ep-cmdgrid">
+                <button class="ep-cmd sys" type="button" data-tip="变更对象[802]：切换当前交互对象。多角色时由游戏本体提供。">变更对象<span class="num">[802]</span></button>
+                <button class="ep-cmd sys" type="button">移动<span class="num">[400]</span></button>
+                <button class="ep-cmd sys" type="button">约会<span class="num">[405]</span></button>
+                <button class="ep-cmd sys" type="button">幻想乡之主<span class="num">[777]</span></button>
+                <button class="ep-cmd sys" type="button">污渍显示<span class="num">[801]</span></button>
+                <button class="ep-cmd sys" type="button">能力显示<span class="num">[803]</span></button>
+                <button class="ep-cmd sys" type="button">能力显示(主角)<span class="num">[804]</span></button>
+                <button class="ep-cmd sys" type="button">道具确认<span class="num">[805]</span></button>
+                <button class="ep-cmd sys" type="button">所在地察觉<span class="num">[811]</span></button>
+                <button class="ep-cmd sys" type="button">脏房间察觉<span class="num">[812]</span></button>
+                <button class="ep-cmd sys" type="button">日历<span class="num">[993]</span></button>
+                <button class="ep-cmd sys" type="button">自动时停移动<span class="num">[995]</span></button>
+                <button class="ep-cmd sys" type="button">自动扫除<span class="num">[996]</span></button>
+                <button class="ep-cmd sys" type="button">CONFIG</button>
+                <button class="ep-cmd sys" type="button">SETTING</button>
+              </div>
+            </div>
+          </div>
+          <button class="ep-tray-toggle" type="button" data-action="tray" aria-expanded="false">▲ 全部指令（会话・劝诱 / 移动・对象・系统）　更多指令 ▾</button>
+        </footer>
+      </div>
+
+      <!-- ═══════════ 形态C：角色交互页（图0，首版内容） ═══════════ -->
+      <div class="ep-form active" data-form-body="interact" aria-label="角色交互页形态">
+        <header class="ep-hud" data-hud>
+          <div class="ep-hud-row1">
+            <div class="ep-avatar" data-h-avatar>·</div>
+            <div class="ep-who">
+              <div class="ep-name-row">
+                <span class="ep-name" data-h-name>·</span>
+                <span class="ep-chip" data-h-chip hidden></span>
+                <span class="ep-chip" data-h-chip2 hidden></span>
+              </div>
+              <div class="ep-sub" data-h-sub></div>
+            </div>
+            <div class="ep-hud-btns">
+              <button class="ep-iconbtn" type="button" data-action="kb" aria-label="键盘（输入条）">键</button>
+              <button class="ep-iconbtn" type="button" data-action="tray" aria-label="指令盘开关">盘</button>
+              <button class="ep-iconbtn" type="button" aria-label="设置">设</button>
+            </div>
+          </div>
+          <div class="ep-roster" role="group" aria-label="在场角色" data-roster></div>
+          <div class="ep-hudswitch" role="group" aria-label="状态面板对象">
+            <button class="ep-hs" type="button" data-hud-target="char" aria-pressed="true"><span data-hs-char>角色</span></button>
+            <button class="ep-hs" type="button" data-hud-target="player" aria-pressed="false"><span data-hs-player>主角</span></button>
+          </div>
+          <div class="ep-hud-bars" data-h-bars></div>
+          <div class="ep-sheet" data-sheet></div>
+          <button class="ep-hud-more" type="button" data-action="sheet" aria-expanded="false">▼ 状态详情</button>
+        </header>
+
+        <div class="ep-console" data-console>
+          <div class="ep-cl dim">走廊　污湿度：<span class="hl">垃圾山</span></div>
+          <div class="ep-cl cyan">[绀野琳]</div>
+          <div class="ep-cl dim">好感度: Ex 113791　信赖度: S 3330　欲求不满度: 87%　孩子个数: 0　怀孕: ×　可吃饭 可吃点心　愤怒: !!</div>
+          <div class="ep-cl dim">工作情报　工作地点: ——　战斗能力: D 1</div>
+          <div class="ep-cl"><span class="lab">▼—</span><button class="ep-lnk" type="button" data-action="sheet-open">[Status]</button><span class="lab">————　能力显示　————</span></div>
+          <div class="ep-cl"><span class="n">绀野琳</span></div>
+          <div class="ep-cl ep-statwrap">
+            <span class="ep-stat"><span class="nm">体力</span><span class="mnibar"><i style="width:85%;background:var(--ep-green)"></i></span><span class="val">3815</span></span>
+            <span class="ep-stat"><span class="nm">气</span><span class="mnibar"><i style="width:94%;background:var(--ep-purple)"></i></span><span class="val">4213</span></span>
+            <span class="ep-stat"><span class="nm">法</span><span class="mnibar"><i style="width:68%;background:var(--ep-orange)"></i></span><span class="val">3052</span></span>
+            <span class="ep-stat"><span class="nm">酒</span><span class="mnibar"><i style="width:2%;background:var(--ep-red)"></i></span><span class="val">0</span></span>
+            <span class="ep-stat"><span class="nm">精</span><span class="mnibar"><i style="width:54%;background:var(--ep-cyan)"></i></span><span class="val">2420</span></span>
+          </div>
+          <div class="ep-cl dim">(主人公)清　Erection!!　体 1818　气 1224　法 0　酒 0　精 0</div>
+          <div class="ep-cl">射精 ——<button class="ep-lnk yel" type="button">[我要去了!]</button><span class="n">[通常]</span></div>
+          <div class="ep-cl"><span class="lab">▼—</span><button class="ep-lnk" type="button" data-action="sheet-open">[Palam]</button><span class="lab">——————</span></div>
+          <div class="ep-cl dim">绀野琳　一边拨向暴露出的欧金金缠上手开始撸动……</div>
+          <div class="ep-cl">绀野琳借助先走汁将肉棒涂沫得晶莹水润……</div>
+          <div class="ep-cl say">「如果你也有那个意思的话，我就来给你做好　事　情…吧!」</div>
+          <div class="ep-cl"><span class="lab">▼--[Look]</span><span class="lab">-----</span>
+            <button class="ep-lnk" type="button" data-action="sprite">[显示立绘]</button>
+            <button class="ep-lnk" type="button">[显示设定]</button>
+            <button class="ep-lnk" type="button" data-action="anim">[显示动画-ON-]</button>
+          </div>
+          <div class="ep-cl dim">◇洗好的衣物晾干了</div>
+          <div class="ep-cl"><span class="lab">【上半身】</span>无袖上衣　即便隔着衣服也能看出乳头已经勃起了</div>
+          <div class="ep-cl"><span class="lab">【下半身】</span>裙子　被掀开后露出了弹嫩紧致的屁股　白胖胖肚子上染满了水渍　肚子隆起变得更加明显了</div>
+          <div class="ep-cl cyan">[绀野琳]</div>
+          <svg class="ep-sprite" data-sprite viewBox="0 0 170 150" role="img" aria-label="立绘（占位示意）">
+            <defs>
+              <linearGradient id="ep-spr-g" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#8d8088"/><stop offset="1" stop-color="#4d434c"/>
+              </linearGradient>
+            </defs>
+            <rect x="0" y="0" width="170" height="150" rx="10" fill="#0a0a0a"/>
+            <circle cx="52" cy="34" r="17" fill="url(#ep-spr-g)"/>
+            <circle cx="118" cy="34" r="17" fill="url(#ep-spr-g)"/>
+            <circle cx="85" cy="52" r="26" fill="url(#ep-spr-g)"/>
+            <path d="M40 150 C42 108 62 88 85 88 C108 88 128 108 130 150 Z" fill="url(#ep-spr-g)"/>
+            <circle cx="76" cy="52" r="2.6" fill="#c2506a"/><circle cx="94" cy="52" r="2.6" fill="#c2506a"/>
+            <path d="M78 63 Q85 68 92 63" stroke="#c2506a" stroke-width="2" fill="none" stroke-linecap="round"/>
+            <text x="85" y="144" text-anchor="middle" font-size="9" fill="#6a6a6a" font-family="sans-serif">立绘（占位示意）</text>
+          </svg>
+        </div>
+
+        <footer class="ep-tray" data-tray>
+          <div class="ep-ctx">
+            <span class="run">执行中:「带着零感的水」</span>
+            <span class="last">&lt;上回指令:任凭摆布&gt;</span>
+          </div>
+          <div class="ep-cmds">
+            <div class="ep-cmd-group peek">
+              <div class="ep-cmdgrid">
+                <button class="ep-cmd" type="button" data-tip="摸屁股[310]：隔着裙子也能进行。提升快C／润滑。">摸屁股<span class="num">[310]</span></button>
+                <button class="ep-cmd" type="button" data-tip="拥抱[311]：抱住对方。提升好感与情欲。">拥抱<span class="num">[311]</span></button>
+                <button class="ep-cmd" type="button" data-tip="接吻[312]：要求 好感度≥20000、情欲 Lv5 以上。失贞度不增加。">接吻<span class="num">[312]</span></button>
+                <button class="ep-cmd" type="button" data-tip="胸爱抚[313]：提升快B与情欲。">胸爱抚<span class="num">[313]</span></button>
+                <button class="ep-cmd" type="button">肛门爱抚<span class="num">[314]</span></button>
+                <button class="ep-cmd" type="button">阴蒂爱抚<span class="num">[315]</span></button>
+              </div>
+            </div>
+            <div class="ep-cmd-group">
+              <div class="ep-grouplab">─ 亲密动作（Act_COM）─</div>
+              <div class="ep-cmdgrid">
+                <button class="ep-cmd" type="button" data-tip="摸屁股[310]：隔着裙子也能进行。提升快C／润滑。">摸屁股<span class="num">[310]</span></button>
+                <button class="ep-cmd" type="button" data-tip="拥抱[311]：抱住对方。提升好感与情欲。">拥抱<span class="num">[311]</span></button>
+                <button class="ep-cmd" type="button" data-tip="接吻[312]：要求 好感度≥20000、情欲 Lv5 以上。失贞度不增加。">接吻<span class="num">[312]</span></button>
+                <button class="ep-cmd" type="button">胸爱抚<span class="num">[313]</span></button>
+                <button class="ep-cmd" type="button">肛门爱抚<span class="num">[314]</span></button>
+                <button class="ep-cmd" type="button">阴蒂爱抚<span class="num">[315]</span></button>
+                <button class="ep-cmd" type="button">手指插入<span class="num">[316]</span></button>
+                <button class="ep-cmd" type="button">掀起裙子<span class="num">[330]</span></button>
+                <button class="ep-cmd" type="button">爱抚<span class="num">[331]</span></button>
+                <button class="ep-cmd" type="button">推倒<span class="num">[350]</span></button>
+                <button class="ep-cmd" type="button">律动插<span class="num">[360]</span></button>
+                <button class="ep-cmd" type="button">扪抚<span class="num">[361]</span></button>
+              </div>
+            </div>
+            <div class="ep-cmd-group">
+              <div class="ep-grouplab">─ 一般・魔法 ─</div>
+              <div class="ep-cmdgrid">
+                <button class="ep-cmd" type="button">道具<span class="num">[490]</span></button>
+                <button class="ep-cmd" type="button">脱衣服<span class="num">[820]</span></button>
+                <button class="ep-cmd" type="button">挑逗<span class="num">[826]</span></button>
+                <button class="ep-cmd" type="button">挣脱<span class="num">[850]</span></button>
+                <button class="ep-cmd sys" type="button">无法停止时间</button>
+                <button class="ep-cmd sys" type="button">使用魔法</button>
+                <button class="ep-cmd sys" type="button">催眠发动</button>
+              </div>
+            </div>
+            <div class="ep-cmd-group">
+              <div class="ep-grouplab">─ 系统・CONFIG ─</div>
+              <div class="ep-cmdgrid">
+                <button class="ep-cmd sys" type="button">幻想乡之主<span class="num">[777]</span></button>
+                <button class="ep-cmd sys" type="button">污渍显示<span class="num">[801]</span></button>
+                <button class="ep-cmd sys" type="button">能力显示<span class="num">[803]</span></button>
+                <button class="ep-cmd sys" type="button">能力显示(主角)<span class="num">[804]</span></button>
+                <button class="ep-cmd sys" type="button">道具确认<span class="num">[805]</span></button>
+                <button class="ep-cmd sys" type="button">日历<span class="num">[993]</span></button>
+                <button class="ep-cmd sys" type="button">自动时停移动<span class="num">[995]</span></button>
+                <button class="ep-cmd sys" type="button">CONFIG</button>
+                <button class="ep-cmd sys" type="button">SETTING</button>
+              </div>
+            </div>
+          </div>
+          <button class="ep-tray-toggle" type="button" data-action="tray" aria-expanded="false">▲ 全部指令（亲密 / 一般・魔法 / 系统）　更多指令 ▾</button>
+        </footer>
+      </div>
+
+      <!-- ── 输入条 / 抓手 / 提示卡（三形态共用） ── -->
+      <div class="ep-inputbar" data-inputbar>
+        <button class="ep-grab" type="button" data-action="kb-close" aria-label="收起输入条"></button>
+        <div class="ep-macros">
+          <button class="ep-macro grp" type="button">宏 1</button>
+          <button class="ep-macro" type="button" data-fill="任凭摆布">任凭摆布</button>
+          <button class="ep-macro" type="button" data-fill="继续">继续</button>
+          <button class="ep-macro" type="button" data-fill="0">0</button>
+          <button class="ep-macro" type="button" data-fill="3000">3000</button>
+        </div>
+        <div class="ep-inrow">
+          <input class="ep-in" data-input type="text" placeholder="输入后回车提交" aria-label="指令输入"/>
+          <button class="ep-send" type="button" data-action="send">提交</button>
+        </div>
+      </div>
+      <button class="ep-knob" type="button" data-action="kb-open" aria-label="展开输入条">︿</button>
+      <div class="ep-tipmask" data-tipmask role="dialog" aria-modal="true" aria-label="按钮提示">
+        <div class="ep-tipcard">
+          <div data-tiptext></div>
+          <div class="closehint">点任意处关闭（长按按钮可看原版悬停提示）</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <aside class="ep-readout" aria-live="polite">
+    <div class="ep-ro-title">▌自适配读数（随设备/字号联动）</div>
+    <div>屏宽 <b id="ro-w">390</b> × 屏高 <b id="ro-h">844</b>　安全区 <b id="ro-notch">+34px</b></div>
+    <div>断点档 <b id="ro-size">m</b>（&lt;380 s ・ &lt;520 m ・ &lt;640 l ・ 其余 xl）</div>
+    <div>控制台 <b id="ro-cols">50</b> 列 → 半角格 <b id="ro-cell">7.8px</b> / 汉字 <b id="ro-cjk">15.6px</b></div>
+    <div>指令盘 <b id="ro-cmdcols">2</b> 列　HUD 状态条 <b id="ro-hudcols">3</b>/行　Palam <b id="ro-palamcols">2</b>/行</div>
+    <div style="margin-top:6px">形态 <b id="ro-form">角色交互页</b></div>
+    <div id="ro-note" style="margin-top:3px;color:#9a9a9a;line-height:1.7"></div>
+  </aside>
+</div>
+
+<script>
+(function () {
+  var root = document.getElementById("eratw-portrait-proto");
+  var phone = document.getElementById("ep-phone");
+  var screen = document.getElementById("ep-screen");
+  var inputbar = root.querySelector("[data-inputbar]");
+  var input = root.querySelector("[data-input]");
+  var tipmask = root.querySelector("[data-tipmask]");
+  var tiptext = root.querySelector("[data-tiptext]");
+  var knob = root.querySelector("[data-action='kb-open']");
+
+  var DEVICES = {
+    small: { w: 360, h: 740 },
+    norm:  { w: 390, h: 844 },
+    big:   { w: 412, h: 915 },
+    fold:  { w: 600, h: 960 }
+  };
+  var FORM_LABEL = { menu: "起床菜单页", explore: "探索页", interact: "角色交互页", multi: "多角色交互页" };
+  var FORM_NOTE = {
+    menu: "G0：HUD 徽章级（地点/时间入徽章、所持金入名字行），无 Palam 抽屉；指令盘自动展开（正文短 + 候选多）。",
+    explore: "G1：buff 行整行变 chips；指令盘按屏行给 Act / Ex 两组；正文短时中段自然留白。",
+    interact: "G2：与 G3 同一套 HUD 骨架（同一游戏界面），只是没有角色条；HUD 可切「当前角色 / 主角」，默认角色。",
+    multi: "G3：HUD 与 G2 完全一致，只多一条角色条（上限 10 人）；点角色同时把 HUD 切回角色主体。"
+  };
+  var state = { dev: "norm", cols: 50, notch: true, form: "interact", chars: 2 };
+
+  /* ───────────────────────── 数据 ───────────────────────── */
+
+  var GIRL_KEYS = [
+    ["快C", "Lv0", 0], ["快V", "Lv2", 1995], ["快A", "Lv0", 0], ["快B", "Lv0", 0],
+    ["快M", "Lv0", 0], ["润滑", "Lv2", 3050], ["恭顺", "Lv6", 75816], ["情欲", "Lv12", 1372],
+    ["屈服", "Lv10", 422847], ["习得", "Lv3", 9277], ["羞耻", "Lv13", 1790], ["苦痛", "Lv0", 0],
+    ["恐怖", "Lv0", 0], ["好意", "Lv13", 979], ["优越", "Lv5", 57927], ["眠好", "Lv0", 0]
+  ];
+
+  var GIRLS = {
+    "绀野琳": {
+      hue: 350, danger: false,
+      sub: "夏之日 17日(六) 9:40 ・ 气温 20.0℃ ・ 今日运势 558",
+      chips: [["可吃饭", ""], ["♥怀孕♥", "preg"]],
+      bars: [["体力", 3815, 4000, "green"], ["气力", 4213, 4400, "purple"], ["法力", 3052, 3052, "orange"],
+             ["酒", 0, 100, "red"], ["精", 2420, 3000, "cyan"], ["理性", "★", "★", "pink"]],
+      exp: [["好感度", "Ex 113791"], ["信赖度", "S 3330"], ["欲求不满度", "87%"], ["孩子个数", "0"],
+            ["怀孕", "×"], ["愤怒", "!!"], ["工作地点", "——"], ["战斗能力", "D 1"]],
+      palam: GIRL_KEYS
+    },
+    "白莲": {
+      hue: 18, danger: true,
+      sub: "已时一点-小昼 ・ 温度 20.0℃ ・ 绀野琳私室",
+      chips: [["同行中", ""], ["受孕 ○", "preg"]],
+      bars: [["体力", 2666, 3200, "green"], ["气力", 2370, 3000, "purple"], ["法力", 754, 1200, "orange"],
+             ["酒", 0, 100, "red"], ["精", 1800, 2400, "cyan"], ["理性", "★★★", "★★★★", "pink"]],
+      exp: [["好感度", "S 29201"], ["信赖度", "A 2377"], ["欲求不满度", "100%"], ["孩子个数", "0"],
+            ["受孕", "○"], ["战斗能力", "A 4"], ["工作", "劝诱活动"], ["愤怒", "—"]],
+      palam: [["快C", "Lv0", 0], ["快V", "Lv0", 0], ["快A", "Lv0", 0], ["快B", "Lv0", 0],
+              ["快M", "Lv0", 0], ["润滑", "Lv0", 0], ["恭顺", "Lv6", 75816], ["情欲", "Lv5", 46517],
+              ["屈服", "Lv3", 3048], ["习得", "Lv0", 0], ["羞耻", "Lv0", 0], ["苦痛", "Lv0", 0],
+              ["恐怖", "Lv0", 0], ["好意", "Lv12", 979680], ["优越", "Lv0", 0], ["眠好", "Lv0", 0]]
+    },
+    "一轮": {
+      hue: 205, danger: false,
+      sub: "已时一点-小昼 ・ 温度 20.0℃ ・ 绀野琳私室",
+      chips: [["同行中", ""]],
+      bars: [["体力", 3100, 3400, "green"], ["气力", 2980, 3200, "purple"], ["法力", 1020, 1400, "orange"],
+             ["酒", 0, 100, "red"], ["精", 2100, 2400, "cyan"], ["理性", "★★★★", "★★★★", "pink"]],
+      exp: [["好感度", "A 4210"], ["信赖度", "B 880"], ["欲求不满度", "42%"], ["孩子个数", "0"],
+            ["受孕", "×"], ["战斗能力", "B 2"], ["工作", "—"], ["愤怒", "—"]],
+      palam: [["快C", "Lv0", 0], ["快V", "Lv0", 0], ["快A", "Lv0", 0], ["快B", "Lv0", 0],
+              ["快M", "Lv0", 0], ["润滑", "Lv0", 0], ["恭顺", "Lv1", 120], ["情欲", "Lv2", 640],
+              ["屈服", "Lv0", 0], ["习得", "Lv1", 90], ["羞耻", "Lv1", 210], ["苦痛", "Lv0", 0],
+              ["恐怖", "Lv0", 0], ["好意", "Lv4", 3200], ["优越", "Lv0", 0], ["眠好", "Lv0", 0]]
+    }
+  };
+
+  var PLAYERS = {
+    interact: {
+      name: "清", sub: "夏之日 17日(六) 9:40 ・ 气温 20.0℃",
+      chips: [["可吃饭", ""], ["时间停止可", "buff"]],
+      bars: [["体力", 3845, 3845, "green"], ["气力", 4495, 4545, "purple"], ["法力", 3052, 3052, "orange"],
+             ["TSP", "1645/1645", "1645/1645", "blue"], ["精", 2420, 2420, "cyan"], ["运势", 558, 1000, "yellow"]],
+      exp: [["清醒裾裾", "1020"], ["今日运势", "558"], ["危险日前", "否"], ["理性", "★★★★"],
+            ["时间停止", "可用"], ["调和魔药", "可"]]
+    },
+    multi: {
+      name: "昂", sub: "夏之月 17日(六) 9:15 ・ 气温 20.0℃",
+      chips: [["可吃饭", ""], ["危险日前", "warn"]],
+      bars: [["体力", 3845, 3845, "green"], ["气力", 4495, 4545, "purple"], ["法力", 3052, 3052, "orange"],
+             ["TSP", "1645/1645", "1645/1645", "blue"], ["精", 2420, 2420, "cyan"], ["运势", 712, 1000, "yellow"]],
+      exp: [["清醒裾裾", "1020"], ["今日运势", "712"], ["危险日前", "是"], ["理性", "★★★★"],
+            ["时间停止", "可用"], ["调和魔药", "可"]]
+    }
+  };
+
+  /** 多角色页第 i 位：超出真名表生成「占位」（只为演示 10 人上限，不带设定）。 */
+  function rosterGirl(i) {
+    var names = ["白莲", "一轮"];
+    if (i < names.length) return GIRLS[names[i]];
+    var k = i + 1;
+    return {
+      hue: (i * 47) % 360, placeholder: true, danger: k % 3 === 0,
+      sub: "在场（占位示意）",
+      chips: [["占位", ""]],
+      bars: [["体力", Math.max(400, 3400 - k * 180), 3400, "green"],
+             ["气力", Math.max(300, 3000 - k * 150), 3200, "purple"],
+             ["法力", Math.max(60, 1200 - k * 90), 1400, "orange"],
+             ["酒", 0, 100, "red"], ["精", 1200, 2400, "cyan"], ["理性", "★★", "★★★★", "pink"]],
+      exp: [["好感度", "—"], ["信赖度", "—"], ["欲求不满度", "—"], ["战斗能力", "—"],
+            ["孩子个数", "—"], ["受孕", "—"], ["愤怒", "—"], ["工作", "—"]],
+      palam: GIRL_KEYS.map(function (x) { return [x[0], "Lv0", 0]; })
+    };
+  }
+
+  /* ───────────────────────── HUD 状态 ───────────────────────── */
+
+  /**
+   * 每形态的 HUD 上下文：主体（char = 当前选中少女 / player = 主角）+ 选中的少女下标。
+   * 壳层本地状态，**不提交任何指令**。
+   */
+  var HUD = { interact: { target: "char", idx: 0 }, multi: { target: "char", idx: 0 } };
+
+  function girlCount(key) { return key === "interact" ? 1 : state.chars; }
+  function girlNameOf(key, i) {
+    if (key === "interact") return "绀野琳";
+    var names = ["白莲", "一轮"];
+    return i < names.length ? names[i] : "占位" + (i + 1);
+  }
+  function currentGirl(key) {
+    var i = Math.min(Math.max(HUD[key].idx, 0), girlCount(key) - 1);
+    return key === "interact" ? GIRLS["绀野琳"] : rosterGirl(i);
+  }
+
+  /* ───────────────────────── 渲染 ───────────────────────── */
+
+  function spriteMarkup(c, name, dim) {
+    var g1 = "hsl(" + c.hue + " 24% 54%)";
+    var g2 = "hsl(" + c.hue + " 18% 31%)";
+    return '<svg viewBox="0 0 170 150" role="img" aria-label="' + name + '立绘（占位示意）"' +
+      (dim ? ' style="opacity:.42"' : "") + ">" +
+      '<rect width="170" height="150" rx="10" fill="#0a0a0a"/>' +
+      '<circle cx="52" cy="34" r="17" fill="' + g1 + '"/>' +
+      '<circle cx="118" cy="34" r="17" fill="' + g1 + '"/>' +
+      '<circle cx="85" cy="52" r="26" fill="' + g1 + '"/>' +
+      '<path d="M40 150 C42 108 62 88 85 88 C108 88 128 108 130 150 Z" fill="' + g2 + '"/>' +
+      '<circle cx="76" cy="52" r="2.6" fill="#c2506a"/>' +
+      '<circle cx="94" cy="52" r="2.6" fill="#c2506a"/>' +
+      '<path d="M78 63 Q85 68 92 63" stroke="#c2506a" stroke-width="2" fill="none" stroke-linecap="round"/>' +
+      "</svg>";
+  }
+
+  function barsHtml(bars) {
+    return bars.map(function (b) {
+      var label = b[0], v = b[1], max = b[2], color = b[3];
+      var pct = (typeof v === "number" && typeof max === "number")
+        ? Math.max(2, Math.round(v / max * 100)) : 100;
+      var text = typeof v === "number" ? String(v) : v;
+      return '<div class="ep-bar"><div class="ep-bar-label"><span>' + label +
+        '</span><span class="v">' + text + "</span></div>" +
+        '<div class="ep-track"><div class="ep-fill" style="width:' + pct +
+        "%;background:var(--ep-" + color + ')"></div></div></div>';
+    }).join("");
+  }
+
+  function sheetHtml(key) {
+    var st = HUD[key];
+    if (st.target === "player") {
+      var p = PLAYERS[key];
+      return '<div class="ep-sheet-sec">▼ ' + p.name + "　主角状态</div>" +
+        '<div class="ep-expchips">' + p.exp.map(function (e) {
+          return '<span class="ep-expchip">' + e[0] + " <b>" + e[1] + "</b></span>";
+        }).join("") + "</div>" +
+        '<div class="ep-sheet-sec">备注</div>' +
+        '<div class="ep-expchip" style="display:block;line-height:1.7">主角专属详情（素质・经验・装备）属 M2；M1 只列屏行可解析项。</div>';
+    }
+    var g = currentGirl(key);
+    var nm = girlNameOf(key, st.idx);
+    return '<div class="ep-sheet-sec">▼ ' + nm + "　好感度 / Palam</div>" +
+      '<div class="ep-expchips">' + g.exp.map(function (e) {
+        return '<span class="ep-expchip">' + e[0] + " <b>" + e[1] + "</b></span>";
+      }).join("") + "</div>" +
+      '<div class="ep-sheet-sec">▼ Palam（' + nm + "）</div>" +
+      '<div class="ep-palam-grid">' + g.palam.map(function (p) {
+        var val = p[2];
+        var pct = val > 0 ? Math.min(100, Math.max(2, Math.round(Math.log10(val + 1) / 6 * 100))) : 2;
+        return '<div class="ep-palam"><div class="ep-bar-label"><span>' + p[0] +
+          ' <i class="n">' + p[1] + '</i></span><span class="v">' + val + "</span></div>" +
+          '<div class="ep-track"><div class="ep-fill" style="width:' + pct +
+          '%;background:var(--ep-purple)"></div></div></div>';
+      }).join("") + "</div>";
+  }
+
+  /**
+   * 渲染某形态的 HUD（G2/G3 共用同一份骨架、同一个函数）。
+   * 差别只有：多角色页额外渲染角色条与立绘舞台。这就是「两页 HUD 统一」的落地方式。
+   */
+  function renderHud(key) {
+    var form = root.querySelector("[data-form-body='" + key + "']");
+    if (!form) return;
+    var st = HUD[key];
+    var isPlayer = st.target === "player";
+    var g = currentGirl(key);
+    var p = PLAYERS[key];
+    var name = isPlayer ? p.name : girlNameOf(key, st.idx);
+    var chips = isPlayer ? p.chips : g.chips;
+
+    var av = form.querySelector("[data-h-avatar]");
+    av.textContent = name.charAt(0);
+    av.style.borderColor = isPlayer ? "var(--ep-yellow)" : "var(--ep-green)";
+    av.style.color = isPlayer ? "var(--ep-yellow)" : "var(--ep-green)";
+    form.querySelector("[data-h-name]").textContent = name;
+
+    var pair = [chips[0] || ["", ""], chips[1] || ["", ""]];
+    [form.querySelector("[data-h-chip]"), form.querySelector("[data-h-chip2]")].forEach(function (el, i) {
+      var t = pair[i][0], cls = pair[i][1];
+      if (!t) { el.hidden = true; el.textContent = ""; return; }
+      el.hidden = false;
+      el.textContent = t;
+      el.className = "ep-chip" + (cls ? " " + cls : "");
+    });
+
+    form.querySelector("[data-h-sub]").textContent = isPlayer ? p.sub : g.sub;
+    form.querySelector("[data-h-bars]").innerHTML = barsHtml(isPlayer ? p.bars : g.bars);
+    form.querySelector("[data-sheet]").innerHTML = sheetHtml(key);
+
+    form.querySelector("[data-hs-char]").textContent = girlNameOf(key, st.idx);
+    form.querySelector("[data-hs-player]").textContent = p.name;
+    form.querySelectorAll("[data-hud-target]").forEach(function (b) {
+      b.setAttribute("aria-pressed", b.getAttribute("data-hud-target") === st.target ? "true" : "false");
+    });
+
+    renderRoster(key);
+    if (key === "multi") renderSprites(key);
+  }
+
+  function renderRoster(key) {
+    var form = root.querySelector("[data-form-body='" + key + "']");
+    var roster = form && form.querySelector("[data-roster]");
+    if (!roster) return;
+    if (key !== "multi") { roster.innerHTML = ""; return; }
+    var html = "";
+    for (var i = 0; i < state.chars; i++) {
+      var c = rosterGirl(i), nm = girlNameOf(key, i);
+      var sel = i === HUD.multi.idx && HUD.multi.target === "char";
+      html += '<button class="ep-rc' + (sel ? " sel" : "") + '" type="button" data-char="' + i + '">' +
+        '<span class="rcav">' + nm.charAt(0) + "</span>" + nm +
+        (c.danger ? '<span class="dot"></span>' : '<span class="dot safe"></span>') +
+        "</button>";
+    }
+    if (state.chars >= 10) html += '<span class="ep-roster-note">10 人（上限）</span>';
+    roster.innerHTML = html;
+  }
+
+  function renderSprites(key) {
+    var form = root.querySelector("[data-form-body='" + key + "']");
+    var strip = form && form.querySelector("[data-spritestrip]");
+    if (!strip) return;
+    var html = "";
+    for (var i = 0; i < state.chars; i++) {
+      var c = rosterGirl(i), nm = girlNameOf(key, i);
+      var sel = i === HUD.multi.idx && HUD.multi.target === "char";
+      html += '<button class="ep-sp' + (sel ? " sel" : "") + '" type="button" data-char="' + i + '">' +
+        spriteMarkup(c, nm, !sel) + '<span class="spname">' + nm + "</span></button>";
+    }
+    strip.innerHTML = html;
+    strip.setAttribute("data-count", String(state.chars));
+    var label = form.querySelector("[data-spritelabel]");
+    if (label) label.textContent = state.chars;
+  }
+
+  /** 切当前显示角色：只改壳层上下文，不提交指令。 */
+  function selectChar(key, i) {
+    if (key !== "multi" || i < 0 || i >= state.chars) return;
+    HUD.multi.idx = i;
+    HUD.multi.target = "char";
+    renderHud("multi");
+  }
+
+  /* ───────────────────────── 尺寸 / 断点 ───────────────────────── */
+
+  function sizeClass(w) {
+    if (w < 380) return "s";
+    if (w < 520) return "m";
+    if (w < 640) return "l";
+    return "xl";
+  }
+  function cmdCols(w) { return w < 380 ? 2 : (w < 640 ? 3 : 4); }
+  function hudCols(w) { return w < 520 ? 3 : 6; }
+  function palamCols(w) { return w < 380 ? 2 : (w < 520 ? 3 : 4); }
+
+  function apply() {
+    var dev = DEVICES[state.dev];
+    phone.style.width = (dev.w + 20) + "px";
+    phone.style.height = (dev.h + 20) + "px";
+    screen.style.width = dev.w + "px";
+    screen.style.height = dev.h + "px";
+    var sz = sizeClass(dev.w);
+    screen.setAttribute("data-size", sz);
+    screen.classList.toggle("has-notch", state.notch);
+
+    var cell = dev.w / state.cols;
+    var cjk = Math.round(cell * 2 * 10) / 10;
+    root.querySelectorAll(".ep-console").forEach(function (c) { c.style.fontSize = cjk + "px"; });
+
+    document.getElementById("ro-w").textContent = dev.w;
+    document.getElementById("ro-h").textContent = dev.h;
+    document.getElementById("ro-notch").textContent = state.notch ? "+34px" : "0";
+    document.getElementById("ro-size").textContent = sz;
+    document.getElementById("ro-cols").textContent = state.cols;
+    document.getElementById("ro-cell").textContent = (Math.round(cell * 10) / 10) + "px";
+    document.getElementById("ro-cjk").textContent = cjk + "px";
+    document.getElementById("ro-cmdcols").textContent = cmdCols(dev.w);
+    document.getElementById("ro-hudcols").textContent = hudCols(dev.w);
+    document.getElementById("ro-palamcols").textContent = palamCols(dev.w);
+  }
+
+  function bindGroup(attr, fn) {
+    root.querySelectorAll("[" + attr + "]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        root.querySelectorAll("[" + attr + "]").forEach(function (x) {
+          x.setAttribute("aria-pressed", x === b ? "true" : "false");
+        });
+        fn(b);
+      });
+    });
+  }
+  bindGroup("data-dev", function (b) { state.dev = b.getAttribute("data-dev"); apply(); });
+  bindGroup("data-cols", function (b) { state.cols = parseInt(b.getAttribute("data-cols"), 10); apply(); });
+  bindGroup("data-form", function (b) {
+    state.form = b.getAttribute("data-form");
+    root.querySelectorAll("[data-form-body]").forEach(function (f) {
+      f.classList.toggle("active", f.getAttribute("data-form-body") === state.form);
+    });
+    document.getElementById("ro-form").textContent = FORM_LABEL[state.form];
+    document.getElementById("ro-note").textContent = FORM_NOTE[state.form];
+  });
+  bindGroup("data-chars", function (b) {
+    state.chars = parseInt(b.getAttribute("data-chars"), 10);
+    if (HUD.multi.idx >= state.chars) HUD.multi.idx = 0;
+    renderHud("multi");
+  });
+  var notchBtn = document.getElementById("ep-notch-btn");
+  notchBtn.addEventListener("click", function () {
+    state.notch = !state.notch;
+    notchBtn.setAttribute("aria-pressed", state.notch ? "true" : "false");
+    notchBtn.textContent = state.notch ? "开" : "关";
+    apply();
+  });
+
+  /* ───────────────────────── 壳层交互 ───────────────────────── */
+
+  function activeForm() { return root.querySelector("[data-form-body].active"); }
+
+  function setSheet(form, open) {
+    var sheet = form.querySelector("[data-sheet]");
+    var btn = form.querySelector("[data-action='sheet']");
+    if (!sheet || !btn) return;
+    sheet.classList.toggle("open", open);
+    var hud = form.querySelector("[data-hud]");
+    if (hud) hud.classList.toggle("sheet-open", open);
+    form.classList.toggle("sheet-expanded", open);
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    btn.textContent = open ? "▲ 收起状态详情" : "▼ 状态详情";
+  }
+
+  function setTray(form, open) {
+    var tray = form.querySelector("[data-tray]");
+    if (!tray) return;
+    tray.classList.toggle("open", open);
+    form.classList.toggle("tray-expanded", open);
+    var btn = tray.querySelector("[data-action='tray']");
+    if (btn) {
+      if (!btn.getAttribute("data-orig")) btn.setAttribute("data-orig", btn.textContent);
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+      btn.textContent = open ? "▼ 收起指令" : btn.getAttribute("data-orig");
+    }
+    var hudBtn = form.querySelector(".ep-hud-btns [data-action='tray']");
+    if (hudBtn) hudBtn.classList.toggle("active", open);
+  }
+
+  function setInput(open) {
+    inputbar.classList.toggle("open", open);
+    knob.style.display = open ? "none" : "block";
+    if (open) input.focus();
+  }
+
+  function appendLine(html) {
+    var console_ = activeForm().querySelector(".ep-console");
+    if (!console_) return;
+    var d = document.createElement("div");
+    d.className = "ep-cl";
+    d.innerHTML = html;
+    console_.appendChild(d);
+    console_.scrollTop = console_.scrollHeight;
+  }
+
+  root.addEventListener("click", function (e) {
+    // HUD 主体切换：当前角色 ⇄ 主角（只换 HUD 数据，不提交指令）
+    var tgt = e.target.closest("[data-hud-target]");
+    if (tgt) {
+      var key = activeForm().getAttribute("data-form-body");
+      HUD[key].target = tgt.getAttribute("data-hud-target");
+      renderHud(key);
+      return;
+    }
+    // 角色条 / 立绘：只切壳层显示上下文（游戏内换目标走「变更对象[802]」）
+    var chip = e.target.closest("[data-char]");
+    if (chip) {
+      selectChar(activeForm().getAttribute("data-form-body"), parseInt(chip.getAttribute("data-char"), 10));
+      return;
+    }
+    var el = e.target.closest("[data-action]");
+    if (!el) return;
+    var form = activeForm();
+    switch (el.getAttribute("data-action")) {
+      case "kb": setInput(!inputbar.classList.contains("open")); break;
+      case "kb-open": setInput(true); break;
+      case "kb-close": setInput(false); break;
+      case "tray": setTray(form, !form.querySelector("[data-tray]").classList.contains("open")); break;
+      case "sheet": setSheet(form, !form.querySelector("[data-sheet]").classList.contains("open")); break;
+      case "sheet-open": setSheet(form, true); break;
+      case "strip": {
+        var wrap = form.querySelector("[data-stripwrap]");
+        if (wrap) {
+          var folded = wrap.classList.toggle("collapsed");
+          el.setAttribute("aria-expanded", folded ? "false" : "true");
+          el.textContent = folded ? "展开 ▸" : "收起 ▾";
+        }
+        break;
+      }
+      case "sprite": {
+        var s = form.querySelector("[data-sprite]");
+        if (s) {
+          var off = s.classList.toggle("off");
+          el.textContent = off ? "[隐藏立绘中]" : "[显示立绘]";
+        }
+        break;
+      }
+      case "anim":
+        el.textContent = el.textContent.indexOf("ON") >= 0 ? "[显示动画-OFF-]" : "[显示动画-ON-]";
+        break;
+      case "send": {
+        var t = input.value.trim();
+        if (!t) return;
+        appendLine("<span class='n'>&gt; " + t.replace(/</g, "&lt;") + "</span>");
+        input.value = "";
+        break;
+      }
+    }
+  });
+
+  input.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { e.preventDefault(); root.querySelector("[data-action='send']").click(); }
+  });
+  root.querySelectorAll(".ep-macro[data-fill]").forEach(function (m) {
+    m.addEventListener("click", function () {
+      input.value = m.getAttribute("data-fill");
+      input.focus();
+    });
+  });
+
+  /* 长按指令 → 提示卡；点按 → 执行回显 */
+  var pressTimer = null, longFired = false;
+  root.addEventListener("pointerdown", function (e) {
+    var c = e.target.closest(".ep-cmd");
+    if (!c) return;
+    longFired = false;
+    pressTimer = setTimeout(function () {
+      longFired = true;
+      tiptext.textContent = c.getAttribute("data-tip") ||
+        "「" + c.textContent + "」的原版 ToolTip 会显示在这里（长按触发）。";
+      tipmask.classList.add("open");
+    }, 430);
+  });
+  ["pointerup", "pointercancel"].forEach(function (ev) {
+    root.addEventListener(ev, function () { clearTimeout(pressTimer); });
+  });
+  root.addEventListener("click", function (e) {
+    if (e.target.closest("[data-tipmask]") || e.target.closest("[data-action]") ||
+        e.target.closest(".ep-pill") || e.target.closest("[data-char]") || e.target.closest("[data-hud-target]")) return;
+    if (e.target.closest(".ep-cmd")) {
+      var c = e.target.closest(".ep-cmd");
+      if (longFired) return;
+      c.classList.add("flash");
+      setTimeout(function () { c.classList.remove("flash"); }, 700);
+      appendLine("<span class='hl'>&gt; 执行：" + c.textContent + "</span>");
+      return;
+    }
+    if (tipmask.classList.contains("open")) tipmask.classList.remove("open");
+  });
+
+  /* ───────────────────────── 启动 ───────────────────────── */
+
+  apply();
+  renderHud("interact");
+  renderHud("multi");
+  document.getElementById("ro-note").textContent = FORM_NOTE[state.form];
+})();
+</script>
+</div>

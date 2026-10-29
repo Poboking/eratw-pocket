@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+        方案③ 报错上报（ErrorReportUploader）要出站 HTTP。缺这一行时整条上报链**在真机上
+        静默失效**：`URL.openConnection().getOutputStream()` 抛 SecurityException，被 uploader
+        的 runCatching 吞掉 → 报告只在本地落盘，端点一份也收不到，而屏上没有任何痕迹。
+        出包体检查不出这类错（它只比字符串进没进包），2026-10-27 首个真机包就是这么哑掉的。
+        只有 INTERNET，不申请任何读写外部存储的权限（存档走 SAF，见 SettingsActivity）。
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="false"
+        android:largeHeap="true"
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="false"
+        android:theme="@style/Theme.Eratw"
+        android:installLocation="auto">
+        <!--
+            icon/roundIcon：图出自语料游戏根的 icon.ico（角色头像，透明底），
+            mipmap-* 是旧式方图/圆图，mipmap-anydpi-v26 走 API 26+ 的 adaptive 层，
+            底色 @color/ic_launcher_background。缺省不声明时 launcher 给的是系统默认图标。
+        -->
+        <!--
+            installLocation="auto"：产物随包时 debug APK 为 364.6 MiB（-PeratwErbcCompress
+            压到 80.8 MiB），内部存储吃紧的机型允许系统把包放到外部存储。数据目录跟着包走，
+            GameStorage 的 externalRoot（Android/data/<包名>/files/eratw）不受影响。
+            缺省（未声明）等于 internalOnly，Android 5.0 的 8 GB 机型上装不下这么大的包。
+        -->
+
+                <activity
+            android:name=".dbg.DevKeepAliveActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+<activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:exported="true"
+            android:screenOrientation="sensorLandscape"
+            android:windowSoftInputMode="adjustResize">
+            <!--
+                screenOrientation="sensorLandscape"：eratw 是 PC 基准的横屏版面
+                （WindowX 1800px / 199 列），竖屏下屏宽只有横屏的一半，字号反推出的列数
+                掉到 ~90，折行与素材尺寸全部与原版分叉。锁横屏后 `CanvasConsoleView`
+                按屏宽反推字号即得 199 列，版面与素材比例复刻原版。
+                sensorLandscape（而非 landscape）保留左右横握两种朝向。
+                运行中不重建 Activity（configChanges 已吞掉 rotation），
+                所以左右翻转不会打断已装载的脚本状态。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            SettingsActivity 与 MainActivity 同口径声明 configChanges：设置页的改动只落在
+            内存模型里（SettingsActivity 类头：「点保存才写盘」），且没有 onSaveInstanceState；
+            Android 缺省在旋转/尺寸变化时销毁重建 Activity，重建后 onCreate 会重新读盘
+            （SettingsActivity.onCreate 的 store.load），用户敲过但没点「保存」的 123 项
+            就被静默丢回文件里的旧值。声明 configChanges 让这次重建不发生，模型与控件树
+            一起活下来（MainActivity 出于「不能杀掉正在跑的 VM」已经这么做）。
+        -->
+        <!--
+            设置页跟随系统方向（unspecified）：竖屏单列，横屏/平板按可用宽度自动加到两列或三列
+            （SettingsLayoutPolicy）。不再锁横屏 —— 设置页是壳层内容，不必复刻 PC 版面，
+            手机上竖着改设置更自然。configChanges 仍保留：旋转时 Activity 不重建，未保存的
+            123 项内存模型与列表滚动位置都不丢。
+        -->
+        <activity
+            android:name=".SettingsActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:screenOrientation="unspecified"
+            android:exported="false" />
+
+        <!--
+            T2-63（ART Baseline Profile）：允许 shell 用 `am profile start/stop` 采样本进程。
+
+            - 只有 `android:shell="true"` 才让 `adb shell am profile` 对**非 debuggable** 包生效
+              （API 29+ 的规则：debuggable 自动可采样，非 debuggable 必须显式声明 profileable）。
+              release 包是 `isDebuggable=false`，没有这一行采不到任何样本。
+            - 该元素在 API < 29 上是不认识的标签，被旧系统忽略，不改变运行期行为；
+              它**不**开放除采样之外的任何权限（不是 debuggable 的替代品）。
+            - 采集流程与 A/B 读数见 app/build.gradle.kts 的 `convertArtProfile` 任务说明。
+        -->
+        <profileable android:shell="true" />
+
+        <!-- 方案① 报错收集：报告文件的最小只读 Provider（安全面见 ReportFileProvider 类头）。
+             不引 androidx.core，FileProvider 不可用；分享面板只需要 query + openFile 两面。 -->
+        <provider
+            android:name=".ReportFileProvider"
+            android:authorities="com.eratw.port.android.reportfiles"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+    </application>
+
+</manifest>

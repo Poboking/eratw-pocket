@@ -1,0 +1,30 @@
+# 派生作品与大体量资产不入库
+reference/
+unpacked/
+assets-src/
+*.erbc
+
+# 游戏本体
+eratw-画蛇添足版*/
+
+# 构建
+.gradle/
+build/
+local.properties
+*.class
+target/
+
+# 出包用的报错上报端点/令牌（devtools/pack_release.py 读它；含共享口令，绝不入库）
+local.report.properties
+# wrangler 本地缓存（tools/report-endpoint/）
+.wrangler/
+
+# IDE / 系统
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+.kotlin/
+
+# golden 自跑快照（派生；PC 基准为准）
+fixtures/golden/baseline/self-*.txt
