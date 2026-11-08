@@ -50,7 +50,7 @@ import java.io.File
  *   --device model=MediumPhone.arm,version=33 \
  *   --device model=MediumPhone.arm,version=35 \
  *   --results-history-name m10-cloud-playability \
- *   --results-dir D:/DSH/ftl-results \
+ *   --results-dir <out-dir>/ftl-results \
  *   --timeout 45m \
  *   --num-flaky-test-attempts 0 \
  *   --use-orchestrator=false \
@@ -66,7 +66,7 @@ import java.io.File
  *   和结果包里 `logs` 目录下的 `logcat.log`；所以 [M10Evidence] 每行都同时打 logcat（tag `M10EVIDENCE`），
  *   拉回结果包后 `grep M10EVIDENCE logcat.log` 就是同一份取证文本。
  *   USB 真机（vivo V2199A）则直接拉目录：
- *   `adb pull /sdcard/Android/data/com.eratw.port.android/files/m10-evidence D:/DSH/m10-evidence/`。
+ *   `adb pull /sdcard/Android/data/com.eratw.port.android/files/m10-evidence <out-dir>/m10-evidence/`。
  *
  * 本地（有设备/模拟器时）同一条用例：
  * `./gradlew :app:connectedDebugAndroidTest`，或

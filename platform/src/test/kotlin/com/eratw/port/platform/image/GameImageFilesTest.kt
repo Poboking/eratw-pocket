@@ -2,6 +2,8 @@ package com.eratw.port.platform.image
 
 import java.io.File
 import java.util.Collections
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -94,5 +96,47 @@ class GameImageFilesTest {
         assertTrue("深度 4 的 stem 必须命中", files.locateForDebug("deepimg") == target)
         assertTrue("带扩展名的全名同样命中", files.locateForDebug("deepimg.png") == target)
         assertTrue("浅层不受影响", files.locateForDebug("shallowimg") != null)
+    }
+
+    /**
+     * 超限闸的边界口径（feat-memory-image-cache 的 bounds-first 快拒靠它，纯 JVM 可测）。
+     *
+     * `== maxSide` 放行（判定是 `>` 不是 `>=`）；任一边超了就拒；宽/高 ≤ 0（解码器
+     * 量不出的坏头）**不**算超限 —— 那由解码路径自己返回 null，闸只管「解得出来但太大」。
+     */
+    @Test
+    fun `超限判定按严格大于 - 等于上限放行 - 非正尺寸不判超限`() {
+        assertTrue(GameImageFiles.exceedsMaxSide(4097, 1, 4096))
+        assertTrue(GameImageFiles.exceedsMaxSide(1, 4097, 4096))
+        assertFalse("等于上限放行（LruCache 同款 > 口径）", GameImageFiles.exceedsMaxSide(4096, 4096, 4096))
+        assertFalse("坏头（量不出）不算超限", GameImageFiles.exceedsMaxSide(0, 0, 4096))
+        assertFalse(GameImageFiles.exceedsMaxSide(-1, 100, 4096))
+        // 语料实测的两张超限图（isaac_cg 8192x2304 / 服_笑顔动_25 8000x4000）都必须被拒
+        assertTrue(GameImageFiles.exceedsMaxSide(8192, 2304, 4096))
+        assertTrue(GameImageFiles.exceedsMaxSide(8000, 4000, 4096))
+    }
+
+    /**
+     * 尺寸打包（[GameImageFiles.resourceNameSize] 的 sizeCache 值形态）round-trip：
+     * 语料量级的宽高（4096 上限内、8192×2304 的记录值）打包再解包必须原样回来。
+     * 高 32 位放宽、低 32 位放高的位布局本身不需要钉死（只有这一对函数读写它），
+     * 钉的是 round-trip 与正数域 —— 打包值必须非负（Long 键值排序、日志可读）。
+     */
+    @Test
+    fun `尺寸打包 round-trip 在语料量级宽高下无损`() {
+        val cases = arrayOf(
+            intArrayOf(1, 1),
+            intArrayOf(1041, 1041),
+            intArrayOf(4096, 4096),
+            intArrayOf(8000, 4000),
+            intArrayOf(8192, 2304),
+        )
+        for (case in cases) {
+            val packed = GameImageFiles.packSize(case[0], case[1])
+            assertTrue("打包值必须非负（w=${case[0]} h=${case[1]}）", packed >= 0L)
+            val unpacked = GameImageFiles.unpackSize(packed)
+            assertEquals("宽 round-trip", case[0], unpacked[0])
+            assertEquals("高 round-trip", case[1], unpacked[1])
+        }
     }
 }

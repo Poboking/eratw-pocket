@@ -165,7 +165,7 @@ def main(argv=None) -> int:
 
     def show(tag: str, pk: tuple) -> None:
         print(f"[heap] {tag} committed峰={pk[0] / 1024:.0f}MiB alloc峰={pk[1] / 1024:.0f}MiB "
-              f"末值={pk[2] / 1024:.0f}/{pk[3]:.0f}MiB alloc低点={pk[4] / 1024:.0f}MiB")
+              f"末值={pk[2] / 1024:.0f}/{pk[3] / 1024:.0f}MiB alloc低点={pk[4] / 1024:.0f}MiB")
 
     first: list = []
     print("[heap] 冷启动，等首次装载…")

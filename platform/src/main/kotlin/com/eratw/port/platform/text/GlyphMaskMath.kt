@@ -71,6 +71,19 @@ object GlyphMaskMath {
     const val MAX_SIDE_PX: Int = 4096
 
     /**
+     * 离屏盒**面积**上限（像素）。单边 4096 只挡得住细长盒；4096×4096 的盒在宿主侧要同时
+     * 分配 Bitmap（4 B/px）+ `IntArray`（4 B/px）+ 覆盖度 `ByteArray`（1 B/px）≈ 9 B/px，
+     * 单字形峰值 85 MiB —— 512 MiB 堆机型上就是一次 OOM（`runCatching` 只能把它吞成
+     * 「本字形没有掩码」，随后每个码位都再撞一次）。
+     *
+     * 1 M px ⇒ 单字形峰值 ≈ 9.4 MiB，仍能装下 1000 px 级字号的 CJK 字形；
+     * 语料最大的 `GSETFONT` 字号是 100（`ERB/SHOP関連/TEST.ERB:663`），
+     * 测量回退常量是 100（`GraphicsMethods.kt` 的 `FALLBACK_MEASURE_FONT_SIZE`），
+     * 正常脚本永远碰不到这条闸。超限按「无此字形」回 null（契约允许），调用方落回推进盒。
+     */
+    const val MAX_AREA_PX: Int = 1 shl 20
+
+    /**
      * 契约约定的覆盖度值域上限（alpha 通道满值）。
      * spec: CONTRACT-M11-E §4「0..255 覆盖度」。
      */
@@ -163,16 +176,25 @@ object GlyphMaskMath {
      *   FontMetrics.top 是「最大上升」，比 ascent 保守，够装 CJK 满高字形）
      * @param belowBaselinePx 基线以下的取墨深度（≥0；宿主喂 `fm.bottom`）
      * @param padPx 四边外扩像素（悬出/斜体用，宿主按字号比例给，见 AndroidGlyphMaskHost）
-     * @return null = 入参非有限/为负/盒超 [MAX_SIDE_PX]，宿主放弃本掩码
+     * @return null = 入参非有限/为负/盒超 [MAX_SIDE_PX] 或面积超 [MAX_AREA_PX]，宿主放弃本掩码
      */
     data class OffscreenLayout(val width: Int, val height: Int, val drawX: Int, val baselineY: Int, val lineTopY: Int)
 
     fun layoutFor(advancePx: Float, aboveBaselinePx: Float, belowBaselinePx: Float, padPx: Int): OffscreenLayout? {
         if (!advancePx.isFinite() || !aboveBaselinePx.isFinite() || !belowBaselinePx.isFinite()) return null
         if (advancePx < 0f || aboveBaselinePx < 0f || belowBaselinePx < 0f || padPx < 0) return null
-        val width = ceil(advancePx).toInt() + 2 * padPx
-        val height = ceil(aboveBaselinePx + belowBaselinePx).toInt() + 2 * padPx
-        if (width <= 0 || height <= 0 || width > MAX_SIDE_PX || height > MAX_SIDE_PX) return null
+        // 单边先按 Float 比一次：Float 大值 → toInt() 饱和成 Int.MAX_VALUE 后再加 2*pad
+        // 会**回绕**成负数，只靠下面的 `width <= 0` 判断会得到「负宽度但看起来合法」的中间态。
+        if (advancePx > MAX_SIDE_PX || aboveBaselinePx > MAX_SIDE_PX || belowBaselinePx > MAX_SIDE_PX) return null
+        // 上下取墨高度相加也在 Float 里做会溢出成 +Inf（两个 3e38 相加），故先各自过闸再加。
+        val widthL = ceil(advancePx).toLong() + 2L * padPx
+        val heightL = ceil(aboveBaselinePx).toLong() + ceil(belowBaselinePx).toLong() + 2L * padPx
+        if (widthL <= 0L || heightL <= 0L) return null
+        if (widthL > MAX_SIDE_PX || heightL > MAX_SIDE_PX) return null
+        // 面积闸：见 [MAX_AREA_PX]（长条盒还得靠它，否则宿主单字形临时内存无界）。
+        if (widthL * heightL > MAX_AREA_PX) return null
+        val width = widthL.toInt()
+        val height = heightL.toInt()
         return OffscreenLayout(
             width = width,
             height = height,
@@ -189,13 +211,27 @@ object GlyphMaskMath {
     /**
      * 整块 ARGB → 行主序覆盖度数组（`size = width*height`）；RGB 通道丢弃。
      * 输入必须是 [layoutFor] 那档盒的 `Bitmap.getPixels` 原样数组（索引 y*width + x）。
+     *
+     * 维度非法（≤0）、`width*height` 溢出 Int、或 [pixels] 比盒短时返回**空数组**
+     * （不是抛异常）：上层 `inkBounds` 据此回 null → 宿主回 null → 调用方落回推进盒，
+     * 与「宿主不许抛」契约同口径。`width*height` 用 Long 算，避免 Int 乘法回绕出负数
+     * 后被 `ByteArray(负数)` 撞成 NegativeArraySizeException。
      */
     fun extractAlpha(pixels: IntArray, width: Int, height: Int): ByteArray {
-        val alpha = ByteArray(width * height)
-        for (i in 0 until width * height) {
+        val size = boxSizeOrNull(width, height) ?: return ByteArray(0)
+        if (pixels.size < size) return ByteArray(0)
+        val alpha = ByteArray(size)
+        for (i in 0 until size) {
             alpha[i] = alphaOf(pixels[i]).toByte()
         }
         return alpha
+    }
+
+    /** 盒像素数（Int 内）；维度非正 / 乘积溢出 Int ⇒ null（纯算术守卫，不分配）。 */
+    private fun boxSizeOrNull(width: Int, height: Int): Int? {
+        if (width <= 0 || height <= 0) return null
+        val n = width.toLong() * height.toLong()
+        return if (n > Int.MAX_VALUE.toLong()) null else n.toInt()
     }
 
     /** 墨迹包围盒，半开区间：x ∈ [left, right)，y ∈ [top, bottom)。 */
@@ -211,6 +247,10 @@ object GlyphMaskMath {
      * 缺省阈值 0：抗锯齿淡边一律算墨（覆盖度语义里 1/255 也是墨）。
      */
     fun inkBounds(alpha: ByteArray, width: Int, height: Int, threshold: Int = 0): InkBounds? {
+        // 维度/长度守卫：alpha 比盒短时逐像素索引会抛 ArrayIndexOutOfBounds，
+        // 空盒也会让下面的 `left/right` 初值失去意义。两者都按「无墨」回 null。
+        val size = boxSizeOrNull(width, height) ?: return null
+        if (alpha.size < size) return null
         var left = width
         var top = height
         var right = -1
@@ -230,9 +270,23 @@ object GlyphMaskMath {
         return InkBounds(left, top, right, bottom)
     }
 
-    /** 按包围盒裁覆盖度；输出仍是行主序、size = bounds.width × bounds.height。 */
+    /**
+     * 按包围盒裁覆盖度；输出仍是行主序、size = bounds.width × bounds.height。
+     *
+     * 包围盒非法（宽/高非正、左上为负、右缘越过盒宽）或源数组比「最后一行右缘」短时
+     * 返回**空数组**：宿主随即被核心侧 `GlyphMask.isSane` 判成无此字形（调用方落回推进盒），
+     * 而不是从这里抛出越界的 ArrayIndexOutOfBounds / NegativeArraySizeException。
+     */
     fun cropAlpha(alpha: ByteArray, width: Int, bounds: InkBounds): ByteArray {
-        val out = ByteArray(bounds.width * bounds.height)
+        if (width <= 0) return ByteArray(0)
+        if (bounds.width <= 0 || bounds.height <= 0) return ByteArray(0)
+        if (bounds.left < 0 || bounds.top < 0 || bounds.right > width) return ByteArray(0)
+        val size = bounds.width.toLong() * bounds.height.toLong()
+        if (size > Int.MAX_VALUE.toLong()) return ByteArray(0)
+        // 源数组必须覆盖到最后一行 [left, right) 这一段，否则 arraycopy 会越界。
+        val lastEnd = (bounds.top + bounds.height - 1).toLong() * width + bounds.right
+        if (lastEnd > alpha.size) return ByteArray(0)
+        val out = ByteArray(size.toInt())
         for (y in 0 until bounds.height) {
             val srcRow = (bounds.top + y) * width + bounds.left
             System.arraycopy(alpha, srcRow, out, y * bounds.width, bounds.width)

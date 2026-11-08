@@ -47,7 +47,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -60,21 +59,23 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.positionChange
 import kotlin.math.abs
-import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.launch
+
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -82,6 +83,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
@@ -99,19 +102,29 @@ import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.eratw.port.core.host.ConsoleOption
+import com.eratw.port.core.host.PALETTE_MIN_SWATCH_RUN
+import com.eratw.port.core.host.paletteSwatchMask
+import com.eratw.port.android.portrait.PortraitShellContent
 import com.eratw.port.platform.input.InputBarState
 import com.eratw.port.render.canvas.CanvasConsoleView
+import com.eratw.port.render.input.MacroKeys
 import kotlinx.coroutines.delay
 import kotlin.math.cos
 import kotlin.math.sin
+import com.eratw.port.android.ui.EratwButtonRow
+import com.eratw.port.android.ui.EratwDialogCard
+import com.eratw.port.android.ui.EratwFilledButton
+import com.eratw.port.android.ui.EratwInk
+import com.eratw.port.android.ui.EratwQuietButton
+import com.eratw.port.android.ui.EratwText
+import com.eratw.port.android.ui.EratwTextTone
 
 /**
  * 壳层 UI 的全部可观测量（2026-10-23 起壳层用 Jetpack Compose）。
@@ -124,8 +137,13 @@ class ShellState {
     /** 输入框文本（受控）。 */
     var input by mutableStateOf("")
 
-    /** 输入框提示语（按等待类型/宿主状态变化）。 */
-    var hint by mutableStateOf("输入后回车提交")
+    /**
+     * 输入框提示语（按等待类型/宿主状态变化）。
+     *
+     * 初始值走文案表中文档（ShellState 无 Context 可判语言；运行时立刻被
+     * [com.eratw.port.platform.input.InputHint] 按等待类型覆盖，缺省档只在首帧可见）。
+     */
+    var hint by mutableStateOf(PortraitShellCopy.ZH.inputHintDefault)
 
     /** 是否在等整数输入：决定要不要弹数字键盘。 */
     var numberKeyboard by mutableStateOf(false)
@@ -144,6 +162,16 @@ class ShellState {
      * 隐式的「点任意处」通道显式化；提示语同步换成 [com.eratw.port.platform.input.InputHint.CONTINUE]。
      */
     var awaitingAnyKey by mutableStateOf(false)
+
+    /**
+     * 当前等待请求的宏预填开关（WIRE-5 / C-MACRO-FLAG@1）—— **镜像**，非独立真源。
+     *
+     * [MainActivity.refreshShell] 每帧从 `InputBarState.macroEnabled`（⇐
+     * `host.pendingRequest()?.macroEnabled`）刷进来，与 [awaitingAnyKey] 同一条纪律。
+     * 缺省 true = 允许宏预填；false ⇒ 宏条按钮点下去不预填（[MacroKeys.prefillAllowed]）。
+     * 真源始终是 `InputRequest.macroEnabled`（R4-AC3）。
+     */
+    var macroEnabled by mutableStateOf(true)
 
     /**
      * 输入条是否展开（2026-10-23 负责人定调：**默认隐藏**，往上滑或点底部小凸边才出现）。
@@ -174,6 +202,32 @@ class ShellState {
      */
     var railButtonSize by mutableStateOf(UiPrefs.DEFAULT_RAIL_BUTTON_SIZE)
 
+    /**
+     * 屏幕方向是否被锁住（右上角键盘旁的方向锁控制；会话级，不持久化）。
+     *
+     * true = 冻在锁定那一刻的方向，不随传感器翻转/转竖屏；false = 方向权交还
+     * manifest 的 `sensorLandscape`。切换由 [MainActivity] 写 `requestedOrientation`
+     * 完成，这里只镜像开关供图标着色/读屏。
+     */
+    var orientationLocked by mutableStateOf(false)
+
+    /**
+     * 竖屏 HUD 的「状态详情」抽屉展开态（竖屏设计稿 §3.6.1 ⑤/⑥）。
+     *
+     * 只在 `EratwShell` 的竖屏分支读写（横屏路径不读不写，§1.3 横屏零改动）；
+     * 跨屏复位在竖屏分支的形态接线里做（每次形态变化收起，§9 检查单「无残留态」）。
+     */
+    var hudOpen by mutableStateOf(false)
+
+    /**
+     * 竖屏指令盘展开态（竖屏设计稿 §4.3）。
+     *
+     * 只在 `EratwShell` 的竖屏分支读写（横屏路径不读不写）。G0 自动展开、跨屏复位与
+     * `UiPrefs.command_tray_open` 的读写都在竖屏分支接线；这里只是壳层可观测的运行态
+     * ——盘的开合只跟用户开关，不跟 chips 扫描抖动（竖屏设计稿 §10-4）。
+     */
+    var trayOpen by mutableStateOf(false)
+
     /** 右侧选项栏候选（来自引擎的 `GameHost.currentOptions()` 快照；空 = 不显示）。 */
     var chips by mutableStateOf<List<ConsoleOption>>(emptyList())
 
@@ -203,8 +257,16 @@ class ShellState {
     /** 进度条下方的明细行（`已解包 1234/3971 条`）。 */
     var progressText by mutableStateOf("")
 
-    /** 启动失败文案（非 null 时显示失败覆盖层 + 重试按钮）。 */
+    /** 失败文案（非 null 时显示失败覆盖层 + 重试按钮）。 */
     var failure by mutableStateOf<String?>(null)
+
+    /**
+     * 这一屏按哪一族讲（标题与说明句都由它选，判据见 [FailureScreenKind]）。
+     *
+     * 缺省 LOAD：`failure` 非 null 时界面侧一定先被 `renderFailureIfNeeded` 置过位，
+     * 这一枚只是让状态对象单独拿出来用（预览/测试）时不至于说出「包坏了」。
+     */
+    internal var failureKind by mutableStateOf(FailureScreenKind.LOAD)
 
     /**
      * 失败屏上「回到标题」是否可点（GOTOTITLE-CHANNEL）。
@@ -215,10 +277,11 @@ class ShellState {
     var failureCanBackToTitle by mutableStateOf(false)
 
     /**
-     * 失败屏「兼容模式重试」是否点亮（2026-10-28 低端机 OOM）。
+     * 失败屏「少占内存再试」是否点亮（2026-10-28 低端机 OOM）。
      *
-     * 只有「堆不足」族失败才亮（真 OOM 或堆预检不足，`GameHost.canRetryCompat`）：
-     * 只有这一族失败换兼容档才有意义 —— 格式坏/文件缺失重装多少遍都一样。
+     * 只有「内存不够」族失败才亮（预检拒载 / 装载中真 OOM 两族都亮，`GameHost.canRetryCompat`）：
+     * 只有这一族失败换省内存档才有意义 —— 格式坏/文件缺失重装多少遍都一样。
+     * **亮不等于会自动降档**：自动降档只认乙族（见 [shouldAutoRetryCompat]）。
      */
     var failureCanRetryCompat by mutableStateOf(false)
 
@@ -227,7 +290,41 @@ class ShellState {
      * 本次失败落出了报告文件（`GameHost.lastReportFile`）才亮，免得点了没东西可给。
      */
     var failureReportReady by mutableStateOf(false)
+
+    /**
+     * 失败屏「结束应用」是否点亮：重试已经试过一回还是失败、或失败本身就是「等不到上一局让出堆」。
+     * 判据在 [failureActions]，与其余出口同源，不在 Activity 里各写一遍。
+     */
+    var failureCanExitApp by mutableStateOf(false)
+
+    /**
+     * 那颗出口按下去是**重启**还是只是结束（判据见 [failureActions] 的 `exitIsRestart`）。
+     *
+     * 只有「上一局的内存还没释放」这一屏为 true：那一屏的出路本来就是「换一个干净进程」，
+     * 手把手让玩家自己去桌面找图标没有任何收益。其余失败族保持「结束应用」——
+     * 玩家可能只是想先退出去干别的，替他把应用再拉起来是自作主张。
+     */
+    var failureExitIsRestart by mutableStateOf(false)
+
+    /** 失败屏的额外说明行（null = 不占屏）。当前只有一句：重试已试过一回，再说清它为什么不会变。 */
+    var failureNote by mutableStateOf<String?>(null)
+
+    /**
+     * 冷启补报的「上次异常退出」报告（`RunWatch.consumeDirtyExitReportFile` 镜进来）；
+     * null = 没有。只承接**在屏前死掉**那一类（后台被系统回收不算，见 `RunTrail.MARK_BACKGROUND`）。
+     * 玩家点掉提示卡（复制 / 分享 / 知道了）后清空。
+     */
+    var pendingDirtyExitReport by mutableStateOf<java.io.File?>(null)
 }
+
+/**
+ * 脏退出报告提示要不要上屏（`DirtyExitReportDialog` 的唯一判据）。
+ *
+ * 三道闸都该过才弹：装载没在转（不盖进度）、不在失败屏（那张屏有自己的报告出口，
+ * 两张报告卡同屏互相抢话）、报告文件真实存在（点了得有东西可给）。
+ */
+internal fun dirtyExitNoticeVisible(loading: Boolean, failure: String?, report: java.io.File?): Boolean =
+    !loading && failure == null && report?.isFile == true
 
 /** 一枚宏：`label` 显示在宏条上，`content` 是点下去要预填的文本（原版 F 键宏语义）。 */
 data class ShellMacro(val label: String, val content: String)
@@ -331,7 +428,13 @@ internal fun railMetricsForFontScale(metrics: RailMetrics, fontScale: Float): Ra
 }
 
 /**
- * 一行三枚时每枚的宽度（与 `weight(1f)` 的等分结果一致），横向滑动行沿用同一宽度。
+ * Horizontal-scroll baseline: three fixed-width buttons fill the rail.
+ * This is not a per-row cap; ordinary rows scroll when they exceed three.
+ */
+internal const val RAIL_MAX_CHIPS_PER_ROW = 3
+
+/**
+ * 一行三枚时每枚的宽度（与 `weight(1f)` 的等分结果一致）。
  * 行内按钮间距是 [RAIL_ROW_SPACING]，三枚之间共两处 ⇒ 宽度 = (栏宽 - 两处间距) / 3。
  */
 internal fun railButtonWidth(railWidth: Dp): Dp = (railWidth - RAIL_ROW_SPACING * 2) / 3f
@@ -377,38 +480,109 @@ private fun railButtonColors() = ButtonDefaults.buttonColors(
  */
 private const val SUBMIT_DEBOUNCE_MS = 250L
 
-/**
- * 把引擎选项按**游戏显示行**分组（连续相同的 `lineSerial` 为一行）。
- *
- * 引擎的 [com.eratw.port.core.host.LineBufferConsoleSink.displayOptions] /
- * `currentOptions()` 已按 `(lineSerial, startCol, endCol)` 排好；这里只做相邻分组，
- * 不重新排序、不跨行合并。浮岛按钮 `lineSerial = Long.MAX_VALUE`，自然落在最后。
- */
-private fun railRowsOf(chips: List<ConsoleOption>): List<List<ConsoleOption>> {
+/** 连续色块按钮进入**密集调色板模式**后的列数（16×8 的原版调色板折成 8×16）。 */
+internal const val PALETTE_CHIPS_PER_ROW = 8
+
+/** 一条游戏行至少要有这么多连续色块，才值得切成密集模式；低于此值仍按普通按钮排。 */
+internal const val PALETTE_MIN_CHIPS_PER_ROW = PALETTE_MIN_SWATCH_RUN
+
+/** Normal row keeps the whole game line and scrolls past three; palette rows use dense cells. */
+internal data class RailLayoutRow(
+    val chips: List<ConsoleOption>,
+    val paletteColumns: Int? = null,
+)
+
+/** Group by game line, then split only palette runs into dense rows; ordinary segments stay whole. */
+internal fun railLayoutOf(chips: List<ConsoleOption>): List<RailLayoutRow> {
     if (chips.isEmpty()) return emptyList()
-    val rows = ArrayList<MutableList<ConsoleOption>>()
-    var lastSerial = Long.MIN_VALUE
-    for (chip in chips) {
-        if (rows.isEmpty() || chip.lineSerial != lastSerial) {
-            rows.add(ArrayList())
-            lastSerial = chip.lineSerial
-        }
-        rows[rows.lastIndex].add(chip)
+    val out = ArrayList<RailLayoutRow>()
+    val paletteMask = paletteSwatchMask(chips)
+    var start = 0
+    while (start < chips.size) {
+        val serial = chips[start].lineSerial
+        var end = start
+        while (end < chips.size && chips[end].lineSerial == serial) end++
+        appendRailLine(chips, paletteMask, start, end, out)
+        start = end
     }
-    return rows
+    return out
 }
 
-/** 选项栏的一行：行内按钮按屏上顺序并排；最多 3 枚，超过 3 枚时横向滚动，保持可点大小。 */
+/**
+ * 只把同一游戏行里**连续 8 枚以上**色块识别为调色板，其余按钮无论有没有颜色都走普通行。
+ *
+ * 这样单个/少量彩色 `■`（普通开关、状态灯）不会被误判；调色板前后若还排着普通按钮，
+ * 也只切出色块那一段，普通按钮仍按三列/两列/一枚排。
+ */
+private fun appendRailLine(
+    chips: List<ConsoleOption>,
+    paletteMask: BooleanArray,
+    start: Int,
+    end: Int,
+    out: MutableList<RailLayoutRow>,
+) {
+    var normalStart = start
+    var i = start
+    while (i < end) {
+        if (!paletteMask[i]) {
+            i++
+            continue
+        }
+        var runEnd = i + 1
+        while (runEnd < end && paletteMask[runEnd]) runEnd++
+        if (runEnd - i >= PALETTE_MIN_CHIPS_PER_ROW) {
+            appendNormalRows(chips, normalStart, i, out)
+            var paletteStart = i
+            while (paletteStart < runEnd) {
+                val paletteEnd = minOf(paletteStart + PALETTE_CHIPS_PER_ROW, runEnd)
+                out += RailLayoutRow(
+                    chips = chips.subList(paletteStart, paletteEnd),
+                    paletteColumns = PALETTE_CHIPS_PER_ROW,
+                )
+                paletteStart = paletteEnd
+            }
+            normalStart = runEnd
+        }
+        i = runEnd
+    }
+    appendNormalRows(chips, normalStart, end, out)
+}
+
+private fun appendNormalRows(
+    chips: List<ConsoleOption>,
+    start: Int,
+    end: Int,
+    out: MutableList<RailLayoutRow>,
+) {
+    if (start >= end) return
+    // 普通段恢复为「一条游戏显示行 = 一条 RailLayoutRow」；超过三枚由 UI 横向滚动。
+    // 不在这里按三枚拆行：玩家报的是选项没被识别，不是行内溢出。
+    out += RailLayoutRow(chips = chips.subList(start, end), paletteColumns = null)
+}
+
+/** 兼容旧消费点（竖屏指令盘 / 几何测试）：只要行内容，不要调色板列数元数据。 */
+internal fun railRowsOf(chips: List<ConsoleOption>): List<List<ConsoleOption>> =
+    railLayoutOf(chips).map { it.chips }
+
+/** Ordinary rows: 1-3 buttons share width, >3 scroll with fixed width; palette rows draw dense cells. */
 @Composable
 private fun OptionRailRow(
-    row: List<ConsoleOption>,
+    row: RailLayoutRow,
     metrics: RailMetrics,
     enabled: Boolean,
     onOption: (String) -> Unit,
 ) {
-    // 用户反馈（2026-10-27）：栏宽 200dp 下 4 枚等分只剩约 47dp，10sp 标题被挤到看不清。
-    // 改为「最多 3 枚并排，第 4 枚起一律横向滑动」；滑动行沿用三枚时的固定宽，避免再次压缩。
-    val overflow = row.size > 3
+    if (row.paletteColumns != null) {
+        PaletteChipRow(
+            row = row,
+            metrics = metrics,
+            enabled = enabled,
+            onOption = onOption,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        return
+    }
+    val overflow = row.chips.size > RAIL_MAX_CHIPS_PER_ROW
     val scroll = rememberScrollState()
     Row(
         modifier = Modifier
@@ -416,13 +590,16 @@ private fun OptionRailRow(
             .then(if (overflow) Modifier.horizontalScroll(scroll) else Modifier),
         horizontalArrangement = Arrangement.spacedBy(RAIL_ROW_SPACING),
     ) {
-        row.forEach { chip ->
+        row.chips.forEach { chip ->
             OptionChipButton(
-                label = chip.label,
-                ordinal = chip.ordinal,
+                spec = OptionChipSpec(chip.label, chip.ordinal, chip.colorRgb.takeIf { !chip.isColorSwatch }),
                 metrics = metrics,
                 enabled = enabled,
-                modifier = if (overflow) Modifier.width(railButtonWidth(metrics.railWidth)) else Modifier.weight(1f),
+                modifier = if (overflow) {
+                    Modifier.width(railButtonWidth(metrics.railWidth))
+                } else {
+                    Modifier.weight(1f)
+                },
             ) { onOption(chip.submitValue) }
         }
     }
@@ -432,11 +609,15 @@ private fun OptionRailRow(
  * 设置页「选项按钮大小」用的实物预览：照右栏的同一条绘制通路画一行示例按钮，
  * 几何由 [railMetricsOf] 给出 ⇒ 预览与游戏里的右栏同源，不会各画一份后走形。
  *
- * 三枚示例按「一行三枚」的固定宽排（与 [OptionRailRow] 溢出行的口径一致），
+ * 三枚示例按「一行三枚」的固定宽排（与 [railButtonWidth] 同源），
  * 整条可横向滑动：特大档的栏宽会超过设置卡片，裁掉就看不出真实大小了。
  */
 @Composable
-internal fun RailSizePreview(metrics: RailMetrics, modifier: Modifier = Modifier) {
+internal fun RailSizePreview(
+    metrics: RailMetrics,
+    labels: List<Pair<String, Int>>,
+    modifier: Modifier = Modifier,
+) {
     val buttonWidth = railButtonWidth(metrics.railWidth)
     val scroll = rememberScrollState()
     Row(
@@ -444,10 +625,9 @@ internal fun RailSizePreview(metrics: RailMetrics, modifier: Modifier = Modifier
         horizontalArrangement = Arrangement.spacedBy(RAIL_ROW_SPACING),
     ) {
         // 序号一位/两位/五位各给一枚：一眼看出角标让位与标题截断在不同档位下的实际效果。
-        listOf("会话" to 31, "移动到广场" to 400, "购买[酒]" to 10000).forEach { (label, ordinal) ->
+        labels.forEach { (label, ordinal) ->
             OptionChipButton(
-                label = label,
-                ordinal = ordinal,
+                spec = OptionChipSpec(label, ordinal, null),
                 metrics = metrics,
                 modifier = Modifier.width(buttonWidth),
             ) {}
@@ -466,6 +646,117 @@ internal fun RailSizePreview(metrics: RailMetrics, modifier: Modifier = Modifier
 internal fun showContinueButton(awaitingAnyKey: Boolean): Boolean = awaitingAnyKey
 
 /**
+ * 失败屏「重试已经试过一回还是失败」那句提示的原话（判据见 [failureActions]）。
+ *
+ * 中文兼容口（照 UpdateNotifyCopyTest 的口径：兼容口走的必须是中文那一档的表）——
+ * failureActions 是无 Context 的纯函数，且 ShellUiFailureActionsTest 按此名引用，值不变。
+ */
+internal val REPEATED_FAILURE_NOTE = PortraitShellCopy.ZH.repeatedFailureNote
+
+/**
+ * 失败屏这一屏该给哪几枚出口（[FailureOverlay] 的唯一判据来源）。
+ *
+ * @param canRetry 「重试」= 拆会话重新装载
+ * @param canRetryCompat 「少占内存再试」（「内存不够」两族都亮）
+ * @param canBackToTitle 「回到标题」（宿主认可能复活时才亮）
+ * @param canExitApp 「结束应用」= 把屏上那句自救指引变成一颗按钮
+ * @param exitIsRestart 这颗按钮按下去是**重启应用**（换干净进程）还是只结束（见 [failureActions]）
+ * @param note 额外说明行；null = 不占屏
+ */
+internal class FailureActions(
+    val canRetry: Boolean,
+    val canRetryCompat: Boolean,
+    val canBackToTitle: Boolean,
+    val canExitApp: Boolean,
+    val exitIsRestart: Boolean,
+    val note: String?,
+)
+
+/**
+ * 失败屏出口判据 —— 2026-10-30 玩家反馈「点过重试，但是重复报错了」的修复契约。
+ *
+ * ## 现象与根因
+ *
+ * 失败屏上唯一恒亮的是「重试」，而它走的正是刚刚失败的那同一条路：
+ * - **重试又失败**（入参 [repeated] = 玩家刚在失败屏上按过「重试」，由 `MainActivity` 记账）：
+ *   装载/开局失败 → 点重试 → 新宿主在同一条路上再撞一次。旧版这里除了再点一次没有别的
+ *   事可做，玩家看到的就是「报错 → 重试 → 又报同一个错」的圈。判据取「按过重试」这个
+ *   事实，**不取失败文案逐字相同** —— 真 OOM 那句里嵌着每次都不一样的字节数与实测 MiB
+ *   读数，比字面等于永远判不出重复。
+ * - **「重启停止」屏**（`MainActivity.renderRestartStuck`）：旧版那句文案让玩家
+ *   「结束本应用进程后重开」，可这一屏的按钮里**没有**结束应用、只有「重试」——而它等的
+ *   就是那个不肯让出堆的旧会话，再点一次还是等满 `MainActivity.RESTART_HARD_WAIT_MS`。
+ *   指引与出口分家，等于没指引。
+ * - **「上一局的内存还没释放」屏**（`GameHost.staleSessionHeap`，2026-10-31 真机
+ *   「返回键退出再进 ⇒ 每次重试都进不去」）：同一句指引、同一个缺口，但它比「重启停止」
+ *   更硬 —— 那 184 MiB 是**活对象**（失败屏静置 30 s、`Heap Alloc` 恒定不变），本进程内
+ *   再重试多少次都不会自己消失，只有换进程一条路。所以这一屏不等 `repeated`：
+ *   **第一次上屏就把出口点亮**，并且那颗出口是「重启应用」（杀进程后自己拉回来），
+ *   不是让玩家自己去桌面找图标（[exitIsRestart]）。
+ *
+ * ## 判据
+ *
+ * 「结束应用」只在**再点重试也不会变**的这两屏（外加第一次就无解的旧会话屏）点亮；
+ * 其余按钮一枚都不因此消失 —— 玩家可能刚腾出存储、可能刚杀掉后台别的应用，那些只有
+ * 他自己知道，把「重试」收走就是替他把活路堵上。
+ *
+ * 抽成 internal 纯函数便于 JVM 单测覆盖（同 [showContinueButton] 的先例）。
+ */
+internal fun failureActions(
+    repeated: Boolean,
+    restartStuck: Boolean,
+    canBackToTitle: Boolean,
+    canRetryCompat: Boolean,
+    staleSession: Boolean = false,
+): FailureActions = FailureActions(
+    canRetry = true,
+    canRetryCompat = canRetryCompat,
+    canBackToTitle = canBackToTitle,
+    // 旧会话那 184 MiB 是活对象，本进程内重试只会再撞同一张屏 ⇒ 第一次就给出口，不等 repeated。
+    canExitApp = repeated || restartStuck || staleSession,
+    // 只有它的出路是「换一个干净进程」，所以那颗按钮写成「重启应用」并真的拉回来；
+    // 「重启停止」虽然也要退，但它的成因是旧会话不肯让出堆（重试还有意义），保持「结束应用」。
+    exitIsRestart = staleSession,
+    note = if (repeated) REPEATED_FAILURE_NOTE else null,
+)
+
+/**
+ * 「内存不够」这一类失败要不要**先把装载降到省内存档再试一次**，而不是直接把玩家留在
+ * 失败屏上（`MainActivity.renderFailureIfNeeded` 的唯一判据）。
+ *
+ * ## 为什么这一刀归屏自己判
+ *
+ * 「少占内存再试」这颗按钮 2026-10-28 就在失败屏上了，缺省档失败 → 玩家按它 → 省内存档
+ * （串行 meta + 逢段必收）确实装得下 —— 但**这一步是让玩家替我们做诊断**。玩家面看到的是：
+ * 一张写着「请用 ≥6 GB RAM 机型」的屏，和两颗名字他不知道什么意思的按钮。同批反馈里
+ * 「点过重试，但是重复报错了」「你们试试兼容模式，按理说不应该呀」两句正好是这件事的两头：
+ * 一句说明他会按重试、不会按省内存档，一句说明那是别人教了才试的。
+ *
+ * ## 只有**乙**族才自动降档（2026-11 真机「闪退、什么都没看到」的修复点）
+ *
+ * [HeapFailureStage] 把「内存不够」分成两族，差别是**装载到底开始了没有**：
+ * - [HeapFailureStage.LOAD_OOM]（乙）：预检放行了，装载/装配真撞了 OOM，实际峰值比估算高
+ *   ⇒ 换档确实有救，自动降一档的代价只是「多等一次装载」。
+ * - [HeapFailureStage.PREFLIGHT_REJECTED]（甲）：静态估算就判「上限 < 需求」，装载一个字节
+ *   都没开始。这里自动再试一次＝明知装不下还硬试：省内存档靠绕开同一道闸才起得来，装到
+ *   一半 OOM，进程随后被系统随机一刀 —— 真机 vivo V2199A 实测玩家**一张画面都没看到**，
+ *   致命 OOM 落在性能 SDK 线程和一次 dumpsys 上。所以甲族必须**停在失败屏**，把这一次
+ *   尝试留给玩家的知情选择（按钮仍亮，屏上明说「也可能还是装不下」）。
+ *
+ * ## 另外两条死圈闸
+ *
+ * - [compatInUse]：已经在省内存档了就没得更降 —— 兼容档再失败时必须上屏。
+ * - [autoRetried]：一次会话只自动降这一回。pump 每帧都会调 [renderFailureIfNeeded]，
+ *   没有这一枚闩锁就会「失败 → 自动降档 → 又失败 → …」原地转圈，正是上一刀
+ *   （[failureActions]）拆掉的那种圈。
+ */
+internal fun shouldAutoRetryCompat(
+    heapFailure: HeapFailureStage,
+    compatInUse: Boolean,
+    autoRetried: Boolean,
+): Boolean = heapFailure == HeapFailureStage.LOAD_OOM && !compatInUse && !autoRetried
+
+/**
  * 选项栏底部的「继续」脚钮 —— WAIT 系页面的显式推进键。
  *
  * 原版这类页面（`PRINTW` / `PRINTFORMW` / `WAIT` / `WAITANYKEY`）**不在屏上印任何 `[N]`**，
@@ -480,6 +771,7 @@ internal fun showContinueButton(awaitingAnyKey: Boolean): Boolean = awaitingAnyK
  */
 @Composable
 private fun ContinueButton(metrics: RailMetrics, enabled: Boolean, onClick: () -> Unit) {
+    val copy = PortraitShellCopy.of(UiPrefs.settingsLanguage(LocalContext.current))
     Button(
         onClick = onClick,
         enabled = enabled,
@@ -494,22 +786,28 @@ private fun ContinueButton(metrics: RailMetrics, enabled: Boolean, onClick: () -
             .fillMaxWidth()
             .padding(top = RAIL_ROW_SPACING, bottom = 16.dp)
             .height(metrics.buttonHeight)
-            .semantics { contentDescription = "继续，翻到下一屏" },
+            .semantics { contentDescription = copy.continueButtonA11y },
     ) {
-        Text("继续 ▶", fontSize = metrics.labelTextSize, maxLines = 1)
+        Text(copy.continueButton, fontSize = metrics.labelTextSize, maxLines = 1)
     }
 }
 
-/** 深色主题（与游戏黑底同调；Material3 只服务壳层）。 */
+/**
+ * 深色主题（与游戏黑底同调；Material3 只服务壳层）。
+ *
+ * 色值全部转引 [EratwInk]：设置页、壳层浮层与各类弹窗共用同一份墨色，改一处不会让另一处分叉。
+ * `primary` 比 [EratwInk.accent] 暗一档是有意的 —— Material3 拿它当开关轨道与焦点环，
+ * 用亮绿会把整屏的控件点亮，这里要的是压住的绿。
+ */
 @Composable
 fun EratwTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
             primary = Color(0xFF7FAF7F),
-            background = Color.Black,
-            surface = Color(0xFF262626),
-            onBackground = Color(0xFFEDEDED),
-            onSurface = Color(0xFFEDEDED),
+            background = EratwInk.background(),
+            surface = EratwInk.panel(),
+            onBackground = EratwInk.text(),
+            onSurface = EratwInk.text(),
         ),
         content = content,
     )
@@ -542,11 +840,29 @@ fun EratwShell(
     onRetry: () -> Unit = {},
     onRetryCompat: () -> Unit = {},
     onBackToTitle: () -> Unit = {},
+    onExitApp: () -> Unit = {},
     onCopyReport: () -> Unit = {},
     onShareReport: () -> Unit = {},
+    onCopyDirtyReport: () -> Unit = {},
+    onShareDirtyReport: () -> Unit = {},
     onRailToggle: () -> Unit = {},
+    onOrientationLock: () -> Unit = {},
     onInputChanged: (String) -> Unit = {},
+    /**
+     * 竖屏三区壳开关（竖屏设计稿 §6 方向策略；调用侧 = MainActivity 按方向偏好在
+     * 装配期定死，本 Activity 实例存续期内不翻转——旋转不重建，逻辑列宽构造期定死，
+     * §5.2）。false（缺省）= 横屏路径，与本函数在 main 上的现状**逐字节同一条路**。
+     */
+    isPortrait: Boolean = false,
+    /**
+     * 竖屏 HUD 的屏行尾窗快照（serial to 行文本，显示序；设计稿 §3 数据来源一览
+     * 「屏行快照 LineBufferConsoleSink.lines()」）。只在 [isPortrait] = true 时被读
+     * （竖屏分支 250ms 轮询）；缺省空表 = 横屏零开销。
+     */
+    portraitLinesProvider: () -> List<Pair<Long, String>> = { emptyList() },
 ) {
+    // 文案表：语言由壳层一次取好（照 UpdateUi.copyFor 的口径），子件不再各判语言。
+    val shellCopy = PortraitShellCopy.of(UiPrefs.settingsLanguage(LocalContext.current))
     // 输入条静置自动收起：任一键入都会重置计时（用户还在打就不收）。
     // **有焦点时永不自动收**：中文输入法组合态（拼音候选未上屏）不会改 state.input，
     // 只看文本变化会把“正在选词”误判成“静置”。失焦后才重新开始计时；
@@ -597,91 +913,112 @@ fun EratwShell(
                 // 2026-10-29 撤回「按栏宽给画布留右内距」：预留会把游戏窗口整块压窄（真机读数
                 // 232dp 栏可见时画布只剩 86 列），画面左移、选项一多更容易换行错位——缩画布救不了
                 // 栏压内容，只是把排版问题换成「界面变小」。栏要不要挡，交给玩家用螺旋图标收起。
-                AndroidView(
-                    factory = { consoleView },
-                    modifier = Modifier.fillMaxSize(),
-                )
-
-                // 「点屏幕别处收起输入栏」不再用 Compose 全屏遮罩：那层会把 down 事件一起吃掉，
-                // 控制台的 GestureDetector 收不到滑动 ⇒ 上滑看历史失效（2026-10-24 负责人实测）。
-                // 改由控制台 onSingleTapUp 判 shell.inputVisible（见 MainActivity.attachGestures）。
-
-                // 右上角：输入开关（键盘图标）+ 螺旋图标（选项栏开关）+ 设置。
-                Row(
-                    modifier = Modifier.align(Alignment.TopEnd).padding(end = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    InputToggle(active = state.inputVisible, onClick = { state.inputVisible = true })
-                    SpiralToggle(
-                        expanded = state.railVisible,
-                        onClick = onRailToggle,
+                if (isPortrait) {
+                    // 竖屏三区壳（竖屏设计稿 §3）：HUD + 正文槽 + 指令盘的编排全在
+                    // PortraitShellContent；输入条/抓手/宏条/覆盖层在本函数的公共段，
+                    // 横竖屏共用（§4.4/§4.5）。横屏路径不进本分支。
+                    PortraitShellContent(
+                        consoleView = consoleView,
+                        state = state,
+                        linesProvider = portraitLinesProvider,
+                        contentWidth = areaWidth,
+                        contentMaxHeight = maxHeight,
+                        onSettings = onSettings,
+                        onOption = onOption,
+                        onInputChanged = onInputChanged,
                     )
-                    TextButton(onClick = onSettings) {
-                        Text("设置", color = Color(0xFFEDEDED), fontSize = 13.sp)
-                    }
+                } else {
+                    AndroidView(
+                        factory = { consoleView },
+                        modifier = Modifier.fillMaxSize(),
+                    )
                 }
 
-                // 右侧选项栏：可收起；收起时整栏平移出屏幕右沿（BoxScope 里用 offset 动画，
-                // 避免 ColumnScope.AnimatedVisibility 扩展在 Box 里取不到隐式接收者）。
-                // 闪烁收口（2026-10-24）：滑入/滑出**只跟用户的 railVisible 开关**。
-                // 原来条件里还带了 `chips.isNotEmpty()`，而 chips 每 250ms 由选项扫描刷新，
-                // 游戏待机时脚本周期重绘会让扫描结果在「有/无」之间抖动 ⇒ 整排按钮来回滑，
-                // 玩家看到的就是「待机也会隔一会儿闪一下」（负责人实测反馈）。
-                //
-                // 收起位移（2026-10-26）：旧值写死 168dp，而双列宽 196dp ⇒ 左侧一列仍露在
-                // 屏内（真机反馈「收起后还能看到最左边一排」）。现在位移由 [railCollapseOffset]
-                // 一处算（栏宽 + 右留白 + 余量）；隐藏时按钮 enabled=false，不接收点击/读屏焦点。
-                val railOffset by animateDpAsState(
-                    targetValue = if (state.railVisible) 0.dp else railCollapseOffset(railMetrics.railWidth),
-                    animationSpec = tween(220),
-                )
+                // 「点屏幕别处收起输入栏」不再用 Compose 全屏遮罩：那层会把 down 事件一起吃掉，
+                // 控制台的触摸监听（MainActivity.attachGestures）收不到滑动 ⇒ 上滑看历史失效（2026-10-24 负责人实测）。
+                // 改由控制台 onSingleTapUp 判 shell.inputVisible（见 MainActivity.attachGestures）。
 
-                // 排布（2026-10-26 负责人定调）：**按游戏显示行分行**，不做全局序号排序、
-                // 不把不同行的按钮压成两列网格。行内按 startCol 从左到右（引擎已排好），
-                // 同一行按钮并排：这样地图的“第 1 行 1 个、第 2 行 2 个、第 3 行 1 个”
-                // 在栏里仍是同样的行结构；行内最多并排 3 枚，超过 3 枚时横向滚动，
-                // 避免 4 枚等分只剩约 47dp、按钮标题被挤到不可分辨（2026-10-27 用户反馈）。
-                val railRows = remember(state.chips) { railRowsOf(state.chips) }
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .offset(x = railOffset)
-                        .padding(top = 44.dp, end = RAIL_END_PADDING)
-                        .width(railMetrics.railWidth)
-                        .fillMaxHeight(),
-                ) {
-                    if (state.chips.size > 10) {
-                        Text(
-                            text = "${state.chips.size} 项可点",
-                            color = Color(0xFF9A9A9A),
-                            fontSize = railMetrics.labelTextSize,
-                            maxLines = 1,
-                            modifier = Modifier.padding(start = 2.dp, bottom = 3.dp),
-                        )
-                    }
-                    LazyColumn(
-                        // weight(1f) 而不是 fillMaxSize()：底部要留出「继续」脚钮的位置
-                        // （fillMaxSize 会把整栏高度吃光，脚钮被顶到栏外看不见）。
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(RAIL_ROW_SPACING),
-                        // 28dp 底距沿用旧值：最后一行按钮要避开底边抓手（52×14dp）。
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 28.dp),
+                // 右上角浮层与右 rail 只属横屏（竖屏设计稿 §3「职责转移」：候选按钮从右侧
+                // 浮栏改为底部指令盘，竖屏由 PortraitHud 自带 键/盘/设 三钮）。
+                if (!isPortrait) {
+                    // 右上角：方向锁（锁当前屏幕方向）+ 输入开关（键盘图标）+ 螺旋图标（选项栏开关）+ 设置。
+                    Row(
+                        modifier = Modifier.align(Alignment.TopEnd).padding(end = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        items(count = railRows.size) { i ->
-                            val row = railRows[i]
-                            OptionRailRow(
-                                row = row,
-                                metrics = railMetrics,
-                                enabled = state.railVisible,
-                                onOption = onOption,
+                        OrientationLockToggle(
+                            locked = state.orientationLocked,
+                            onClick = onOrientationLock,
+                        )
+                        InputToggle(active = state.inputVisible, onClick = { state.inputVisible = true })
+                        SpiralToggle(
+                            expanded = state.railVisible,
+                            onClick = onRailToggle,
+                        )
+                        SettingsGearButton(onClick = onSettings)
+                    }
+
+                    // 右侧选项栏：可收起；收起时整栏平移出屏幕右沿（BoxScope 里用 offset 动画，
+                    // 避免 ColumnScope.AnimatedVisibility 扩展在 Box 里取不到隐式接收者）。
+                    // 闪烁收口（2026-10-24）：滑入/滑出**只跟用户的 railVisible 开关**。
+                    // 原来条件里还带了 `chips.isNotEmpty()`，而 chips 每 250ms 由选项扫描刷新，
+                    // 游戏待机时脚本周期重绘会让扫描结果在「有/无」之间抖动 ⇒ 整排按钮来回滑，
+                    // 玩家看到的就是「待机也会隔一会儿闪一下」（负责人实测反馈）。
+                    //
+                    // 收起位移（2026-10-26）：旧值写死 168dp，而双列宽 196dp ⇒ 左侧一列仍露在
+                    // 屏内（真机反馈「收起后还能看到最左边一排」）。现在位移由 [railCollapseOffset]
+                    // 一处算（栏宽 + 右留白 + 余量）；隐藏时按钮 enabled=false，不接收点击/读屏焦点。
+                    val railOffset by animateDpAsState(
+                        targetValue = if (state.railVisible) 0.dp else railCollapseOffset(railMetrics.railWidth),
+                        animationSpec = tween(220),
+                    )
+
+                    // One game line stays one visual row. Ordinary rows share width for 1-3
+                    // buttons and scroll horizontally beyond three; palette runs use dense rows.
+                    // Missing options were an extraction bug, not a row-overflow bug: do not
+                    // hide extraction failures by wrapping rows.
+                    val railRows = remember(state.chips) { railLayoutOf(state.chips) }
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .offset(x = railOffset)
+                            .padding(top = 44.dp, end = RAIL_END_PADDING)
+                            .width(railMetrics.railWidth)
+                            .fillMaxHeight(),
+                    ) {
+                        if (state.chips.size > 10) {
+                            Text(
+                                text = shellCopy.fill(shellCopy.railCountFormat, state.chips.size),
+                                color = Color(0xFF9A9A9A),
+                                fontSize = railMetrics.labelTextSize,
+                                maxLines = 1,
+                                modifier = Modifier.padding(start = 2.dp, bottom = 3.dp),
                             )
                         }
-                    }
-                    // WAIT 系页面（PRINTW / PRINTFORMW / WAIT）屏上没有任何 [N]：
-                    // 常驻一枚「继续」脚钮在栏最底部（不随 LazyColumn 滚走），
-                    // 见 [ContinueButton] 与原版「点画面」通道的对应关系。
-                    if (showContinueButton(state.awaitingAnyKey)) {
-                        ContinueButton(metrics = railMetrics, enabled = state.railVisible) { onSubmit("") }
+                        LazyColumn(
+                            // weight(1f) 而不是 fillMaxSize()：底部要留出「继续」脚钮的位置
+                            // （fillMaxSize 会把整栏高度吃光，脚钮被顶到栏外看不见）。
+                            modifier = Modifier.weight(1f).fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(RAIL_ROW_SPACING),
+                            // 28dp 底距沿用旧值：最后一行按钮要避开底边抓手（52×14dp）。
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 28.dp),
+                        ) {
+                            items(count = railRows.size) { i ->
+                                val row = railRows[i]
+                                OptionRailRow(
+                                    row = row,
+                                    metrics = railMetrics,
+                                    enabled = state.railVisible,
+                                    onOption = onOption,
+                                )
+                            }
+                        }
+                        // WAIT 系页面（PRINTW / PRINTFORMW / WAIT）屏上没有任何 [N]：
+                        // 常驻一枚「继续」脚钮在栏最底部（不随 LazyColumn 滚走），
+                        // 见 [ContinueButton] 与原版「点画面」通道的对应关系。
+                        if (showContinueButton(state.awaitingAnyKey)) {
+                            ContinueButton(metrics = railMetrics, enabled = state.railVisible) { onSubmit("") }
+                        }
                     }
                 }
 
@@ -718,7 +1055,7 @@ fun EratwShell(
                     item {
                         TextButton(onClick = onMacroGroup) {
                             Text(
-                                state.macroGroupLabel.ifEmpty { "宏" },
+                                state.macroGroupLabel.ifEmpty { shellCopy.macroGroupFallback },
                                 color = Color(0xFFB9D3B9),
                                 fontSize = 12.sp,
                             )
@@ -726,8 +1063,12 @@ fun EratwShell(
                     }
                     items(state.macros) { macro ->
                         TextButton(onClick = {
-                            state.input = macro.content
-                            onInputChanged(macro.content)
+                            // WIRE-5：当前等待请求 macroEnabled == false 时不预填
+                            // （判据与 InputSession 同源：MacroKeys.prefillAllowed）。
+                            if (MacroKeys.prefillAllowed(state.macroEnabled)) {
+                                state.input = macro.content
+                                onInputChanged(macro.content)
+                            }
                         }) {
                             Text(macro.label, color = Color(0xFFDCDCDC), fontSize = 12.sp)
                         }
@@ -760,18 +1101,32 @@ fun EratwShell(
         if (state.loading) {
             LoadingOverlay(state)
         }
-        // 失败覆盖层：原因 + 「回到标题」/「兼容模式重试」（堆不足族才亮）/「重试」按钮。
+        // 失败覆盖层：原因 + 「回到标题」/「少占内存再试」（「内存不够」两族都亮）/「重试」，
+        // 以及重试又失败时的「结束应用」（判据全在 failureActions）。
         state.failure?.let { message ->
             FailureOverlay(
                 message = message,
+                kind = state.failureKind,
                 canBackToTitle = state.failureCanBackToTitle,
                 canRetryCompat = state.failureCanRetryCompat,
+                canExitApp = state.failureCanExitApp,
+                exitIsRestart = state.failureExitIsRestart,
+                note = state.failureNote,
                 reportReady = state.failureReportReady,
                 onRetry = onRetry,
                 onRetryCompat = onRetryCompat,
                 onBackToTitle = onBackToTitle,
+                onExitApp = onExitApp,
                 onCopyReport = onCopyReport,
                 onShareReport = onShareReport,
+            )
+        }
+        // 脏退出报告提示（Dialog 独立窗口，理由同上方的长按卡）：判据在 dirtyExitNoticeVisible。
+        if (dirtyExitNoticeVisible(state.loading, state.failure, state.pendingDirtyExitReport)) {
+            DirtyExitReportDialog(
+                state = state,
+                onCopy = onCopyDirtyReport,
+                onShare = onShareDirtyReport,
             )
         }
         // 长按按钮提示卡（原版 PC hover ToolTip 的安卓替身）。
@@ -786,42 +1141,90 @@ fun EratwShell(
  * 长按按钮的提示卡（原版 PC hover ToolTip 的安卓替身）。
  *
  * `title` 原文里的 `<br>` 换成换行（`EmueraConsole.cs:1909` 同口径）；点卡外/返回键关闭，
- * 长文案在卡内纵向滚动，不撑出屏幕。
+ * 长文案在卡内纵向滚动，不撑出屏幕。外壳走 [EratwDialogCard]，遮罩用轻档：提示卡不该把画面压死。
  */
 @Composable
 private fun ButtonTooltipOverlay(state: ShellState, raw: String) {
     val text = remember(raw) { raw.replace("<br>", "\n").replace("<BR>", "\n") }
-    Dialog(
+    EratwDialogCard(
         onDismissRequest = { state.tooltip = null },
-        properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = true),
+        scrim = EratwInk.scrimLight(),
+        maxHeight = 420.dp,
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color(0x66000000))
-                .pointerInput(Unit) { detectTapGestures { state.tooltip = null } },
-            contentAlignment = Alignment.Center,
-        ) {
-            Column(
-                modifier = Modifier
-                    .padding(horizontal = 20.dp)
-                    .widthIn(max = 460.dp)
-                    .fillMaxWidth(0.92f)
-                    .heightIn(max = 420.dp)
-                    .verticalScroll(rememberScrollState())
-                    .background(Color(0xFF2A2A2A), RoundedCornerShape(12.dp))
-                    .border(1.dp, Color(0xFF454545), RoundedCornerShape(12.dp))
-                    .padding(16.dp),
-            ) {
-                Text(text = text, color = Color(0xFFE6E6E6), fontSize = 13.sp, lineHeight = 20.sp)
-                Text(
-                    text = "点任意处关闭",
-                    color = Color(0xFF8A8A8A),
-                    fontSize = 10.sp,
-                    modifier = Modifier.padding(top = 10.dp),
-                )
-            }
+        EratwText(text)
+        EratwText(
+            text = PortraitShellCopy.of(UiPrefs.settingsLanguage(LocalContext.current)).tooltipDismissHint,
+            tone = EratwTextTone.MUTED,
+            modifier = Modifier.padding(top = 10.dp),
+        )
+    }
+}
+
+/**
+ * 脏退出报告提示卡（2026-10-30）：上一轮静默死亡（被杀/闪退无异常）的冷启补报报告，
+ * 给玩家「复制 / 分享」两颗实体按钮。
+ *
+ * **只在「在屏前死掉」时弹**：`RunWatch` 会把界面不可见后的回收写成一态 `background`，
+ * 那一类冷启不落报告也不走到这张卡（否则玩家按 Home 离开、被系统清一次，之后每次打开都弹）。
+ *
+ * 为什么是 Dialog 且只此一屏：自动上报在大陆网络经常送不出去（`workers.dev` 被 DNS
+ * 投毒），报告文件是玩家唯一送得出去的东西 —— 但它躺在应用私有目录里，没有这块卡
+ * 玩家永远不会知道它存在。点「知道了」或卡外即关，不挡游戏。
+ *
+ * 卡片形态（2026-10-30 装机复看后改）：旧版正文直接浮在标题立绘上读不清 ⇒ 改真卡片底；
+ * 固定 460dp 宽在竖屏溢出 ⇒ 92% 宽封顶 460dp + 超高可滚；「分享」是网络不通时唯一送得出去的路
+ * ⇒ 升主按钮色、排在「复制」之前；报告文件名上屏，让玩家知道发出去的是哪一局、什么时候的。
+ * 2026-11-04 起外壳与字形统一走 [EratwDialogCard] / [EratwText] / [EratwFilledButton]，
+ * 与长按提示卡、补丁导入覆盖层同一套卡片语言，色值一律取 [EratwInk]。
+ */
+@Composable
+private fun DirtyExitReportDialog(
+    state: ShellState,
+    onCopy: () -> Unit,
+    onShare: () -> Unit,
+) {
+    val copy = PortraitShellCopy.of(UiPrefs.settingsLanguage(LocalContext.current))
+    val report = state.pendingDirtyExitReport
+    EratwDialogCard(
+        onDismissRequest = { state.pendingDirtyExitReport = null },
+        maxHeight = 480.dp,
+    ) {
+        EratwText(
+            text = copy.dirtyExitTitle,
+            tone = EratwTextTone.HEADLINE,
+            colorOverride = EratwInk.warn(),
+        )
+        Spacer(Modifier.height(10.dp))
+        EratwText(copy.dirtyExitBody1)
+        Spacer(Modifier.height(6.dp))
+        EratwText(
+            text = copy.dirtyExitBody2,
+            tone = EratwTextTone.NOTE,
+        )
+        // 报告身份行：文件名带生成时刻，玩家据此认「是哪一局、什么时候的」；
+        // 只此一屏才读得到私有目录里的文件名。
+        report?.let {
+            Spacer(Modifier.height(10.dp))
+            EratwText(it.name, tone = EratwTextTone.MUTED)
         }
+        Spacer(Modifier.height(16.dp))
+        EratwButtonRow {
+            // 分享 = 主出路（系统分享面板不依赖本应用网络，大陆玩家真送得出去的只有它）
+            // ⇒ 主按钮色与「回到标题」同款；复制 = 备用，退次级灰。
+            EratwFilledButton(
+                text = copy.shareReport,
+                onClick = onShare,
+                modifier = Modifier.weight(1f),
+                container = EratwInk.shareButton(),
+            )
+            EratwFilledButton(
+                text = copy.copyReport,
+                onClick = onCopy,
+                modifier = Modifier.weight(1f),
+                container = EratwInk.border(),
+            )
+        }
+        EratwQuietButton(text = copy.ackButton, onClick = { state.pendingDirtyExitReport = null })
     }
 }
 
@@ -829,39 +1232,23 @@ private fun ButtonTooltipOverlay(state: ShellState, raw: String) {
      * 右上角的输入开关（键盘图标）—— 取代原来占屏幕底边一整条的「上滑输入」黑条。
      *
      * 图标与 [SpiralToggle] 同一套线的语言：24dp 画布、2.2px 描边、灰（`0xFF8A8A8A`）。
-     * 点一下把输入栏从底部滑出；输入栏自带的拖动条负责收起（5 秒静置也会自动收起）。
+     * 点一下把输入栏从底部滑出；输入栏自带的拖动条负责收起（失焦 15 秒静置也会自动收起）。
      */
     @Composable
     private fun InputToggle(active: Boolean, onClick: () -> Unit) {
-        // 点击反馈：图标的「咔哒抖一下」（-10° → +10° → -6° → 0），与螺旋图标的旋转同一套
-        // 手感动词（参考它但改成抖动）。用 Animatable + 协程，点击瞬间重放。
-        val shake = remember { androidx.compose.animation.core.Animatable(0f) }
-        val scope = rememberCoroutineScope()
-        val fire: () -> Unit = {
-            scope.launch {
-                shake.animateTo(-10f, tween(60))
-                shake.animateTo(10f, tween(80))
-                shake.animateTo(-6f, tween(60))
-                shake.animateTo(0f, tween(60))
-            }
-            onClick()
-        }
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                .background(
-                    color = if (active) Color(0x33B9D3B9) else Color.Transparent,
-                    shape = RoundedCornerShape(10.dp),
-                )
-                .semantics { contentDescription = if (active) "键盘(已展开)" else "键盘(已收起)" }
-                .clickable(onClick = fire),
-            contentAlignment = Alignment.Center,
+        // 点击反馈走抽出来的「咔哒抖一下」（[ClickShakeState]），与方向锁同一份动效。
+        val shake = rememberClickShake()
+        val copy = PortraitShellCopy.of(UiPrefs.settingsLanguage(LocalContext.current))
+        ShellIconButton(
+            label = if (active) copy.inputToggleExpanded else copy.inputToggleCollapsed,
+
+            onClick = { shake.click(onClick) },
         ) {
-            Canvas(modifier = Modifier.size(24.dp).rotate(shake.value)) {
+            Canvas(modifier = Modifier.size(24.dp).rotate(shake.degrees)) {
 
                 // 高亮（2026-10-25 主人反馈「点了没高亮」）：输入栏展开时图标转浅绿，
                 // 与螺旋图标的「已展开」同色；之前只改了语义标签、颜色那行漏改。
-                val gray = if (active) Color(0xFFB9D3B9) else Color(0xFF8A8A8A)
+                val gray = if (active) ShellIconTone.active else ShellIconTone.idle
                 val stroke = 2.2f * density
                 val left = size.width * 0.06f
                 val top = size.height * 0.24f
@@ -891,7 +1278,7 @@ private fun ButtonTooltipOverlay(state: ShellState, raw: String) {
      * 形态：52×14dp 的圆角小突起 + 中间一枚 `︿`，半透明深底 —— 不再遮画面。
      * 交互：默认贴右侧（`fraction` 缺省 0.97，位置记在 [UiPrefs.inputKnobFraction]）；
      * **可左右拖动**；点它、或手指在它上面**向上滑**都会把输入栏弹出来。
-     * 输入栏展开后它自己隐藏（收起靠：上拖输入条 / 点屏幕其他地方 / 5 秒静置）。
+     * 输入栏展开后它自己隐藏（收起靠：上拖输入条 / 点屏幕其他地方 / 失焦 15 秒静置）。
      */
     @Composable
     private fun InputKnob(
@@ -902,12 +1289,13 @@ private fun ButtonTooltipOverlay(state: ShellState, raw: String) {
         onOpen: () -> Unit,
         modifier: Modifier = Modifier,
     ) {
+        val copy = PortraitShellCopy.of(UiPrefs.settingsLanguage(LocalContext.current))
         val knobDensity = LocalDensity.current
         val areaPx = with(knobDensity) { areaWidth.toPx() }.coerceAtLeast(1f)
         var dragUp by remember { mutableFloatStateOf(0f) }
         Box(
             modifier = modifier
-                .semantics { contentDescription = "底边抓手" }
+                .semantics { contentDescription = copy.inputKnobA11y }
                 .offset(x = areaWidth * (fraction - 1f))
                 .size(width = 52.dp, height = 14.dp)
                 .background(Color(0xB31B1B1B), RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp))
@@ -1008,6 +1396,7 @@ private fun InputBar(
 ) {
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
+    val copy = PortraitShellCopy.of(UiPrefs.settingsLanguage(LocalContext.current))
     // 初值取「已经过了冷却」：`0` 在刚开机的 250ms 窗口里会让第一次提交被吃掉。
     var lastSubmitAt by remember { mutableLongStateOf(-SUBMIT_DEBOUNCE_MS) }
 
@@ -1103,7 +1492,7 @@ private fun InputBar(
                 contentColor = Color(0xFFEDEDED),
             ),
         ) {
-            Text("提交", fontSize = 15.sp)
+            Text(copy.submitButton, fontSize = 15.sp)
         }
     }
 }
@@ -1112,19 +1501,20 @@ private fun InputBar(
  * 螺旋图标（右侧选项栏开关）：点击后图标旋转 0↔180°，栏位随之滑出/收起。
  *
  * 用 Canvas 手画阿基米德螺线（Material 图标集里没有螺线；emoji 会带彩色，不适合深色壳层）。
+ * 容器（40dp 命中区/激活底/读屏标签）走 [ShellIconButton]：与键盘、方向锁同一套外壳，
+ * 激活底色是收口统一时新增的观感（此前只有描边变色）。
  */
 @Composable
 private fun SpiralToggle(expanded: Boolean, onClick: () -> Unit) {
+    val copy = PortraitShellCopy.of(UiPrefs.settingsLanguage(LocalContext.current))
     val rotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
         animationSpec = tween(420),
     )
-    Box(
-        modifier = Modifier
-            .size(40.dp)
-            .semantics { contentDescription = if (expanded) "选项栏(已展开)" else "选项栏(已收起)" }
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
+    ShellIconButton(
+        label = if (expanded) copy.railToggleExpanded else copy.railToggleCollapsed,
+
+        onClick = onClick,
     ) {
         Canvas(modifier = Modifier.size(24.dp).rotate(rotation)) {
             val center = Offset(size.width / 2f, size.height / 2f)
@@ -1142,7 +1532,7 @@ private fun SpiralToggle(expanded: Boolean, onClick: () -> Unit) {
             }
             drawPath(
                 path = path,
-                color = if (expanded) Color(0xFFB9D3B9) else Color(0xFF8A8A8A),
+                color = if (expanded) ShellIconTone.active else ShellIconTone.idle,
                 style = Stroke(width = 2.2f * density),
             )
         }
@@ -1150,58 +1540,408 @@ private fun SpiralToggle(expanded: Boolean, onClick: () -> Unit) {
 }
 
 /**
+ * 齿轮图标（设置入口）：与 [SpiralToggle] 同一套线（24dp 画布、2.2px 描边、灰
+ * `0xFF8A8A8A`、40dp 命中区），点击后**逆时针**转半圈再进设置页。
+ *
+ * 画法改成「八齿闭合轮廓 + 中心轴孔」：旧版是圆环外插八根断开的短径向线，缩到
+ * 24dp 后齿与轮体分离、远看像一朵菊花，认不出是设置。现在把齿根与齿顶连成一条
+ * 闭合轮廓，齿冠有宽度、轮体连成整环，中心再留轴孔，一眼就是齿轮。
+ *
+ * 方向刻意与螺旋相反：螺旋展开是 +180°（顺时针），这里每次点击 -180°——两枚图标
+ * 都是「转半圈」，转向相反，玩家不会把设置误认成选项栏开关。`turns` 只减不加，
+ * 连点就是连续逆时针转；设置页返回后停在 -180° 的整数倍，图形对称，看不出残留。
+ */
+@Composable
+private fun SettingsGearButton(onClick: () -> Unit) {
+    var turns by remember { mutableIntStateOf(0) }
+    val rotation by animateFloatAsState(
+        targetValue = turns * -180f,
+        animationSpec = tween(420),
+    )
+    ShellIconButton(
+        label = "设置",
+        onClick = {
+            turns -= 1
+            onClick()
+        },
+    ) {
+        Canvas(modifier = Modifier.size(24.dp).rotate(rotation)) {
+            val center = Offset(size.width / 2f, size.height / 2f)
+            val stroke = 2.2f * density
+            val unit = size.minDimension
+            val root = unit * 0.30f
+            val tip = unit * 0.45f
+            val teeth = 8
+            val step = (2f * Math.PI.toFloat() / teeth) / 4f
+            val gear = Path()
+            for (i in 0 until teeth) {
+                val base = i * (2f * Math.PI.toFloat() / teeth)
+                // 每个齿四个顶点：齿根起、齿顶起、齿顶终、齿根终；逐点连成带齿冠的整环。
+                val radii = floatArrayOf(root, tip, tip, root)
+                for (j in radii.indices) {
+                    val angle = base + j * step
+                    val radius = radii[j]
+                    val x = center.x + radius * cos(angle)
+                    val y = center.y + radius * sin(angle)
+                    if (i == 0 && j == 0) gear.moveTo(x, y) else gear.lineTo(x, y)
+                }
+            }
+            gear.close()
+            drawPath(
+                path = gear,
+                color = ShellIconTone.idle,
+                // 齿根是锐角，默认 miter 会在 24dp 下顶出毛刺；圆角连接与壳层其余线性图标同一笔触。
+                style = Stroke(width = stroke, join = StrokeJoin.Round),
+            )
+            drawCircle(
+                color = ShellIconTone.idle,
+                radius = unit * 0.115f,
+                center = center,
+                style = Stroke(width = stroke),
+            )
+        }
+    }
+}
+
+/**
+ * 方向锁（键盘左侧）：锁住当前屏幕方向，不随传感器翻转、也不转竖屏。
+ *
+ * 语义：锁定 = `ActivityInfo.SCREEN_ORIENTATION_LOCKED`，冻在点击那一刻的方向；
+ * 解锁 = `SCREEN_ORIENTATION_SENSOR_LANDSCAPE`，显式写回 manifest 的 `sensorLandscape`
+ * （AndroidManifest.xml:101，`configChanges` 已含 orientation，切换不重建 Activity）。
+ * 解锁**不能**用 `SCREEN_ORIENTATION_UNSPECIFIED`：那会把方向决定权交给系统自动旋转
+ * 偏好，手机开着系统旋转锁（竖屏）时游戏会被钉死在竖屏（2026-11-04 玩家反馈）。
+ * 会话级开关、不持久化：跨进程恢复「锁定」会把方向冻在冷启动那一刻（竖持解锁屏幕
+ * 就困在竖屏），困惑大于收益 —— 想锁每次启动点一下。
+ *
+ * 图标：Canvas 手画挂锁，视觉重量对齐键盘（锁体占画布约 80% 宽，键盘外框 88%），
+ * 与键盘/螺旋同一套线（24dp、2.2px 描边、圆角端点）；开锁时梁身左移、右腿抬离锁体
+ * （终角 35 度），闭锁时对称扣合，一眼分得出锁没锁。点击反馈走 [ClickShakeState]
+ * （与键盘同一份动效），激活只变线条色、无底色。
+ */
+@Composable
+private fun OrientationLockToggle(locked: Boolean, onClick: () -> Unit) {
+    val shake = rememberClickShake()
+    val copy = PortraitShellCopy.of(UiPrefs.settingsLanguage(LocalContext.current))
+    ShellIconButton(
+        label = if (locked) copy.orientationLocked else copy.orientationUnlocked,
+        onClick = { shake.click(onClick) },
+    ) {
+        Canvas(modifier = Modifier.size(24.dp).rotate(shake.degrees)) {
+            val tone = if (locked) ShellIconTone.active else ShellIconTone.idle
+            val stroke = 2.2f * density
+            // 锁体：宽体圆角矩形（画布 80% 宽），视觉重量对齐键盘外框。
+            val bodyLeft = size.width * 0.10f
+            val bodyRight = size.width * 0.90f
+            val bodyTop = size.height * 0.44f
+            val bodyBottom = size.height * 0.86f
+            drawRoundRect(
+                color = tone,
+                topLeft = Offset(bodyLeft, bodyTop),
+                size = Size(bodyRight - bodyLeft, bodyBottom - bodyTop),
+                cornerRadius = CornerRadius(3f * density, 3f * density),
+                style = Stroke(width = stroke),
+            )
+            // 锁梁：大半圆弧，两腿落在锁体上沿。闭锁对称扣合；开锁梁身左移、
+            // 扫过 215 度让右腿抬离锁体（终角 35 度），一眼分得出锁没锁。
+            val shackleR = size.width * 0.24f
+            val arcCx = if (locked) size.width / 2f else bodyLeft + shackleR * 0.9f
+            drawArc(
+                color = tone,
+                startAngle = 180f,
+                sweepAngle = if (locked) 180f else 215f,
+                useCenter = false,
+                topLeft = Offset(arcCx - shackleR, bodyTop - shackleR),
+                size = Size(shackleR * 2f, shackleR * 2f),
+                style = Stroke(width = stroke, cap = StrokeCap.Round),
+            )
+            // 锁孔：锁体中心一枚小圆点（比键盘点阵略大，是这一枚唯一的细节点）。
+            drawCircle(
+                color = tone,
+                radius = 1.8f * density,
+                center = Offset((bodyLeft + bodyRight) / 2f, (bodyTop + bodyBottom) / 2f),
+            )
+        }
+    }
+}
+
+/** 普通右栏按钮的不可变显示参数。 */
+private data class OptionChipSpec(
+    val label: String,
+    val ordinal: Int?,
+    /** 普通文字按钮的显式前景色；色块按钮走 PaletteChipRow，不走这里。 */
+    val textColorRgb: Int? = null,
+)
+
+/**
  * 右侧选项栏的一枚**紧凑**按钮（2026-10-24 重做，适配一屏 20+ 选项）。
  *
- * 形态：单行标题（超出省略号）占满按钮，序号退到右上角作浅绿小角标（次要信息）。
- * 高度与字号按当前大小档（[RailMetrics]，设置页「选项按钮大小」）取，与「继续」脚钮同源。
- * 原来是一枚 14sp、上下 12dp 内边距的大按钮 —— 十个以内好看，二十个以上一屏放不下，
- * 玩家要滚动找选项，且按钮过高会让「点不中」变多。
+ * 普通按钮只会用这一条通路：单行标题（超出省略号）占满按钮，序号退到右上角作浅绿小角标。
+ * 原按钮有显式颜色时只染底色/自适应字色，不加左侧色块，也不进入调色板识别。
  */
 @Composable
 private fun OptionChipButton(
-    label: String,
-    ordinal: Int?,
+    spec: OptionChipSpec,
     metrics: RailMetrics,
     enabled: Boolean = true,
     modifier: Modifier = Modifier.fillMaxWidth(),
     onClick: () -> Unit,
 ) {
+    val containerColor = Color(railContainerArgb(spec.textColorRgb))
+    val contentColor = Color(railContentArgb(spec.textColorRgb))
     Button(
         onClick = onClick,
         enabled = enabled,
         modifier = modifier.height(metrics.buttonHeight),
         shape = RAIL_BUTTON_SHAPE,
         contentPadding = RAIL_BUTTON_CONTENT_PADDING,
-        colors = railButtonColors(),
+        colors = chipButtonColors(containerColor, contentColor),
     ) {
-        // 序号退到右上角作角标（次要位置），标题从按钮左侧起排、占满横向空间；
-        // 数值按钮没有标题时序号仍作主文本显示；标签本身就是同一个数字
-        // （地图格子的 `69`）时只画一次，避免「69 69」。
-        val cornerBadge = ordinal?.takeIf { label.isNotEmpty() && label != it.toString() }
-        Box(modifier = Modifier.fillMaxWidth()) {
-            if (cornerBadge != null) {
-                Text(
-                    text = "$cornerBadge",
-                    color = Color(0xB3B9D3B9),
-                    fontSize = metrics.badgeTextSize,
-                    maxLines = 1,
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(top = 1.dp, end = 1.dp),
-                )
-            }
+        OptionChipLabel(
+            spec = spec,
+            metrics = metrics,
+            contentColor = contentColor,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/** 按钮正文：可选的右上角序号 + 单行标题。 */
+@Composable
+private fun OptionChipLabel(
+    spec: OptionChipSpec,
+    metrics: RailMetrics,
+    contentColor: Color,
+    modifier: Modifier,
+) {
+    val cornerBadge = spec.ordinal?.takeIf {
+        spec.label.isNotEmpty() && spec.label != it.toString()
+    }
+    Box(modifier = modifier) {
+        if (cornerBadge != null) {
             Text(
-                text = label.ifEmpty { ordinal?.toString().orEmpty() },
+                text = "$cornerBadge",
+                color = if (spec.textColorRgb != null) {
+                    contentColor.copy(alpha = BADGE_ALPHA)
+                } else {
+                    COLOR_BADGE
+                },
+                fontSize = metrics.badgeTextSize,
+                maxLines = 1,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 1.dp, end = 1.dp),
+            )
+        }
+        val visibleLabel = spec.label.ifEmpty { spec.ordinal?.toString().orEmpty() }
+        if (visibleLabel.isNotEmpty()) {
+            val badgeReserve = cornerBadge?.let {
+                railBadgeReserve(it.toString().length, metrics)
+            } ?: 0.dp
+            Text(
+                text = visibleLabel,
                 fontSize = metrics.labelTextSize,
                 maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 modifier = Modifier
                     .align(Alignment.CenterStart)
                     .fillMaxWidth()
-                    .padding(end = cornerBadge?.let { railBadgeReserve(it.toString().length, metrics) } ?: 0.dp),
+                    .padding(end = badgeReserve),
             )
         }
     }
+}
+
+/** 普通文字按钮的 Material3 配色；无颜色时逐字段等于改动前的 [railButtonColors]。 */
+@Composable
+private fun chipButtonColors(containerColor: Color, contentColor: Color) =
+    ButtonDefaults.buttonColors(
+        containerColor = containerColor,
+        contentColor = contentColor,
+        disabledContainerColor = containerColor.copy(alpha = DISABLED_ALPHA),
+        disabledContentColor = COLOR_DISABLED_CONTENT,
+    )
+
+/**
+ * 密集调色板的一整行：**一个 Canvas 画 8 个色块**，而不是 8 个 Compose 可点击组件。
+ *
+ * 这是布娃娃系统 128 色调色板的内存/重组收口点：
+ * - 16 行 × 8 格若每格一个组件，会长期挂着 128 个 clickable 节点与 ripple 状态；
+ * - 现在每行只有一个 Canvas + 一个 pointerInput，整屏调色板从 128 个交互节点降到 16 个；
+ * - 色块填充、描边与点击命中都在同一套行内几何上算，点击仍提交原 [ConsoleOption.value]。
+ *
+ * 无障碍用行级描述 + 每色一条 custom action，仍能逐色选择。
+ */
+@Composable
+private fun PaletteChipRow(
+    row: RailLayoutRow,
+    metrics: RailMetrics,
+    enabled: Boolean,
+    onOption: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val options = row.chips
+    val columns = row.paletteColumns ?: return
+    val density = LocalDensity.current
+    val gapPx = with(density) { RAIL_ROW_SPACING.toPx() }
+    val cornerPx = with(density) { PALETTE_CORNER_DP.dp.toPx() }
+    val strokePx = with(density) { 1.dp.toPx() }
+    val description = "调色板 ${options.size} 色"
+    Canvas(
+        modifier = modifier
+            .height(metrics.buttonHeight)
+            .pointerInput(options, columns, enabled, gapPx) {
+                if (enabled) {
+                    detectTapGestures { at ->
+                        paletteIndexAt(at.x, size.width.toFloat(), columns, options.size, gapPx)
+                            ?.let { onOption(options[it].submitValue) }
+                    }
+                }
+            }
+            .semantics {
+                contentDescription = description
+                customActions = if (enabled) {
+                    options.map { option ->
+                        CustomAccessibilityAction(label = railColorLabel(option.colorRgb ?: 0)) {
+                            onOption(option.submitValue)
+                            true
+                        }
+                    }
+                } else {
+                    emptyList()
+                }
+            },
+    ) {
+        val cellWidth = paletteCellWidth(size.width, columns, gapPx)
+        options.forEachIndexed { index, option ->
+            val rgb = option.colorRgb ?: return@forEachIndexed
+            val left = index * (cellWidth + gapPx)
+            val topLeft = Offset(left, 0f)
+            val cellSize = Size(cellWidth, size.height)
+            val radius = CornerRadius(cornerPx, cornerPx)
+            drawRoundRect(
+                color = Color(railSwatchArgb(rgb)),
+                topLeft = topLeft,
+                size = cellSize,
+                cornerRadius = radius,
+            )
+            drawRoundRect(
+                color = Color(railSwatchBorderArgb(rgb)),
+                topLeft = topLeft,
+                size = cellSize,
+                cornerRadius = radius,
+                style = Stroke(width = strokePx),
+            )
+        }
+    }
+}
+
+/** 一格的绘制宽：总宽扣掉列间空隙后按列数均分，极小屏也不允许 ≤0。 */
+internal fun paletteCellWidth(width: Float, columns: Int, gapPx: Float): Float {
+    val gaps = gapPx.coerceAtLeast(0f) * (columns.coerceAtLeast(1) - 1)
+    return ((width - gaps) / columns.coerceAtLeast(1)).coerceAtLeast(1f)
+}
+
+/**
+ * 调色板行内的点击命中：返回 [0, optionCount) 的格序号，点在列间空隙或行外返回 null。
+ *
+ * 纯函数，供 Canvas 手势与 JVM 单测共用；列宽算法必须与 [PaletteChipRow] 的绘制同源。
+ */
+internal fun paletteIndexAt(
+    x: Float,
+    width: Float,
+    columns: Int,
+    optionCount: Int,
+    gapPx: Float,
+): Int? {
+    val valid = x >= 0f && width > 0f && columns > 0 && optionCount > 0
+    val cellWidth = paletteCellWidth(width, columns, gapPx)
+    val slot = cellWidth + gapPx.coerceAtLeast(0f)
+    val index = if (valid) (x / slot).toInt() else -1
+    return index.takeIf {
+        valid && it in 0 until optionCount && x <= it * slot + cellWidth
+    }
+}
+
+/**
+ * 普通文字按钮的底色：深绿底只混入 32% 目标色，既让玩家看出原按钮颜色，
+ * 又不把文字对比度打穿；null 返回改动前的原底色。
+ */
+internal fun railContainerArgb(colorRgb: Int?): Int {
+    if (colorRgb == null) return ARGB_RAIL_BASE
+    val tint = mixRgb(RAIL_BASE_RGB, colorRgb, RAIL_COLOR_TINT)
+    return (RAIL_BASE_ALPHA shl SHIFT_ALPHA) or tint
+}
+
+/** 按混色后的亮度自动选深/浅字，亮黄、白、浅青等极端色也可读。 */
+internal fun railContentArgb(colorRgb: Int?): Int {
+    if (colorRgb == null) return ARGB_TEXT_LIGHT
+    val bg = railContainerArgb(colorRgb) and RGB_MASK
+    return if (rgbLuminance(bg) > LUMINANCE_TEXT_DARK) ARGB_TEXT_DARK else ARGB_TEXT_LIGHT
+}
+
+/** 调色板色格的精确填充、描边与读屏文本；黑/白两端靠对比描边保留边界。 */
+internal fun railSwatchArgb(colorRgb: Int): Int =
+    ARGB_OPAQUE_BLACK or (colorRgb and RGB_MASK)
+
+internal fun railSwatchBorderArgb(colorRgb: Int): Int =
+    if (rgbLuminance(colorRgb and RGB_MASK) > LUMINANCE_SWATCH_BORDER) {
+        ARGB_BORDER_ON_LIGHT
+    } else {
+        ARGB_BORDER_ON_DARK
+    }
+
+internal fun railColorLabel(colorRgb: Int): String =
+    java.lang.String.format(java.util.Locale.ROOT, COLOR_HEX_FORMAT, colorRgb and RGB_MASK)
+
+private const val RAIL_BASE_RGB = 0x2A3A2A
+private const val RAIL_BASE_ALPHA = 0xE6
+private const val RAIL_COLOR_TINT = 0.32f
+private val ARGB_RAIL_BASE = 0xE62A3A2A.toInt()
+private val ARGB_TEXT_LIGHT = 0xFFEDEDED.toInt()
+private val ARGB_TEXT_DARK = 0xFF101010.toInt()
+private val COLOR_DISABLED_CONTENT = Color(0xFF6A6A6A)
+private val ARGB_OPAQUE_BLACK = 0xFF000000.toInt()
+private val ARGB_BORDER_ON_LIGHT = 0x66000000.toInt()
+private val ARGB_BORDER_ON_DARK = 0x99FFFFFF.toInt()
+private val COLOR_BADGE = Color(0xB3B9D3B9)
+private const val BADGE_ALPHA = 0.75f
+
+private const val RGB_MASK = 0xFFFFFF
+private const val BYTE_MASK = 0xFF
+private const val SHIFT_RED = 16
+private const val SHIFT_GREEN = 8
+private const val SHIFT_BLUE = 0
+private const val LUMINANCE_RED = 0.2126f
+private const val LUMINANCE_GREEN = 0.7152f
+private const val LUMINANCE_BLUE = 0.0722f
+private const val LUMINANCE_MAX = 255f
+private const val LUMINANCE_TEXT_DARK = 0.45f
+private const val LUMINANCE_SWATCH_BORDER = 0.62f
+private const val BYTE_MAX = 255
+private const val SHIFT_ALPHA = 24
+private const val WEIGHT_MIN = 0f
+private const val WEIGHT_MAX = 1f
+private const val DISABLED_ALPHA = 0.4f
+private const val PALETTE_CORNER_DP = 5f
+private const val COLOR_HEX_FORMAT = "#%06X"
+
+private fun mixRgb(base: Int, overlay: Int, weight: Float): Int {
+    val w = weight.coerceIn(WEIGHT_MIN, WEIGHT_MAX)
+    fun channel(shift: Int): Int {
+        val a = (base shr shift) and BYTE_MASK
+        val b = (overlay shr shift) and BYTE_MASK
+        return (a + (b - a) * w).toInt().coerceIn(0, BYTE_MAX)
+    }
+    return (channel(SHIFT_RED) shl SHIFT_RED) or
+        (channel(SHIFT_GREEN) shl SHIFT_GREEN) or channel(SHIFT_BLUE)
+}
+
+private fun rgbLuminance(rgb: Int): Float {
+    val r = (rgb shr SHIFT_RED) and BYTE_MASK
+    val g = (rgb shr SHIFT_GREEN) and BYTE_MASK
+    val b = (rgb shr SHIFT_BLUE) and BYTE_MASK
+    return (LUMINANCE_RED * r + LUMINANCE_GREEN * g + LUMINANCE_BLUE * b) / LUMINANCE_MAX
 }
 
 /**
@@ -1233,8 +1973,10 @@ private fun Modifier.consumeAllPointerEvents(): Modifier = pointerInput(Unit) {
  * 读数一律不进这里（2026-10-23 负责人反馈：首启屏整屏都是 `随包数据已就位（10256 个条目 /
  * 734 MiB）` —— 技术字直面玩家）。排障读数仍在控制台与失败屏上。
  *
- * 覆盖时机：从启动一直盖到 `GameHost.onConsoleReady`（程序装载完成、脚本即将开始执行）——
- * 那之后紧接着就是脚本自己画的「少女祈祷中」进度条。
+ * 覆盖时机：从启动一直盖到画面**第一帧非空内容落笔之后**
+ * （`CanvasConsoleView.onFirstContentFrame`）。4.980 那一刻是脚本自己画的
+ * 「少女祈祷中」进度条首帧；4.981 已删掉那段脚本进度条，那一刻是标题页首帧 ——
+ * 两个版本都不再在「加载页」与「可见画面」之间露空屏。
  */
 @Composable
 private fun LoadingOverlay(state: ShellState) {
@@ -1254,6 +1996,7 @@ private fun LoadingOverlay(state: ShellState) {
 @Composable
 private fun PixelLoadingOverlay(state: ShellState) {
     val progress = state.progress
+    val copy = PortraitShellCopy.of(UiPrefs.settingsLanguage(LocalContext.current))
     // 真点阵字体（Ark Pixel 12px 等宽 zh_hans，OFL-1.1，见 assets/licenses/）
     val pixelFont = FontFamily(Font(R.font.ark_pixel))
     val blink = rememberInfiniteTransition(label = "pixel-blink")
@@ -1301,7 +2044,7 @@ private fun PixelLoadingOverlay(state: ShellState) {
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                text = "― 正 在 进 入 这 个 世 界 ―",
+                text = copy.loadingPixelHeadline,
                 color = Color(0xFF8C8C6E),
                 fontSize = 12.sp,
                 fontFamily = pixelFont,
@@ -1338,10 +2081,19 @@ private fun PixelLoadingOverlay(state: ShellState) {
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                text = "▶ " + state.loadingTitle.ifEmpty { "正在准备游戏数据…" },
+                text = "▶ " + state.loadingTitle.ifEmpty { copy.loadingPreparingData },
                 color = Color(0xFF7A7A62),
                 fontSize = 12.sp,
                 fontFamily = pixelFont,
+            )
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = copy.freeNotice,
+                color = Color(0xFF6A6A55),
+                fontSize = 10.sp,
+                lineHeight = 15.sp,
+                fontFamily = pixelFont,
+                textAlign = TextAlign.Center,
             )
         }
     }
@@ -1351,6 +2103,7 @@ private fun PixelLoadingOverlay(state: ShellState) {
 @Composable
 private fun ModernLoadingOverlay(state: ShellState) {
     val progress = state.progress
+    val copy = PortraitShellCopy.of(UiPrefs.settingsLanguage(LocalContext.current))
     val transition = rememberInfiniteTransition(label = "loading")
     // 总量未知时来回扫的窄光带（已知总量时走填充，不画它）
     val sweep by transition.animateFloat(
@@ -1383,7 +2136,7 @@ private fun ModernLoadingOverlay(state: ShellState) {
             )
             Spacer(Modifier.height(7.dp))
             Text(
-                text = "正在进入这个世界",
+                text = copy.loadingModernHeadline,
                 color = Color(0xFF7C887C),
                 fontSize = 12.sp,
                 letterSpacing = 2.sp,
@@ -1427,37 +2180,62 @@ private fun ModernLoadingOverlay(state: ShellState) {
             )
             Spacer(Modifier.height(12.dp))
             Text(
-                text = state.loadingTitle.ifEmpty { "正在准备游戏数据…" },
+                text = state.loadingTitle.ifEmpty { copy.loadingPreparingData },
                 color = Color(0xFF6A736A),
                 fontSize = 11.sp,
+            )
+            Spacer(Modifier.height(18.dp))
+            Text(
+                text = copy.freeNotice,
+                color = Color(0xFF6A736A),
+                fontSize = 10.sp,
+                lineHeight = 15.sp,
+                textAlign = TextAlign.Center,
             )
         }
     }
 }
 
 /**
- * 失败覆盖层：红标题 + 原文 + 「回到标题」/「兼容模式重试」/「重试」。
+ * 失败覆盖层：红标题 + 原文 + 「回到标题」/「少占内存再试」/「重试」。
+ *
+ * 标题与那句说明按 [kind] 选（[failureScreenTitle] / [failureScreenNote]）：游戏已经跑起来
+ * 之后的终局不该说「启动失败」，也不该让玩家去检查产物目录。
  *
  * 两条出口的分工照原版：「回到标题」= `GotoTitle`（`EmueraConsole.cs:2569-2581`，
  * 进程内复位后重进标题）；「重试」= 拆会话重新装载（移植侧没有原版的 `Reboot()`
  * 半程语义可用， closest 是重启一局，见 `MainActivity.retryLoad`）。
  *
- * 「兼容模式重试」（2026-10-28 低端机 OOM）只在堆不足族失败时点亮：串行装载 +
- * 段间强制回收，装载更慢但堆峰值更低 —— 512 MiB 挡本来就贴边，这是玩家能自救的
- * 唯一路径（不用记什么 adb 开关，一次点击）。
+ * 「少占内存再试」（2026-10-28 低端机 OOM，2026-11 改名）只在「内存不够」这一族点亮：
+ * 串行装载 + 段间强制回收，装载更慢但峰值更低 —— 512 MiB 挡本来就贴边，这是玩家能自救的
+ * 唯一路径（不用记什么 adb 开关，一次点击）。**屏上不再出现「兼容/档」这类术语**：
+ * 那颗按钮是什么、代价是什么、可能失败，[FailureOverlay] 用一句玩家话说完（判据在
+ * [failureActions]，两族都亮；自动降档只对乙族，见 [shouldAutoRetryCompat]）。
+ *
+ * 「结束应用」（2026-10-30 玩家反馈「点过重试，但是重复报错了」）的点亮判据在
+ * [failureActions]：旧版这一屏只有「重试」，而重试走的正是刚刚失败的那同一条路，
+ * 玩家被留在圈里。颜色与「重试」同深浅但偏暖，一眼分得开却不做成红色警示 ——
+ * 它是**离开**，不是又一次尝试，存档已在盘上，这一步不毁任何东西。
  */
 @Composable
 private fun FailureOverlay(
     message: String,
+    kind: FailureScreenKind,
     canBackToTitle: Boolean,
     canRetryCompat: Boolean,
+    canExitApp: Boolean,
+    exitIsRestart: Boolean,
+    note: String?,
     reportReady: Boolean,
     onRetry: () -> Unit,
     onRetryCompat: () -> Unit,
     onBackToTitle: () -> Unit,
+    onExitApp: () -> Unit,
     onCopyReport: () -> Unit,
     onShareReport: () -> Unit,
 ) {
+    val copy = PortraitShellCopy.of(UiPrefs.settingsLanguage(LocalContext.current))
+    val failureCopy = ShellFailureCopy.of(UiPrefs.settingsLanguage(LocalContext.current))
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1475,27 +2253,37 @@ private fun FailureOverlay(
             modifier = Modifier.width(520.dp).padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text("启动失败", color = Color(0xFFFF7B7B), fontSize = 20.sp)
+            Text(failureScreenTitle(kind, failureCopy), color = Color(0xFFFF7B7B), fontSize = 20.sp)
             Spacer(Modifier.height(12.dp))
             Text(message, color = Color(0xFFEDEDED), fontSize = 14.sp)
             Spacer(Modifier.height(8.dp))
             Text(
-                if (canBackToTitle) {
-                    "「回到标题」在原会话上复位后重进标题（不清存档、不重新装载）；" +
-                        "「重试」关闭当前会话并重新装载。"
-                } else {
-                    "重试会关闭当前会话并重新装载；若反复失败请检查产物目录。"
-                },
+                failureScreenNote(kind, canBackToTitle, failureCopy),
                 color = Color(0xFF9A9A9A),
                 fontSize = 12.sp,
             )
             if (canRetryCompat) {
+                // 玩家话，不带术语：这颗按钮慢在哪、省在哪、可能失败，一次说完。
+                // 「也可能还是装不下」这一句是甲族（预检就判装不下）的必需交代 ——
+                // 那一族的静态估算已经说上限不足，按下去仍有被系统杀进程的风险，
+                // 所以这一次尝试必须是玩家的知情选择（判据见 shouldAutoRetryCompat）。
                 Text(
-                    "「兼容模式重试」串行装载并逐段回收垃圾，装载更慢但内存占用更低；" +
-                        "本次运行会一直沿用。",
+                    copy.retryCompatNote,
                     color = Color(0xFF9A9A9A),
                     fontSize = 12.sp,
                 )
+            }
+            // 重试又失败的说明行：判据与「结束应用」同一处出（failureActions），
+            // 只在一句话真的该说的时候占屏。
+            if (exitIsRestart) {
+                Text(
+                    copy.exitIsRestartNote,
+                    color = Color(0xFF9A9A9A),
+                    fontSize = 12.sp,
+                )
+            }
+            note?.let {
+                Text(it, color = Color(0xFFB98A8A), fontSize = 12.sp)
             }
             Spacer(Modifier.height(20.dp))
             if (reportReady) {
@@ -1510,7 +2298,7 @@ private fun FailureOverlay(
                             contentColor = Color(0xFFEDEDED),
                         ),
                     ) {
-                        Text("复制报告", fontSize = 14.sp)
+                        Text(copy.copyReport, fontSize = 14.sp)
                     }
                     Button(
                         onClick = onShareReport,
@@ -1520,7 +2308,7 @@ private fun FailureOverlay(
                             contentColor = Color(0xFFEDEDED),
                         ),
                     ) {
-                        Text("分享报告", fontSize = 14.sp)
+                        Text(copy.shareReport, fontSize = 14.sp)
                     }
                 }
                 Spacer(Modifier.height(10.dp))
@@ -1534,13 +2322,13 @@ private fun FailureOverlay(
                         contentColor = Color(0xFFEDEDED),
                     ),
                 ) {
-                    Text("回到标题", fontSize = 16.sp)
+                    Text(copy.backToTitle, fontSize = 16.sp)
                 }
                 Spacer(Modifier.height(10.dp))
             }
             if (canRetryCompat) {
-                // 兼容模式重试：与「回到标题」同款主按钮色 —— 它是堆不足时真正能救命的那颗，
-                // 视觉上要压过普通「重试」（兼容档反复重试还是同样的峰值，Compat 才是出路）。
+                // 少占内存再试：与「回到标题」同款主按钮色 —— 它是内存不够时真正能救命的那颗，
+                // 视觉上要压过普通「重试」（同一档反复重试还是同样的峰值，换档才是出路）。
                 Button(
                     onClick = onRetryCompat,
                     shape = RoundedCornerShape(8.dp),
@@ -1549,7 +2337,7 @@ private fun FailureOverlay(
                         contentColor = Color(0xFFEDEDED),
                     ),
                 ) {
-                    Text("兼容模式重试", fontSize = 16.sp)
+                    Text(copy.retryCompatButton, fontSize = 16.sp)
                 }
                 Spacer(Modifier.height(10.dp))
             }
@@ -1561,7 +2349,25 @@ private fun FailureOverlay(
                     contentColor = Color(0xFFEDEDED),
                 ),
             ) {
-                Text("重试", fontSize = 16.sp)
+                Text(copy.retryButton, fontSize = 16.sp)
+            }
+            if (canExitApp) {
+                // 「结束应用」排在最后：它是离开而不是又一次尝试。颜色与「重试」同深浅但偏暖，
+                // 一眼分得开；不做成红色警示 —— 存档已在盘上，这一步不毁任何东西。
+                //
+                // 「重启应用」只出现在「上一局的内存还没释放」那一屏：那里的出路就是把进程
+                // 换掉，按下去会杀掉本进程再由系统拉回来（见 MainActivity.exitApplication）。
+                Spacer(Modifier.height(10.dp))
+                Button(
+                    onClick = onExitApp,
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF4A3535),
+                        contentColor = Color(0xFFEDEDED),
+                    ),
+                ) {
+                    Text(if (exitIsRestart) copy.exitAppRestart else copy.exitAppQuit, fontSize = 16.sp)
+                }
             }
         }
     }

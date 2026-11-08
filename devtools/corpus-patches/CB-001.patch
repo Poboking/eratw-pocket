@@ -1,0 +1,11 @@
+--- a/口上・メッセージ関連/個人口上/051 Nitori [にとり]/Nitori/M_KOJO_K51_everyday_commmands.ERB
++++ b/口上・メッセージ関連/個人口上/051 Nitori [にとり]/Nitori/M_KOJO_K51_everyday_commmands.ERB
+@@ -61,7 +61,7 @@
+ 	CALL K51_EGG_PROJECT_CHANGE(Counter)
+ 	RETURN 1
+ ENDIF
+-CALL K51_EGG_SPECIAL_EVENT(Counter)
++CALL K51_EGG_SPECIAL_EVENT()
+ 	;Check if any special events will trigger.
+ IF RESULT
+ 	CALLF ONCE("SpecialEvent",0,51)

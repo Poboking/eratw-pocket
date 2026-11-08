@@ -6,19 +6,73 @@
         静默失效**：`URL.openConnection().getOutputStream()` 抛 SecurityException，被 uploader
         的 runCatching 吞掉 → 报告只在本地落盘，端点一份也收不到，而屏上没有任何痕迹。
         出包体检查不出这类错（它只比字符串进没进包），2026-10-27 首个真机包就是这么哑掉的。
-        只有 INTERNET，不申请任何读写外部存储的权限（存档走 SAF，见 SettingsActivity）。
+        只有 INTERNET 这一条出站权限；除下面网络/安装那几项之外不申请任何读写外部存储的权限
+        （存档走 SAF，见 SettingsActivity）。
     -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!--
+        自动更新判断网络类型（UpdateManager.isUnmetered）要这一项。官方 apidoc 对
+        ConnectivityManager.getActiveNetwork() 与 getActiveNetworkInfo() 都写明
+        "Requires Manifest.permission.ACCESS_NETWORK_STATE"，缺它时这两个调用在真机上拿不到
+        默认网络（抛 SecurityException，或被挡成 null）⇒ isUnmetered 只能交「判不了」，
+        而界面上「判不了」一律往蜂窝倒（UpdateUi.showOfferDialog / onDownloadClick 的缺省）
+        ⇒ 玩家连着 Wi-Fi 也被说成「当前不是 Wi-Fi」「现在用的是移动网络」。
+        2026-11-03 玩家实测就是这个形状。它是 normal 级权限：装机即给、玩家撤不掉，补上就长期有效。
+        与 INTERNET 同一条教训：少声明一行 = 功能在真机上哑掉而编译/arsc 体检全绿 ——
+        所以这一项既进 pack_release.py 的 manifest 体检，也有 UpdateManifestPermissionsTest 钉住。
+    -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+        自动更新（国内镜像仓通道，2026-10-29）拉起系统安装器要这一项。它**不是**装上去就自动生效：
+        Android 8.0+ 要玩家在系统设置里单独放行「安装未知应用」，缺这道门时 UpdateManager
+        会把玩家送到设置页并说清原因，不静默失败。
+        与 INTERNET 同一条教训（见上）：少声明一行 = 整条链在真机上哑掉而出包体检照样全绿，
+        所以这一项也进了 pack_release.py 的 manifest 体检。
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!--
+        U-E（2026-11-01）：几百 MiB 的下载改由前台服务承载 + 常驻通知，缺这三行整条链哑掉：
+        - FOREGROUND_SERVICE：Android 9（API 28）起，前台服务本身要声明权限；
+        - FOREGROUND_SERVICE_DATA_SYNC：Android 14（API 34）起，foregroundServiceType=dataSync
+          要单独授权（targetSdk 36 不带它 = startForeground 直接抛 MissingForegroundServiceTypeException）；
+        - POST_NOTIFICATIONS：Android 13（API 33）起通知是运行时权限。缺它**不拦下载**（下载照跑），
+          但玩家在通知栏看不到进度 —— UpdateUi 在开跑前会说清这一点，不静默。
+        与 INTERNET 同一条教训（见上）：少声明一行 = 整条链在真机上哑掉而出包体检照样全绿。
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+        android:name（OBS strictmode 车道，2026-11-01）：本包第一个 Application 子类，
+        存在的唯一理由是把 StrictMode 哨兵挂在**进程**上而不是某个界面上 —— Activity 只覆盖
+        游戏那一屏，设置页与更新弹窗里的 UI 线程代码不在它的生命周期里（判式与理由见
+        StrictModeGuard.kt，落地见 EratwApplication.kt：只在 debug 装、罚则只有 penaltyLog）。
+        缺这一行时类照样编译通过、debug 包里也照样有那份字节码，只是**永远不会被执行**——
+        与上面 INTERNET 权限同一条「静默失效」的教训，所以这一行也归 manifest 体检管。
+    -->
     <application
+        android:name=".EratwApplication"
         android:allowBackup="false"
         android:largeHeap="true"
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="false"
+        android:pageSizeCompat="enabled"
         android:theme="@style/Theme.Eratw"
         android:installLocation="auto">
+        <!--
+            pageSizeCompat="enabled"（Android 16 / API 36）：本包唯一的 native 库是
+            `libandroidx.graphics.path.so`（Compose 的 ui-graphics 传递带入，10 KB），
+            它的 PT_LOAD p_align=8 ⇒ 按 4 KB 页构建。实测（2026-10-30）连 androidx.graphics
+            1.1.0 也还是 4 KB，升级依赖解决不了。16 KB 页的机器上系统会退到兼容模式并**弹一个
+            面向用户的提示框**；显式声明 enabled = 由我们替玩家选兼容模式，行为不变、少一个弹窗。
+            4 KB 机器与「已按 16 KB 构建」的包都忽略这一行（官方 attrs_manifest 口径），零风险。
+        -->
         <!--
             icon/roundIcon：图出自语料游戏根的 icon.ico（角色头像，透明底），
             mipmap-* 是旧式方图/圆图，mipmap-anydpi-v26 走 API 26+ 的 adaptive 层，
@@ -31,26 +85,35 @@
             缺省（未声明）等于 internalOnly，Android 5.0 的 8 GB 机型上装不下这么大的包。
         -->
 
-                <activity
-            android:name=".dbg.DevKeepAliveActivity"
-            android:exported="true"
-            android:excludeFromRecents="true"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <!-- 调试钉活动仅 debug 包，类与声明都在 src/debug 源集 -->
 
-<activity
+        <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
             android:exported="true"
-            android:screenOrientation="sensorLandscape"
             android:windowSoftInputMode="adjustResize">
             <!--
-                screenOrientation="sensorLandscape"：eratw 是 PC 基准的横屏版面
-                （WindowX 1800px / 199 列），竖屏下屏宽只有横屏的一半，字号反推出的列数
-                掉到 ~90，折行与素材尺寸全部与原版分叉。锁横屏后 `CanvasConsoleView`
-                按屏宽反推字号即得 199 列，版面与素材比例复刻原版。
-                sensorLandscape（而非 landscape）保留左右横握两种朝向。
+                方向策略（2026-11-04 竖屏波 CONTRACT-PORTRAIT 起）：manifest 不锁向，
+                但**缺省仍是横屏**——竖屏是玩家在设置页显式打开的开关。
+                原 screenOrientation="sensorLandscape" 一行已删：方向权在运行期
+                （MainActivity.onCreate 调 requestedOrientation），不锁在这里是为了让
+                「竖屏模式」能真的切过去；锁横屏的历史理由（eratw 是 PC 基准的横屏版面，
+                WindowX 1800px / 199 列，竖屏列数掉档、折行与素材尺寸全部与原版分叉）
+                保留在竖屏布局设计稿 docs/archive/竖屏布局设计稿.md 的 §1.3（与「版面复刻」
+                的关系）与 §6（屏幕方向策略）。运行期只有两态：
+                关（缺省，[UiPrefs.DEFAULT_ORIENTATION] = landscape）= SENSOR_LANDSCAPE，
+                开（设置页「竖屏模式」）= SENSOR_PORTRAIT。**没有「跟随机转」这一档**：
+                那会把方向决定权交给系统自动旋转偏好，手机竖着拿启动就整个壳切成竖屏
+                （2026-11-04 玩家实测的意外竖屏，当日改为显式开关）。
+                字号档按方向在装配期二选一（横屏 font_columns / 竖屏 font_columns_portrait，
+                改档走 recreate）。
+                版面解算唯一收口在 `ScreenLayout.resolve`：字号来自 `emuera.config` 的
+                FONT SIZE（×密度×0.75×「显示大小」倍率），列数由屏宽反推、并用列数下限
+                守护（横屏 136 列守护 128 格地图行）。
                 运行中不重建 Activity（configChanges 已吞掉 rotation），
-                所以左右翻转不会打断已装载的脚本状态。
+                所以翻转不会打断已装载的脚本状态；代价是会话期方向/宽度变化不重排列宽
+                （逻辑列宽构造期定死，竖屏设计稿 §5.2），换「显示大小」档需重开会话
+                （见 MainActivity.onActivityResult）。
             -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -79,6 +142,24 @@
             android:exported="false" />
 
         <!--
+            C6（wave/eng-crash）崩溃屏：玩家崩溃当场读得到摘要，而不是对着桌面反复点图标。
+
+            - android:process=":crash"：崩溃线程可能就是 UI 线程，原进程画不出下一帧；
+              只有独立进程能真的「当场」上屏。该进程的 Application 早退（EratwApplication）。
+            - android:exported="false"：只接受本应用崩溃处理器发出的显式意图。
+            - android:excludeFromRecents="true"：这一屏不该留在最近任务里（它不是游戏界面）。
+            - theme 直接用平台 Theme.Material.NoActionBar，**不依赖本应用的主题资源**：
+              这一屏存在的场景就是「进程刚出过事」，少解析一层应用资源就少一个失败点。
+            - 不声明 configChanges：这一屏是可重建的纯文字摘要，重建只会重读 intent，没有会话状态可丢。
+        -->
+        <activity
+            android:name=".CrashScreenActivity"
+            android:process=":crash"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
+
+        <!--
             T2-63（ART Baseline Profile）：允许 shell 用 `am profile start/stop` 采样本进程。
 
             - 只有 `android:shell="true"` 才让 `adb shell am profile` 对**非 debuggable** 包生效
@@ -97,6 +178,31 @@
             android:authorities="com.eratw.port.android.reportfiles"
             android:exported="false"
             android:grantUriPermissions="true" />
+
+        <!--
+            自动更新：把下载好的 APK 交给系统安装器。API 24+ 传 file:// 会直接抛
+            FileUriExposedException，只能是 content://，而这条路必须有 Provider（安全面见
+            UpdateFileProvider 类头：只读、只出下载目录、只出 eratw-*.apk）。
+            与报告 Provider 分开两个 authority：报告面暴露的是「这一份文本可读」，更新面暴露的是
+            「这一个包可安装」，两件事的授权对象与生命周期都不一样。
+        -->
+        <provider
+            android:name=".UpdateFileProvider"
+            android:authorities="com.eratw.port.android.updatefiles"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+        <!--
+            U-E：更新下载的前台服务（进度常驻通知 + 取消按钮 + 完成通知点击拉起安装器）。
+            exported=false —— 只接受本应用自己的显式意图；下载授权由「弹窗里玩家点下载」在
+            UI 层完成，系统界面进不来这条路。foregroundServiceType=dataSync（API 34 起必填）：
+            这一条从「玩家看得见的应用界面里点出来」，正是 dataSync 要求的使用场景。
+            实现与纪律见 UpdateDownloadService 的类头（同文件 UpdateUi.kt）。
+        -->
+        <service
+            android:name=".UpdateDownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

@@ -1,15 +1,15 @@
-import java.io.FileOutputStream
-import java.net.URLClassLoader
-import java.nio.ByteBuffer
-import java.nio.file.Files
-import java.io.RandomAccessFile
-import java.security.MessageDigest
+import com.eratw.port.buildlogic.ConvertArtProfileTask
+import com.eratw.port.buildlogic.StageGameAssetsTask
+import com.eratw.port.buildlogic.bundledSuffixes
+import com.eratw.port.buildlogic.stagedDataDirs
+import com.eratw.port.buildlogic.stagedConfigFiles
+import org.gradle.api.tasks.testing.Test
 
 plugins {
-    id("com.android.application")
-    kotlin("android")
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
     // 壳层 UI 用 Jetpack Compose（游戏画面仍是 CanvasConsoleView，经 AndroidView 嵌入）。
-    id("org.jetbrains.kotlin.plugin.compose")
+    alias(libs.plugins.kotlin.compose)
 }
 
 // 目标 ABI 白名单：默认只留真机在用的两个 32/64 位 ARM 变体；
@@ -25,7 +25,7 @@ val abiList: List<String> = (providers.gradleProperty("eratwAbi").orNull ?: "arm
 //
 // 缺省**开**（产品判据是「一条命令出能玩的包」），三个出口：
 //   -PeratwSkipAssets=1      日常开发打包：一个随包条目都不搬（APK 回到 ~4 MB）；
-//   -PeratwGameRoot=<目录>   显式指定游戏根（缺省读环境变量 ERATW_GAMEDIR，AGENTS 第 5 节已导出）；
+//   -PeratwGameRoot=<目录>   显式指定游戏根（缺省读环境变量 ERATW_GAMEDIR）；
 //   -PeratwErbcDir=<目录>    显式指定 erbc 产物目录（缺省读 ERATW_ERBC_DIR，再兜底 erbcc 的
 //                            tools/erbcc/build/erbc-out/erbc.v1）；两处都没有就只随包语料，
 //                            并打出「这个 APK 装上也玩不了」的告警（不许静默出残包）。
@@ -46,7 +46,7 @@ val abiList: List<String> = (providers.gradleProperty("eratwAbi").orNull ?: "arm
 // `manifest-sha256`。`tools/apkpack/inspect_apk.py` 据此三方对账（清单/parts/实包）。
 // 旧产物（无 manifest-format 行）由本任务补标记后照常出包，但建议重编拿新格式。
 //
-// 出正式包（AGENTS 第 5 节的 env 都导出的话，游戏根不用再传 -PeratwGameRoot）：
+// 出正式包（环境变量都导出的话，游戏根不用再传 -PeratwGameRoot）：
 //   ./gradlew --configure-on-demand :app:assembleDebug -PeratwRequireComplete=1
 //   python tools/apkpack/inspect_apk.py --require-bundled
 // 机制自证（不跑 328 MB 全量编译时，用伪游戏根把分片/清单/STORED/幂等跑一遍）：
@@ -56,7 +56,7 @@ val abiList: List<String> = (providers.gradleProperty("eratwAbi").orNull ?: "arm
 //   python tools/apkpack/inspect_apk.py --require-bundled
 // 日常小包：./gradlew --configure-on-demand :app:assembleDebug -PeratwSkipAssets=1
 //
-// 体积测算（2026-10-21 在 HOMEJIA 实测量；数字都在 :app:clean 之后取，增量打包会留下
+// 体积测算（2026-10-21 在开发机实测量；数字都在 :app:clean 之后取，增量打包会留下
 // 上一版大条目造成的空洞、读数虚高）：
 //   程序产物 STORED        378,023,628 B（program.erbc 328,799,098 + program.meta 49,224,530）
 //   resources/            327,799,249 B（3,399 个文件，2,547 webp + 592 png 为主，最大单条 9.1 MB）
@@ -67,7 +67,7 @@ val abiList: List<String> = (providers.gradleProperty("eratwAbi").orNull ?: "arm
 //   ⇒ 随包合计            713,052,089 B（679.9 MiB）
 //   ⇒ 打包开销实测 5,245,013 B（dex + resources.arsc + 签名 + 1.1 MB 自带字体）
 //   ⇒ **全 STORED 随包 APK 实测 718,297,161 B（685.0 MiB），一条命令 54 秒出包**
-//     （2026-10-21 在 HOMEJIA：真语料 + 按真产物字节数做的伪程序 328,799,098 + 49,224,530 B；
+//     （2026-10-21 在开发机：真语料 + 按真产物字节数做的伪程序 328,799,098 + 49,224,530 B；
 //      伪程序只为量体积与验机制，正式包必须换 :tools:erbcc:compileCorpus 的真产物）
 //   ⇒ 「APK ≤ 420 MB」与「程序条目 STORED」在算术上不能同时成立：只有把程序条目改
 //     DEFLATE（-PeratwErbcCompress，实测 378 MB → 84,747,684 B）才落到 **约 425 MB**，
@@ -83,16 +83,6 @@ val abiList: List<String> = (providers.gradleProperty("eratwAbi").orNull ?: "arm
  * 够 release 开 minify 与将来加 `.so` 时用。
  */
 val apkOverheadAllowance = 24L * 1024L * 1024L
-
-/**
- * 随包清单（`erbc.v1/manifest.txt`）认识的格式版本，与 erbcc 的
- * `ErbcArtifacts.MANIFEST_FORMAT` **同值**：app 的 buildscript classpath 上没有 erbcc 的
- * 编译产物（配置期也拿不到那个对象），所以只能在这里写真值；改格式要两边一起改（CMP-74）。
- *
- * - 缺 `manifest-format` 行 = 旧格式 v1（`artifacts 1` 只登记 program.erbc）；
- * - 大于本值 = 打包脚本还不认识的未来格式 ⇒ 拒绝，而不是猜字段。
- */
-val eratwManifestFormat = 2
 
 /** 缺省构建里没有这些产物；显式传了 `-PeratwGameRoot` / `-PeratwErbcDir` 就必须存在（那是用户意图）。 */
 fun requireDir(label: String, path: String): File {
@@ -177,370 +167,164 @@ val coreVmKotlinSrc: File = listOf(
 ).firstOrNull { it.isDirectory }
     ?: throw GradleException("找不到 core-vm 源码根：请把 eraKcore 仓库检出在本仓同级目录（../eraKcore）")
 
-/**
- * 当前 erbcc 版本的单源 = core-vm 的 `Version.kt` 的 `const val VERSION`。
- *
- * 为什么读源码而不是复用某个常量：app 的 buildscript classpath 上没有 core-vm 的编译产物
- * （配置期也拿不到 `com.eratw.port.core.Version` 这个对象），而再手写一遍版本串必然漂移。
- * 这个文件是 `Version` 的唯一落点（`Version.NAME` 在下一行，正则只认 `VERSION`）。
- */
-fun expectedErbccVersion(): String {
-    val src = erbccVersionSrc
-    if (!src.isFile) {
-        throw GradleException("找不到版本单源 ${src}：CMP-66 的 version 对账没有判据")
-    }
-    val m = Regex("""\bVERSION\s*:\s*String\s*=\s*"([^"]+)"""").find(src.readText())
-    return m?.groupValues?.get(1)
-        ?: throw GradleException("无法从 ${src} 解析 Version.VERSION（CMP-66 的 version 对账没有判据）")
-}
-
-/** 文件 SHA-256 小写十六进制（流式，328 MB 的 program.erbc 不整份进堆）。 */
-fun sha256Of(file: File): String {
-    val digest = MessageDigest.getInstance("SHA-256")
-    RandomAccessFile(file, "r").use { input ->
-        val buffer = ByteArray(1 shl 20)
-        while (true) {
-            val read = input.read(buffer)
-            if (read < 0) break
-            digest.update(buffer, 0, read)
-        }
-    }
-    return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
-}
-
-/**
- * 编译器指纹（CMP-66 的另一半）：与 erbcc 的 `ErbcCompilerDigest` **同口径** ——
- * 取 `core-vm/src/main/kotlin` 整树 `.kt`（编译链跨 compile/code/expr/lexer/stmt/vars 等包，
- * 逐包枚举会漏），按相对**仓库根**的路径（`\`→`/`）字典序，逐文件
- * `u32be(路径字节数) ‖ 路径 UTF-8 ‖ u32be(文件字节数) ‖ 文件字节` 喂 SHA-256。
- *
- * 为什么在构建脚本里重写一遍而**不**依赖 erbcc 的类：app 的 buildscript classpath 上没有
- * erbcc/core-vm 的编译产物（同 [expectedErbccVersion] 的处境），而给 `stageGameAssets` 挂
- * 跨项目 `dependsOn` 会撞 classloader scope 竞态（见 [verifyErbcFreshness] 的说明）。
- * **换文件集或换编码口径必须两处一起改**（erbc 的 `ErbcCompilerDigest.kt` 与本函数），
- * 否则清单与打包期会互相判红。
- *
- * @return digest（小写十六进制）与参与计算的文件数
- */
-fun compilerDigestOf(rootDir: File): Pair<String, Int> {
-    val srcRoot = File(rootDir, "core-vm/src/main/kotlin")
-    if (!srcRoot.isDirectory) {
-        throw GradleException("找不到编译器源码树 $srcRoot：compiler-digest 没有判据")
-    }
-    val files = srcRoot.walkTopDown()
-        .filter { it.isFile && it.name.endsWith(".kt") }
-        .map { it.toRelativeString(rootDir).replace('\\', '/') to it }
-        .sortedBy { it.first }
-        .toList()
-    if (files.isEmpty()) {
-        throw GradleException("编译器源码树 $srcRoot 里没有 .kt 文件：compiler-digest 没有判据")
-    }
-    val digest = MessageDigest.getInstance("SHA-256")
-    for ((rel, file) in files) {
-        val relBytes = rel.toByteArray(Charsets.UTF_8)
-        val bytes = file.readBytes()
-        digest.update(ByteBuffer.allocate(4).putInt(relBytes.size).array())
-        digest.update(relBytes)
-        digest.update(ByteBuffer.allocate(4).putInt(bytes.size).array())
-        digest.update(bytes)
-    }
-    return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) } to files.size
-}
-
-/**
- * CMP-66：显式 erbc 目录的**新鲜度对账**（`-PeratwErbcDir` / `ERATW_ERBC_DIR`，以及兜底目录）。
- *
- * 背景：`stageGameAssets` 刻意不挂 `dependsOn(:tools:erbcc:compileCorpus)`
- * （configure-on-demand 下跨项目依赖会撞 classloader scope，2026-10-22 实测），所以它只能
- * 「读现成目录」。兜底目录已有 `-PeratwRequireComplete` 拒绝，但**显式 pin 的目录连 version
- * 与源 sha 都不对账** ⇒ 改过编译器代码或语料之后照样把旧产物打进包（BOARD CMP-66）。
- *
- * 判据全部来自 erbcc 落盘时写的确定性 `manifest.txt`（[ErbcArtifacts.manifestText]）：
- * 1. **version**：`erbcc <v>` 必须等于当前源码的 `Version.VERSION`；`build-mode` 必须是
- *    `full`（`--limit` 出来的受限产物不得随包）；`container-version` 必须与
- *    `program.erbc` 头里的真实版本一致（magic `ERBC` + u16 小端，防截断/串包）。
- * 2. **产物自证**：`artifact erbc.v1/program.erbc <bytes> <sha256>` 与磁盘字节逐位一致。
- * 3. **源 sha**：`source <rel> <bytes> <sha256>` 与语料根的**当前**文件逐个对账，文件集
- *    （增/删）也必须一致 —— 语料改过而没重编 ⇒ 拒绝。
- * 4. **编译器指纹**：`compiler-digest` 必须等于当前 `core-vm/src/main/kotlin` 整树重算值
- *    （[compilerDigestOf]）—— 编译器改过而没重编 ⇒ 拒绝。缺这一行（旧格式/旧编译器产物）
- *    同样拒绝：语料摘要与产物摘要在「只有编译器换了」时全都对得上，这一行是唯一判据。
- *
- * @param corpusRoot 优先用调用方给的「本次随包语料根」（`<gameRoot>/ERB`）；给不出时退回
- *   manifest 里登记的 `corpus-root`（编译机路径，同一台机器上可用）。
- * @param hard true = 显式 pin（用户意图就是「用这一份」），任何不符直接 [GradleException]；
- *   false = 兜底目录（保持既有政策：警告 + `package.report` 标记，正式包由
- *   `-PeratwRequireComplete` 在别处挡）。
- * @return 写进 `package.report` 的 `erbc-freshness` 值；null = 未能验证（已按 hard 处理）。
- */
-fun verifyErbcFreshness(dir: File, corpusRoot: File?, hard: Boolean): String? {
-    fun reject(msg: String): String? {
-        if (hard) throw GradleException("CMP-66 新鲜度对账失败：$msg")
-        project.logger.warn("stageGameAssets: $msg")
-        return null
-    }
-
-    val manifest = File(dir, "manifest.txt")
-    if (!manifest.isFile) {
-        return reject(
-            "erbc 目录缺 manifest.txt（$dir）→ 无法证明产物出自当前编译器/当前语料；" +
-                "先跑 ./gradlew :tools:erbcc:compileCorpus，或用 -PeratwErbcDir 指向最新产物目录",
-        )
-    }
-    val lines = manifest.readLines()
-    fun field(name: String): String? =
-        lines.firstOrNull { it.startsWith("$name ") }?.removePrefix("$name ")?.trim()
-
-    // ---- 0. 清单格式（CMP-74）-----------------------------------------------
-    // 缺 `manifest-format` = 旧格式 v1（只有 `artifacts 1`，侧车不在表里）：宽松放行，
-    // 随包清单由本任务补 package 段；比本脚本新的格式则拒绝 —— 未来字段不可猜。
-    val manifestFormat = field("manifest-format")?.toIntOrNull()
-    if (manifestFormat != null && manifestFormat > eratwManifestFormat) {
-        return reject(
-            "manifest 格式 ${manifestFormat} 比本打包脚本认识的 ${eratwManifestFormat} 新：" +
-                "升级打包脚本后再出包（旧脚本猜新字段会把清单对账跳过）",
-        )
-    }
-    if (manifestFormat == null) {
-        project.logger.warn(
-            "stageGameAssets: manifest 无 manifest-format 行（旧格式 v1，artifacts 只登记 program.erbc）：" +
-                "随包清单会按实际文件补 package 段；建议重跑 ./gradlew :tools:erbcc:compileCorpus 拿新格式",
-        )
-    }
-
-    // ---- 1. version ---------------------------------------------------------
-    val expected = expectedErbccVersion()
-    val declared = field("erbcc")
-    if (declared != expected) {
-        return reject(
-            "产物版本与当前编译器不一致：manifest 记 erbcc ${declared ?: "(缺)"}，源码是 $expected → " +
-                "改过编译器就必须重编产物（./gradlew :tools:erbcc:compileCorpus）",
-        )
-    }
-    val buildMode = field("build-mode")
-    if (buildMode != "full") {
-        return reject(
-            "产物不是全量档（build-mode ${buildMode ?: "(缺；旧 manifest)"}）：受限产物（--limit N）不得随包，" +
-                "请用 :tools:erbcc:compileCorpus 的全量产物",
-        )
-    }
-
-    // ---- 1b. 编译器指纹 -----------------------------------------------------
-    // 语料没改、产物自洽，唯独编译器源码换了（红 J 的 NEXT/STEP 死循环就是这样混进包的）：
-    // 上面的 version 行只认 erbcc 的版本串，改编译器实现不动 VERSION 时它照样放行。
-    val declaredCompilerDigest = field("compiler-digest")
-    if (declaredCompilerDigest == null) {
-        return reject(
-            "manifest 没有 compiler-digest 行（旧编译器/旧格式产物）→ 无法证明产物出自当前编译器；" +
-                "先跑 ./gradlew :tools:erbcc:compileCorpus 再出包",
-        )
-    }
-    val (currentCompilerDigest, compilerFileCount) = compilerDigestOf(eraKcoreHome)
-    if (!declaredCompilerDigest.equals(currentCompilerDigest, ignoreCase = true)) {
-        return reject(
-            "产物由旧编译器产出：manifest compiler-digest $declaredCompilerDigest" +
-                "（compiler-sources ${field("compiler-sources") ?: "(缺)"} 个），当前编译器源码树 " +
-                "$currentCompilerDigest（$compilerFileCount 个）→ 先跑 ./gradlew :tools:erbcc:compileCorpus 再出包",
-        )
-    }
-    val program = File(dir, "program.erbc")
-    if (!program.isFile) return reject("erbc 目录缺 program.erbc：$dir")
-    val declaredContainerVersion = field("container-version")?.toIntOrNull()
-    val head = ByteArray(6)
-    try {
-        RandomAccessFile(program, "r").use { it.readFully(head) }
-    } catch (e: Exception) {
-        return reject("program.erbc 读不出 6 字节头（${e::class.simpleName}: ${e.message}）：$program")
-    }
-    val headMagic = String(head, 0, 4, Charsets.US_ASCII)
-    if (headMagic != "ERBC") {
-        return reject("program.erbc 头 magic 不是 ERBC（实际 '${headMagic.escape()}')：$program")
-    }
-    val headVersion = (head[4].toInt() and 0xff) or ((head[5].toInt() and 0xff) shl 8)
-    if (declaredContainerVersion == null || declaredContainerVersion != headVersion) {
-        return reject(
-            "manifest 的 container-version（${declaredContainerVersion ?: "(缺)"}）与 program.erbc 头里的版本" +
-                "（$headVersion）不一致：清单与产物不同源",
-        )
-    }
-
-    // ---- 2. 产物自证 --------------------------------------------------------
-    val artifact = lines.firstOrNull { it.startsWith("artifact ") }?.split(' ')
-    if (artifact == null || artifact.size != 4 || !artifact[1].endsWith("program.erbc")) {
-        return reject("manifest 缺 `artifact ... program.erbc` 条目：$manifest")
-    }
-    val programSha = sha256Of(program)
-    val declaredArtifactSha = artifact[3]
-    if (!declaredArtifactSha.equals(programSha, ignoreCase = true)) {
-        return reject("program.erbc 与 manifest 登记的 sha256 不一致：清单 $declaredArtifactSha，实际 $programSha")
-    }
-    val declaredArtifactBytes = artifact[2].toLongOrNull()
-    if (declaredArtifactBytes != program.length()) {
-        return reject("program.erbc 大小与 manifest 登记不一致：清单 ${declaredArtifactBytes ?: "?"}，实际 ${program.length()}")
-    }
-
-    // ---- 3. 源 sha（语料文件集 + 逐文件摘要）--------------------------------
-    val sources = lines.filter { it.startsWith("source ") }.mapNotNull { line ->
-        // 行形 `source <相对路径> <字节数> <sha256>`，路径里可能有空格（eratw 语料里
-        // `DLC/DLC FUNCTION.ERB`、`MOVEMENTS/自由行動/FREE_ACT_19 抱卵.ERB` 都是），
-        // 所以必须**从右往左**切：末段是摘要、倒数第二段是字节数，其余整段是路径。
-        //
-        // 旧实现 `split(' ', limit = 4)` 是从**左**切，`p[1]` 只拿到路径的第一个词
-        // （`DLC/DLC`），`p[2]` 拿到 `FUNCTION.ERB` 而不是字节数 ⇒ 该条被当成坏行。
-        // 更糟的是这种「截断后的路径」会大量重复，`declaredSet` 去重后从 3971 塌成 1738，
-        // 报出来的错是「清单 1738 / 磁盘 3971 → 语料改过但没重编」，**把真因指向语料**，
-        // 实际语料一个字都没动（2026-10-26 出 release 包时实测）。
-        // 判据与 erbcc 侧 `ArtifactFreshness.entry` 逐字同口径（那边一开始就是右切的）。
-        val rest = line.removePrefix("source ")
-        val shaSep = rest.lastIndexOf(' ')
-        if (shaSep <= 0) return@mapNotNull null
-        val sizeSep = rest.lastIndexOf(' ', shaSep - 1)
-        if (sizeSep <= 0) return@mapNotNull null
-        val bytes = rest.substring(sizeSep + 1, shaSep).toLongOrNull() ?: return@mapNotNull null
-        Triple(rest.substring(0, sizeSep), bytes, rest.substring(shaSep + 1))
-    }
-    val declaredCount = field("source-files")?.toIntOrNull()
-    if (declaredCount == null || declaredCount != sources.size) {
-        return reject("manifest 的 source 条目数（${sources.size}）与 source-files（${declaredCount ?: "(缺)"}）不一致")
-    }
-    val corpus = corpusRoot?.takeIf { it.isDirectory }
-        ?: field("corpus-root")?.let { File(it) }?.takeIf { it.isDirectory }
-    if (corpus == null) {
-        project.logger.warn(
-            "stageGameAssets: 找不到语料根（既没给 -PeratwGameRoot/ERATW_GAMEDIR 的有效 ERB/，" +
-                "manifest 的 corpus-root 也不在本机）→ CMP-66 只验到 version/容器摘要，**源 sha 未对账**",
-        )
-        return "version-only(源的 sha 未对账：找不到语料根)"
-    }
-    val actual = corpus.walkTopDown()
-        .filter { it.isFile }
-        .filter { it.name.endsWith(".erb", ignoreCase = true) || it.name.endsWith(".erh", ignoreCase = true) }
-        .filter { !it.name.startsWith("GOLDEN_", ignoreCase = true) }
-        .map { it.toRelativeString(corpus).replace('\\', '/') }
-        .sorted()
-        .toList()
-    val declaredSet = sources.map { it.first }.toSortedSet()
-    if (actual.toSet() != declaredSet) {
-        val missing = declaredSet - actual.toSet()
-        val extra = actual.toSet() - declaredSet
-        return reject(
-            "语料文件集与产物清单不一致（清单 ${declaredSet.size} / 磁盘 ${actual.size}）：" +
-                "磁盘缺 ${missing.take(3)}${if (missing.size > 3) "…" else ""}；" +
-                "清单缺 ${extra.take(3)}${if (extra.size > 3) "…" else ""} → 语料改过但没重编（语料根 $corpus）",
-        )
-    }
-    var checked = 0
-    for ((rel, bytes, sha) in sources) {
-        val f = File(corpus, rel)
-        if (!f.isFile || bytes == null) {
-            return reject("语料文件缺失或 manifest 行结构不对：source $rel")
-        }
-        if (f.length() != bytes) {
-            return reject("语料文件大小变了：$rel（清单 $bytes，实际 ${f.length()}）→ 语料改过但没重编")
-        }
-        val actualSha = sha256Of(f)
-        if (!actualSha.equals(sha, ignoreCase = true)) {
-            return reject("语料文件 sha256 变了：$rel（清单 $sha，实际 $actualSha）→ 语料改过但没重编")
-        }
-        checked++
-    }
-    return "verified(erbcc $expected, compiler ${currentCompilerDigest.take(12)}, " +
-        "container v$headVersion, program $programSha, 源 $checked 个文件来自 $corpus)"
-}
-
-/** manifest 里的版本串可能带控制字符；报错文案里把不可见字符转义，免得日志里看不见差异。 */
-fun String.escape(): String = buildString {
-    for (c in this@escape) {
-        if (c.code in 32..126) append(c) else append("\\u%04x".format(c.code))
-    }
-}
 val bundlingEnabled = !skipBundledAssets && (bundledGameRoot != null || bundledErbcDir != null)
 
+// 随包目录/配置/后缀表的判据与实现搬到 buildSrc（BundledAssets）：bundledSuffixes 显式传参
+// （gameRoot/dataDirs/configFiles），不再闭包读脚本全局。stagedSuffixes 仍留在脚本侧 ——
+// androidResources 的 noCompress 在配置期就要它，任务类也在接线时复用同一份。
+val stagedSuffixes: Set<String> =
+    if (bundlingEnabled) bundledSuffixes(bundledGameRoot, stagedDataDirs(!skipBadFrames), stagedConfigFiles)
+    else emptySet()
+
+// ===========================================================================
+// 上报链 / 自动更新三条通道：缺参数要大声，包内要留不含机密的读数（OBS2-L4 packguard）
+// ===========================================================================
+// ==== BEGIN channel-guard（ReportChannelBuildStampTest 按这对标记切片，改名要同步） ====
+//
+// 病（组长 2026-11-05 取证，L3 判读）：本地报告池里 17 份 `-dirty` 内测直发包在端点侧**一个都不在**
+// —— 这些包的整条上报链当年就没接上。洞在本文件原来的写法：三个 `-Peratw*` 参数读成空串回退，
+// 配置期零警告零失败 ⇒ 手敲 `:app:assembleRelease`（发布规范点名禁止，但没有任何东西挡它）
+// 照样编译全绿、包照出，只是玩家崩了没人收得到。
+// `devtools/pack_release.py` 的 resValues/arsc 回读体检只护住**走脚本**的那条路，不走脚本没人管。
+//
+// 本闸只做两件事，两条都不许改成硬失败（`--offline` 与刻意内测是发布规范里的合法用法）：
+//  1. 请求了 release 侧任务而通道是关的 ⇒ 配置期打一条 `logger.warn`（比 lifecycle 更响，
+//     `--quiet` 之外任何日志级别都在屏上；要静音它只能不出 release 包）。
+//  2. 无论开关，都往包里烙一条**不含机密**的通道读数 `reportChannelStamp`：
+//     `v1;endpoint=<host|off>;token=<on|off>;mirrors=<host[+host]|off>`，
+//     同时落 resValue 与 BuildConfig ⇒ 任意现成 APK 事后能被 `aapt2 dump resources`
+//     或既有判读判出「当年带没带参数」（含只到 host 级的端点，认得出报的是哪个域）。
+//
+// 令牌的纪律：值只进既有的 `eratw_report_token` 那一条 resValue（运行期上传要用），
+// 绝不进警告文案、绝不进读数、绝不写日志；本闸不读也不写 `local.report.properties`，
+// 判定只看这三个键在不在（空 = 关），与凭据从哪来无关。
+
+/** 读数里「这条通道没接」的取值；与 host 级读数同形（小写字母），所以整条 stamp 不需要转义。 */
+val channelOff = "off"
+
 /**
- * 随包要递归落盘的语料目录（与 `GameAssetInstaller.DATA_DIRS` 同源，顺序也一致）。
- *
- * `plugins/` 是**运行期**读的，不是编译期：`ERB/SYSTEM.ERB:96-97` 的
- * `MAP_FROMXML CSV_MAP,LOADTEXT("plugins/tw_csv_chs.xml")` 在每次新开局跑一遍
- * （`@INIT_NG_OR_LOAD`），`plugins/schema.xml`+`bbas_*.xml` 供 `DT_FROMXML`。
- * 少了这个目录 `LOADTEXT` 读到空串 → `MAP_FROMXML` 在位置 0 抛
- * 「XML 解析错误」→ 开局直接死在 `@INIT_NG_OR_LOAD`（2026-10-22 真机实证）。
- * 只有 1.3 MB，全量随包。
- *
- * `bad/` 是 BADAPPLE 彩蛋的**文本帧**（不是图片）：`ERB/TITLE.ERB:123-158` 的 `@BADAPPLE`
- * 每帧 `LOADTEXT("bad/bad_apple{count}.txt")`（count 1..6573）。目录不在白名单时 LOADTEXT
- * 得空串，DEMO 空帧全速循环——真机上表现为「首页被清空 + 高频抖动」（2026-10-22
- * DevTools 实证：displayLines 里 `<font face='黑体'></font></p>` 空帧行）。55 MB / 6,572 个
- * 小 txt，全量随包；首启解包文件数因此 +6,572（684 MiB / 3,683 文件的已知口径相应放大）。
+ * host 级读数的合法形状：DNS 名的字符集、总长 1..253（DNS 单名上限），且首字符必须是
+ * 字母/数字（RFC 1123 单名约束）——首字符放宽到 `.`/`-` 的旧形状与 ReportChannelBuildStampTest
+ * 的复算正则不同形，畸形参数（如以点开头）会原样进读数而复算侧判 invalid，两臂对账假红。
+ * 两边必须逐字同形，改动要同步测试侧的 HOST_SHAPE。
  */
-val stagedDataDirs = buildList {
-    add("CSV")
-    add("resources")
-    add("sound")
-    add("plugins")
-    // `bad/` 只服务已关闭的演示；`-PeratwSkipBadFrames=1` 时不随包（省 44.6 MB）。
-    if (!skipBadFrames) add("bad")
+val channelHostPattern = Regex("^[a-z0-9][a-z0-9.-]{0,252}$")
+
+/** 三条通道的原始读数（空串 = 整条关）。令牌单列，只以「有/无」形态往下走。 */
+val reportEndpointRaw: String = providers.gradleProperty("eratwReportEndpoint").orNull ?: ""
+val reportTokenRaw: String = providers.gradleProperty("eratwReportToken").orNull ?: ""
+val updateMirrorsRaw: String = providers.gradleProperty("eratwUpdateMirrors").orNull
+    ?: providers.environmentVariable("ERATW_UPDATE_MIRRORS").orNull
+    ?: ""
+
+/**
+ * URL → host 级读数：协议、路径、查询、端口与任何内嵌的账号口令（`@` 之前的整段丢掉）
+ * 一概不进产物。结果只允许 [a-z0-9.-] 且长度 1..253，否则给 `invalid` ——
+ * 宁可读成一个没有信息量的标记，也不把没剥干净的东西写进 APK 与日志。
+ */
+fun channelHost(raw: String): String {
+    val url = raw.trim()
+    if (url.isEmpty()) return channelOff
+    val authority = url.substringAfter("://", url)
+        .substringBefore('/')
+        .substringBefore('?')
+        .substringBefore('#')
+    val host = authority.substringAfterLast('@', authority).substringBefore(':').lowercase()
+    return if (channelHostPattern.matches(host)) host else "invalid"
 }
 
-/** 随包的游戏根配置文件；`emuera.config` 是 GameStorage 的「像游戏根」标志文件。 */
-val stagedConfigFiles = listOf("emuera.config", "default.config", "fixed.config")
-
 /**
- * 字体后缀**永不** STORED：`.ttf` 1.1 MB 压缩后 0.35 MB，而 `Typeface.createFromAsset`
- * 吃压缩条目完全正常（实测 noCompress 加 ttf 会让 debug 包从 3.92 MiB 涨到 5.32 MiB，白涨 1.4 MB）。
- * 语料目录里现在没有这些后缀，写死这张表是防将来某个 `resources` 子目录塞进字体时静默掉口径。
+ * 镜像表（`|` 分隔，与 `UpdateManager.MIRROR_SEPARATOR` 同形）→ host 级读数。
+ * 有界性：最多显示 4 个 host（内置源实际 2-3 个），超出只补 `+n<总数>`；
+ * 于是整段上限 = 4×253 + 3 个分隔符 + 3 个字符的计数 ≈ 1.1 KiB 的**常量**，
+ * 不是会随输入变大的表（契约 §0.10：容量写死 + 算术理由）。
  */
-val alwaysCompress = setOf("ttf", "otf", "ttc", "woff", "woff2")
-
-/**
- * aapt2 的 `--no-compress` **只有「按后缀匹配」一种口径**，所以后缀表必须来自真实要随包的目录：
- * 手写一份会在语料新增 `.als`（CSV 里已有 19 个）或 `.xlsx` 时静默漏掉，条目掉进 DEFLATE，
- * 首启解包因此拿不到 `openFd` 长度、幂等判定退化成「存在即跳过」。
- *
- * 配置期扫一遍是 3,451 次文件名读取（几十毫秒）。三类特殊情况一起处理：
- * - **无后缀文件**（真语料 18 个零字节 `sound/游戏bgm/<地名>/bgm` 标记）：后缀匹配够不着，
- *   于是把**文件名本身**也塞进 noCompress（aapt2 拿它当后缀比，路径以 `bgm` 结尾就命中）；
- *   命中不了也只回退到 DEFLATE，`inspect_apk.py` 会把这类条目单独列出来。
- * - **分片清单 `program.parts` 与自述报告 `package.report`**：条目只有几十字节，
- *   但 STORED 之后 `AssetManager.openFd` 能直接拿到长度，解包侧的字节对账不用退化成
- *   「目标存在即视为已装」，所以一并写进后缀表。
- * - 字体后缀（[alwaysCompress]）反向挡掉：`.ttf` 压缩后省 0.7 MB，`createFromAsset` 照常吃。
- */
-fun bundledSuffixes(): Set<String> {
-    val root = bundledGameRoot ?: return emptySet()
-    val found = sortedSetOf("parts", "report")
-    stagedDataDirs.forEach { name ->
-        val dir = File(root, name)
-        if (dir.isDirectory) {
-            dir.walkTopDown().filter { it.isFile }.forEach { f ->
-                val suffix = f.name.substringAfterLast('.', "")
-                if (suffix.isEmpty()) {
-                    // 无后缀：用文件名本身当 noCompress 后缀（见上面第二条）
-                    if (f.name.length <= 32 && f.name.all { c -> c.isLetterOrDigit() || c in "._-" }) {
-                        found += f.name.lowercase()
-                    }
-                } else if (suffix.length <= 8 && suffix.all { it.isLetterOrDigit() }) {
-                    val key = suffix.lowercase()
-                    if (key !in alwaysCompress) found += key
-                }
-            }
-        }
+fun channelMirrorHosts(raw: String): String {
+    val hosts = raw.split('|')
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .map { channelHost(it) }
+        .distinct()
+    return when {
+        hosts.isEmpty() -> channelOff
+        hosts.size <= 4 -> hosts.joinToString("+")
+        else -> hosts.take(4).joinToString("+") + "+n" + hosts.size
     }
-    stagedConfigFiles.forEach { name -> if (File(root, name).isFile) found += "config" }
-    return found
 }
 
-val stagedSuffixes: Set<String> = if (bundlingEnabled) bundledSuffixes() else emptySet()
+/**
+ * 写进包的那条读数（不含机密）。三个分量各自成形状，拼出来的字符集只有
+ * 字母/数字/`.`/`-`/`;`/`=`/`+` ⇒ 既不用 XML 转义，也不可能带出引号、反斜杠或令牌。
+ */
+val reportChannelStamp = "v1;endpoint=" + channelHost(reportEndpointRaw) +
+    ";token=" + (if (reportTokenRaw.isBlank()) channelOff else "on") +
+    ";mirrors=" + channelMirrorHosts(updateMirrorsRaw)
 
-// M4-SKEL：最小可运行外壳。无 AndroidX；minSdk 21 + core library desugaring
-// 同时覆盖老机型（Android 5.0）与新系统（targetSdk 35 的 edge-to-edge）。
+/**
+ * 「这次构建会不会产出 release 包」的保守判定：只认得出 release 字样与会连带跑 release 的
+ * 聚合任务；认不出的一律不出警告（宁少喊一次，也不要在日常 debug 构建里把这条刷成背景噪音
+ * —— 天天见的警告等于没有警告）。
+ * 认识的写法：`:app:assembleRelease`、`assembleRelease`、`bundleRelease`、`packageRelease*`、
+ * `installRelease`、`compileReleaseKotlin`，以及 `assemble` / `build` / `buildDependents` /
+ * `buildNeeded` / 不带任务名（gradle 缺省跑 `assemble`，它含 release）。
+ * 不认识：gradle 的驼峰缩写（`aRel` 之类）—— 那种调用拿不到警告，但读数照常烙进包，
+ * 事后仍判得出（见回执的 TODO(verify)：精确判定要等 taskGraph，而它与配置缓存互斥）。
+ */
+val releaseBuildRequested: Boolean = gradle.startParameter.taskNames.let { names ->
+    names.isEmpty() || names.any { task ->
+        val name = task.substringAfterLast(':')
+        name.contains("release", ignoreCase = true) ||
+            name in setOf("assemble", "build", "buildDependents", "buildNeeded")
+    }
+}
+
+if (releaseBuildRequested) {
+    val closedChannels = listOfNotNull(
+        if (reportEndpointRaw.isBlank()) "-eratwReportEndpoint（报错上报端点：没它 = 一份报告都发不出去）" else null,
+        if (reportTokenRaw.isBlank()) "-eratwReportToken（上报令牌：没它与没端点同罪，端点会 401 全丢）" else null,
+        if (updateMirrorsRaw.isBlank()) "-eratwUpdateMirrors（或环境变量 ERATW_UPDATE_MIRRORS：没它 = 自动更新整条通道关，一次网络请求都不发）" else null,
+    )
+    if (closedChannels.isNotEmpty()) {
+        logger.warn(
+            buildString {
+                // 英文标记行先行：Windows 控制台（GBK）会把中文刷成乱码，这一行保证「屏上至少看得懂
+                // 出事了」，与上面 -PeratwSkipAssets 那条同类警告的乱码教训同源。
+                append("\n[eratw-channel] WARNING: report/update channels are OFF in this RELEASE build.\n")
+                append("eratw-channel: 这次 release 构建没带这些参数：\n")
+                closedChannels.forEach { append("  ").append(it).append('\n') }
+                append("  后果：包照出、编译全绿，但玩家崩溃端点收不到任何东西、装上也不会自动更新；\n")
+                append("        这类包只能自己内测，**不许发给玩家**（2026-11-05 的 17 份 -dirty 包就是这么漏的）。\n")
+                append("  打开：-PeratwReportEndpoint=https://<上报域名> -PeratwReportToken=<令牌>\n")
+                append("        -PeratwUpdateMirrors=https://<镜像根>/eratw/（多条用 | 分隔；cmd 下走环境变量，| 是管道符）\n")
+                append("        正式包请走唯一入口：python devtools/pack_release.py（它会回读 APK 逐项体检）。\n")
+                append("  刻意不上报（--offline / 内测包）是合法用法：本条只是留痕，不会让构建失败。\n")
+                append("  写进包的事后读数（不含令牌）：resValue eratw_report_channel_stamp = ").append(reportChannelStamp).append('\n')
+            },
+        )
+    }
+}
+// ==== END channel-guard ====
+
+// M4-SKEL：最小可运行外壳。minSdk 21 + core library desugaring 同时覆盖老机型（Android 5.0）
+// 与新系统。
+//
+// compileSdk / targetSdk = 36（Android 16，2026-10-30 随玩家反馈「一加，安卓16，直接闪退」收口）：
+// - AGP 还是 8.8.2（自报「tested up to compileSdk = 35」⇒ 每次构建一条 warning）。**刻意不**跟着
+//   升 AGP：8.9+ 要 Gradle 8.11.1，那是全 lane 共用的 wrapper，而本仓没有用到任何 API 36 的
+//   新符号，warning 只是噪音。等真要写 36 专属代码时再一并升。
+// - targetSdk 36 的两条行为变更对本外壳都是空：edge-to-edge 取消 opt-out（我们本来就是
+//   `setDecorFitsSystemWindows(false)` + 沉浸式，见 MainActivity.applyImmersiveMode），
+//   以及 ≥600dp 屏忽略 `screenOrientation`（手机 411dp 不受影响；平板会自由旋转，
+//   版面按屏宽反推列数因此不会崩，只是不再是横屏 199 列）。
 android {
     namespace = "com.eratw.port.android"
-    compileSdk = 35
+    // A-5：compileSdk/minSdk/targetSdk 走 catalog 的 versions 段（值与改前逐字同值）。
+    compileSdk = libs.versions.compileSdk.get().toInt()
 
     defaultConfig {
         applicationId = "com.eratw.port.android"
-        minSdk = 21
-        targetSdk = 35
+        minSdk = libs.versions.minSdk.get().toInt()
+        targetSdk = libs.versions.targetSdk.get().toInt()
         // 0.2.0：从「能跑」到「能装给人玩」的第一版 —— 带设置页导入已有存档。
         // 0.2.1：只收修复，不带新玩法 —— REF 形参同一函数递归丢目标、死循环闸改墙钟为主、
         //        内建变量形参绑定补齐（补丁设置页不再整页「未启动」）、WAIT 系页面「继续」脚钮、
@@ -553,16 +337,77 @@ android {
         // 出包带 signingConfigs.releaseLocal 的 -PeratwRelease* 四项 = 发布章（见其 KDoc：
         // 不带那四项会静默签成 debug keystore）。换章后老内测包不能覆盖升级（要先卸载、
         // 存档随之丢失），所以签名与版本号一起在放包前定死。
-        versionCode = 5
-        versionName = "0.2.3"
+        // 0.2.31：收编 TRYC 动态名空名守卫（「高级列表功能」真机致命报错根修）与生产闸
+        //        10 亿步确定性闸；随包语料首收群友口上（蕾米莉亚色情特化v1.3，K16 编号5
+        //        变体，纯新增不改基线文件）。
+        // 0.2.32：修「上次异常退出」每次冷启都弹 —— 后台被系统回收（vivo 真机退出记录全是
+        //        从后台发出的 FORCE STOP）单列一态 `background`，不再当异常退出落报告/弹卡；
+        //        真死在屏前（状态仍是 `running`）照旧补报。
+        // 0.2.33：稳定化验证包 —— 收编 XML_GET 空输入解析（35d5bb6d）与 RAND 参数为 0
+        //        守卫（e36e0de0），消掉 0.2.32 上报里 12 条 CodeEE 启动失败；设置页新增
+        //        「运行诊断」卡，玩家可导出最近 64 行内存轨迹 + 死因判读（静默退出那一桶
+        //        从此有读数）。
+        // 0.2.35：R7 补丁/mod 底座（补丁格式/base 身份绑定、ModStore、Symbols 下沉、
+        //        LineTable/ConstantPool 组合形态）+ 稳定性总波 L1–L18 + 应用内自动更新
+        //        通道（内置镜像源）+ OBS 观察性波（三路心跳/翻页分位/输入序号）；
+        //        随包语料继续收群友口上（蕾米莉亚色情特化v1.3，K16 编号5 变体）。
+        // 0.2.36：稳定性/性能收口包 —— 图形池与精灵池的像素预算（Java 堆侧主动回收，
+        //        解 0.2.35 真机堆贴顶 OOM）+ 地图右侧残缺（列数 110→136）与重印抖动；
+        //        挖虫波 W10/W12 与 R7-D 收官（补丁 privateDims 载体、PRINTDATA 执行面、
+        //        编译器三 TODO）+ Rust 侧 erbcc 并入（RUST1 全波，与 Kotlin 腿逐字节对拍）；
+        //        报告取证增强（OOM 内存分项/图像簿记/约会读数/失败屏按族讲）。
+        // 0.2.37 (12)：止血包 —— 语句级脚本错误不再升成「启动失败」（可恢复终局）+
+        //        指令收尾的按键等待收窄到「清掃被拒」+ 自产 HTML 串往返不再自产脏串
+        //        （`HTML_GETPRINTEDSTR` 交回前剥掉行级 p/nobr 外壳）+ 报错节流与堆账面。
+        // 0.2.38 (13)：随包语料换 eraTW4.981-261017 根 + 群友整合口上三件套收编
+        //        （摩卡橙 ver0.05 已在根内保留根版；蕾米莉亚色情特化v1.3 K16_5 变体、
+        //        风神少女v0.01 K29_1 本次新入）。
+        // 0.2.40 (16)：erbcc 双修后语料重编（#DIM CONST 接按位 & | ^ ~、POWER 浮点
+        //        实参返回浮点）+ CLICKQ 复核加固等 11-04 收编 + 收编对面线的内存档位
+        //        放开档（API≥26 且堆≥512MiB 抬内存闸，OOM 簇）与更新弹窗两修；线上
+        //        code 15 已被 0.2.39+15 占用，本版从 14 直接跳 16 防单调闸回退。随包
+        //        语料继续含群友口上整合三件套（摩卡橙 / 蕾米莉亚色情特化 / 风神少女）。
+        //        11-04 末次重出前再收编：每日起床 Palam/Status/USERCOM/LOOK 折叠开关
+        //        跨 BEGIN TRAIN 保留、方向锁解锁改回 sensorLandscape、出包数据源同源闸。
+        //        语料按当前 erbcc 以 compat 档重编（4,324 文件 / 13 条已登记降级）。
+        //        同日重出（仍是 0.2.40 / 16，对外只算一个版本）：竖屏模式收口 —— 首版把
+        //        方向缺省写成「跟随机转」（FULL_SENSOR）又删了 manifest 的
+        //        sensorLandscape，手机竖着拿启动会直接进竖屏三区壳（玩家实测即报 bug，
+        //        镜像已撤回重出）。方向只剩横/竖两态：缺省锁横屏（与原版一致），竖屏
+        //        改为设置页「操作与显示」里的显式开关（缺省关）；方向锁按钮解锁按本局
+        //        方向回位（竖屏局回 SENSOR_PORTRAIT）；改开关后返回会问「现在重开」。
+        // 0.2.43 / 19（2026-11-07）：收 rt2 契约层（EntityContracts/SymbolCatalog/SidecarSaveBundle/
+        //        ModuleDescriptor 等）+ 立绘脸黑修复（blendPixel 直通域 + 非预乘解码）+ 存档求援
+        //        回收量口径 + CBG 绘序/图层精确几何/尺寸源 miss 单出口 + OOM 账本载荷记账等合流面。
+        versionCode = 19
+        versionName = "0.2.43"
 
-        // 方案③ 报错上报端点（Cloudflare Worker + KV，tools/report-endpoint/）：缺省空 =
+        // 方案③ 报错上报端点（服务端模板见 tools/report-endpoint/）：缺省空 =
         // 上报通道整体关闭（零网络行为）；要启用在出包时带这两个 -P 参数：
-        //   -PeratwReportEndpoint=https://<worker 域名> -PeratwReportToken=<wrangler secret 同值>
-        resValue("string", "eratw_report_endpoint",
-            providers.gradleProperty("eratwReportEndpoint").orNull ?: "")
-        resValue("string", "eratw_report_token",
-            providers.gradleProperty("eratwReportToken").orNull ?: "")
+        //   -PeratwReportEndpoint=https://<上报域名> -PeratwReportToken=<令牌>
+        // 「缺参数就静默关闭」这件事由文件头的 channel-guard 兜：release 构建缺它会打一条大声警告，
+        // 并且无论开不开，包内都留一条不含机密的读数 eratw_report_channel_stamp（见 reportChannelStamp）。
+        resValue("string", "eratw_report_endpoint", reportEndpointRaw)
+        resValue("string", "eratw_report_token", reportTokenRaw)
+
+        // 国内镜像仓自动更新：镜像基址表（`|` 分隔，见 UpdateManager.MIRROR_SEPARATOR）。
+        // 缺省空 = **整条通道关**：一次网络请求都不发，与上报端点同一套「不带参数就静默关闭」
+        // 的口径 —— 也正因为会静默关闭，devtools/pack_release.py 把它当成必须体检的一项，
+        // channel-guard 把它一起纳进警告与读数（三个参数一个闸，别只结两个）。
+        //   -PeratwUpdateMirrors=https://oss.example/eratw/|https://mirror2.example/eratw/
+        // 也可以走环境变量 ERATW_UPDATE_MIRRORS（同值）。出包脚本**走的是环境变量这一条**：
+        // Windows 下 gradlew 必须经 `cmd /c` 拉起，而 `|` 在 cmd 里是管道符 —— 同一个 -P 参数
+        // 在 PowerShell/Git-Bash 下好好的，到 cmd 就被拆成「管道给 https:」，实测退出码 255。
+        // 地址必须 https（明文由 core 的 UpdatePolicy.normalizeMirror 拒掉）。
+        resValue("string", "eratw_update_mirrors", updateMirrorsRaw)
+
+        // 事后判读用的通道读数（**不含任何机密**：只有有/无与 host 级域名）。
+        // 为什么 resValue 与 BuildConfig 各落一份：resValue 进 resources.arsc，能被
+        // `aapt2 dump resources` 与 pack_release.py 那套回读判据拿到（判现成的包）；
+        // BuildConfig 进 dex 与错误报告侧的取证面，且是纯 JVM 单测唯一能直接读到的落点
+        // （ReportChannelBuildStampTest 钉的就是它）。两边必须逐字相同，测试会互相对账。
+        resValue("string", "eratw_report_channel_stamp", reportChannelStamp)
+        buildConfigField("String", "eratwReportChannelStamp", "\"$reportChannelStamp\"")
 
         // 构建标识（2026-10-28）：同一个 0.2.0 (2) 一小时内出过三个互不相同的包，
         // 报错报告只带 versionName 根本分不清崩的是哪个 APK。出包工具（devtools/
@@ -579,7 +424,8 @@ android {
         // 会在 manifest 合并处挡住本工程的 minSdk 21（runner/core 1.7.0 与 monitor 1.8.0 都是 minSdk 21）。
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // 资源收紧：本 APK 自带资源只有字体、主题与一张图标，没有任何 locale/密度变体。
+        // 资源收紧：本 APK 自带资源只有字体、主题、一张图标和设置页「关于」卡的那张开发者头像，
+        // 没有任何 locale/密度变体。
         // locale 过滤在 aapt2 merge 阶段就丢，依赖将来带进来的多语言资源不会进包。
         // （AGP 8.8 的 defaultConfig.resourceConfigurations 已废弃，等价物是 androidResources.localeFilters。）
         // 密度：本工程没有任何 -hdpi/-xhdpi 限定目录，故无需 density 过滤，也不开 APK 分包
@@ -639,8 +485,9 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        // A-5：17 走 catalog 的 versions.jvmTarget（与纯 JVM 模块的 jvmToolchain 同源）。
+        sourceCompatibility = JavaVersion.toVersion(libs.versions.jvmTarget.get())
+        targetCompatibility = JavaVersion.toVersion(libs.versions.jvmTarget.get())
         // core-vm 的 java.nio.file（Files/Path）与 java.time 在 API 21 上靠它补齐
         isCoreLibraryDesugaringEnabled = true
     }
@@ -691,7 +538,7 @@ android {
 
 kotlin {
     compilerOptions {
-        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.fromTarget(libs.versions.jvmTarget.get()))
     }
 }
 
@@ -700,142 +547,47 @@ dependencies {
     implementation("com.eratw.port:core-vm")
     implementation(project(":render-canvas"))
     implementation(project(":platform"))
-    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
+    coreLibraryDesugaring(libs.desugar.jdk.libs.nio)
     // 壳层 Compose：只用于输入条 / 右侧选项栏 / 覆盖层 / 设置入口；游戏画面仍是
     // CanvasConsoleView（经 AndroidView 嵌入），渲染与命中路径零改动。
-    val composeBom = platform("androidx.compose:compose-bom:2024.09.03")
+    val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.material3:material3")
-    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.graphics)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.activity.compose)
     // M10-CLOUD 取证装置。uiautomator 锁 2.3.0：2.4.0 的 minSdk 是 23，会在 manifest 合并处
     // 挡住本工程（minSdk 21）。runner 1.7.0 以 compile 作用域带入 junit，故不单独声明。
-    androidTestImplementation("androidx.test:runner:1.7.0")
-    androidTestImplementation("androidx.test:core:1.7.0")
-    androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.uiautomator)
     // 壳层布局回归（如右侧选项栏的画布预留宽）：纯 JVM 单测即可覆盖，不需要设备。
-    testImplementation("junit:junit:4.13.2")
+    testImplementation(libs.junit4)
     // T2-63：把随包的 baseline profile 在「非 Android 12」机型上真正落地。
     //
     // APK 里的 `assets/dexopt/baseline.prof` 只有 API 31+（Android 12）由 dex2oat 在**安装时**
     // 自动消费；API 24~30 上系统不会去读它。profileinstaller 在首启后把 profile 写进
     // `<app>/files/profileinstaller/` 并触发一次后台 dexopt，让 24~30 也能拿到同一份热点表。
     // API 21~23 没有 profile 支持的 ART 通道，库自身会空转（不影响启动）。
-    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
+    implementation(libs.androidx.profileinstaller)
 }
 
-// ===========================================================================
-// T2-63：ART Profile（`.prof`）→ `baseline-prof.txt` 转换器
-//
-// 为什么自己写这个任务：契约要求「跑四条真实游玩路径生成 profile」，而**采集**与**转换**
-// 是两件事。采集只能上真机（`adb shell am profile start --sampling 100 -p <包名>`），
-// 产出的 `.prof` 是 ART 自己的二进制格式（含 dex 校验和、方法索引），人读不了；AGP 只在
-// **构建期**把「人可读的 baseline-prof.txt」编成 `assets/dexopt/baseline.prof`，没有反向工具。
-//
-// 转换靠 `profgen`——它没有公开的 Maven 坐标，但**完整地打在 AGP 自己的 jar 里**
-// （`com.android.tools.profgen`，108 个类，AGP 8.8.2 实测）。本任务与 AGP 同处 buildscript
-// classpath，运行期一定加载得到，因此不引入任何新依赖（调用方式见 convert() 里的反射说明）：
-//   - `DexDataKt.Apk(File, String)`        读 APK 里的 classes*.dex（拿方法表与校验和）
-//   - `ArtProfileKt.ArtProfile(File)`      读 ART 二进制 profile
-//   - `ProfileDumperKt.dumpProfile(...)`   按 dex 方法表还原成 `HSPL...;->m()V` 文本
-//
-// ⚠️ 调用方必须传**生成该 profile 的同一个 APK**：ArtProfile 里记的是 dex 校验和，
-// 换包（哪怕只改了 KB 级代码）都会让还原出来的方法表错位——profgen 会按校验和拒绝，
-// 这就是我们要的行为（宁可报错，不可静默产出错表）。
-//
-// 用法（真机采集完把 .prof 拉回本机后）：
-//   ./gradlew --configure-on-demand :app:convertArtProfile \
-//       -PeratwArtProfile=D:/DSH/t63.prof \
-//       -PeratwArtApk=app/build/outputs/apk/release/app-release.apk
-// 缺省输出到 `app/src/main/baseline-prof.txt`（AGP 会把该文件编进 assets/dexopt/baseline.prof）。
-// ===========================================================================
-abstract class ConvertArtProfileTask : DefaultTask() {
-
-    /** ART 采样 profile（`am profile stop` 之后从设备拉回来的那个文件）。 */
-    @get:InputFile
-    abstract val profileFile: RegularFileProperty
-
-    /** 生成该 profile 的**同一个** APK（提供 dex 方法表）。 */
-    @get:InputFile
-    abstract val apkFile: RegularFileProperty
-
-    /** 输出的可读 profile；AGP 只认 `src/main/baseline-prof.txt` 这个位置。 */
-    @get:OutputFile
-    abstract val outFile: RegularFileProperty
-
-    @TaskAction
-    fun convert() {
-        // 为什么用反射而不是直接 new：Gradle 给 build script 的**编译** classpath 是收窄过的
-        // `gradle-api`（2026-10-27 实测：直接写 `com.android.tools.profgen.DexDataKt` 报
-        // Unresolved reference），但**运行**期 profgen 一定在——AGP 的 jar 就在本脚本的
-        // classloader 上。所以用 `Class.forName` 拿类、按「名字 + 参数个数 + 首参类型」定位
-        // 那几个 Kotlin 文件门面（`*Kt`）上的静态方法。
-        val loader: ClassLoader = try {
-            Class.forName("com.android.tools.profgen.DexDataKt").classLoader
-        } catch (_: Throwable) {
-            // 兜底：`plugins {}` 解析出来的 AGP 不挂在 buildscript 的 `classpath` 配置上时，
-            // 显式把 buildscript classpath 拼成一个 URLClassLoader 再试一次。
-            val cp = project.buildscript.configurations.getByName("classpath").files
-            URLClassLoader(
-                cp.map { it.toURI().toURL() }.toTypedArray(),
-                ClassLoader.getSystemClassLoader(),
-            )
-        }
-        fun find(owner: String, name: String, firstParam: Class<*>, arity: Int): java.lang.reflect.Method {
-            val cls = loader.loadClass(owner)
-            return cls.methods.firstOrNull {
-                it.name == name &&
-                    it.parameterCount == arity &&
-                    firstParam.isAssignableFrom(it.parameterTypes[0])
-            } ?: throw GradleException(
-                "profgen 里找不到 $owner.$name(首参 $firstParam, 共 $arity 个参数)；" +
-                    "AGP 版本升级后 ABI 可能变了——照 BOARD 报红，别静默跳过",
-            )
-        }
-        // 1) 读 APK 的 dex 方法表（profile 里只存方法索引，必须靠它还原名字）
-        val apk = find("com.android.tools.profgen.DexDataKt", "Apk", File::class.java, 2)
-            .invoke(null, apkFile.get().asFile, "app")
-        val dexes = apk!!.javaClass.getMethod("getDexes").invoke(apk) as List<*>
-        logger.lifecycle("convertArtProfile: APK 含 ${dexes.size} 个 dex")
-        // 2) 读 ART 二进制 profile
-        val art = find("com.android.tools.profgen.ArtProfileKt", "ArtProfile", File::class.java, 1)
-            .invoke(null, profileFile.get().asFile)!!
-        val data = art.javaClass.getMethod("getProfileData").invoke(art) as Map<*, *>
-        val names = data.keys.map { it!!.javaClass.getMethod("getName").invoke(it) as String }
-        logger.lifecycle("convertArtProfile: profile 覆盖 dex $names")
-        // ObfuscationMap 在 profgen 的签名里是**非空**参数（传 null 会被 Kotlin 的入参检查当场抛
-        // NullPointerException: Parameter specified as non-null is null）。本工程 release 不开 R8，
-        // 没有映射表，给一个空映射即可（等价于 Kotlin 侧的 `ObfuscationMap.empty`）。
-        val emptyObf = loader.loadClass("com.android.tools.profgen.ObfuscationMap")
-            .getConstructor(List::class.java)
-            .newInstance(emptyList<Any>())
-        // 3) 还原成 HSP 规则文本；末位 `false` = 不按 R8 映射重写（release 未开 minify，名字即 dex 名）
-        outFile.get().asFile.parentFile?.mkdirs()
-        val dumper = find("com.android.tools.profgen.ProfileDumperKt", "dumpProfile", File::class.java, 5)
-        try {
-            dumper.invoke(null, outFile.get().asFile, art, apk, emptyObf, false)
-        } catch (e: java.lang.reflect.InvocationTargetException) {
-            // 反射会把 profgen 自己的异常包一层；不拆开就只剩一句 InvocationTargetException，
-            // 排障时完全看不出是「参数为 null」「dex 校验和对不上」还是别的。
-            val cause = e.targetException
-            throw GradleException(
-                "convertArtProfile: profgen dumpProfile 失败（${cause.javaClass.name}: ${cause.message}）",
-                cause,
-            )
-        }
-        val rules = outFile.get().asFile.readLines().count { it.isNotBlank() && !it.startsWith("#") }
-        if (rules == 0) {
-            throw GradleException(
-                "convertArtProfile: 还原出 0 条规则（${profileFile.get().asFile}）——" +
-                    "要么 profile 是空的（采样期间没跑到代码），要么 APK 与 profile 不同源" +
-                    "（dex 校验和对不上，profgen 会把方法表丢掉）",
-            )
-        }
-        logger.lifecycle("convertArtProfile: 写出 ${outFile.get().asFile} —— $rules 条规则")
-    }
+// 两臂自证的钉子（ReportChannelBuildStampTest）：把「构建期这三条通道到底带没带参数」以
+// **不含令牌**的形态传给单测 JVM —— 用例据此独立复算读数，再与包的两个落点
+// （BuildConfig.eratwReportChannelStamp、生成的 resValues）三方对账：
+//   不带参数跑一次 ⇒ 期望 endpoint=off;token=off;mirrors=off；
+//   带参数跑同一条命令 ⇒ 期望端点变成 host、token 变 on、mirrors 变成 host 表。
+// 传的是原始端点/镜像串（它们本来就是包内明文资源，不是机密）；令牌只传布尔「有/无」，
+// 值绝不出现在系统属性、测试输出或任何产物里。
+tasks.withType<Test>().configureEach {
+    systemProperty("eratw.build.reportEndpoint", reportEndpointRaw)
+    systemProperty("eratw.build.reportTokenPresent", reportTokenRaw.isNotBlank().toString())
+    systemProperty("eratw.build.updateMirrors", updateMirrorsRaw)
 }
 
+// T2-63 的 ConvertArtProfileTask 类已抽到 buildSrc（com.eratw.port.buildlogic.ConvertArtProfileTask）：
+// 逐字搬运 + loader 发现适配（buildSrc 任务类不天然持有 buildscript classloader，改候选链探测）。
+// 语义说明全在任务类 KDoc；这里只做注册与参数接线。
 tasks.register<ConvertArtProfileTask>("convertArtProfile") {
     group = "eratw"
     description = "把真机采到的 ART .prof 还原成 src/main/baseline-prof.txt（T2-63）"
@@ -872,7 +624,7 @@ tasks.register<ConvertArtProfileTask>("convertArtProfile") {
 // 「链接农场」：只把要的四类目录（见 `stagedDataDirs`）+ 三个配置按原相对路径落进 staging，其余一概不进。
 //
 // 335 MB 的语料用**同卷硬链接**落 staging（`Files.createLink`），staging 侧对链接项只读不写
-// —— 语料在共享根是只读的（AGENTS 第 1 节），链接不复制内容也不改内容；跨卷或链接被拒时
+// —— 语料在共享根是只读的，链接不复制内容也不改内容；跨卷或链接被拒时
 // 自动退回 1 MiB 流式拷贝，日志分别给出 linked/copied 两个计数。
 //
 // 程序侧沿用既有机制：`program.erbc` 单条，或按 `-PeratwErbcChunkMb` 切成
@@ -892,49 +644,6 @@ tasks.register<ConvertArtProfileTask>("convertArtProfile") {
 // 核验不必猜「这个包本该多大」。
 // ---------------------------------------------------------------------------
 
-/**
- * 从 [src] 的 [offset] 起拷 [count] 字节到 [dst]，按 1 MiB 块流式走，不整份进堆。
- *
- * @param digest 非 null 时顺便把拷过的字节喂给它（分片 sha256 随切随算，不再回头读一遍 378 MB）
- */
-private fun copyRange(src: File, dst: File, offset: Long, count: Long, digest: MessageDigest? = null) {
-    RandomAccessFile(src, "r").use { input ->
-        FileOutputStream(dst).use { output ->
-            input.seek(offset)
-            val buffer = ByteArray(1 shl 20)
-            var remaining = count
-            while (remaining > 0L) {
-                val want = minOf(buffer.size.toLong(), remaining).toInt()
-                val read = input.read(buffer, 0, want)
-                if (read < 0) throw GradleException("提前 EOF：${src.name}")
-                output.write(buffer, 0, read)
-                digest?.update(buffer, 0, read)
-                remaining -= read.toLong()
-            }
-        }
-    }
-}
-
-/** 摘要字节 → 小写十六进制（manifest / package.report 的唯一写法）。 */
-fun ByteArray.hexLower(): String = joinToString("") { "%02x".format(it.toInt() and 0xff) }
-
-/**
- * 整文件落 staging：先试同卷硬链接（0 拷贝、0 空间），被拒（跨卷/权限/文件被占）再流式拷。
- *
- * @return true = 建了链接，false = 走了拷贝
- */
-private fun linkOrCopy(src: File, dst: File): Boolean {
-    dst.parentFile?.mkdirs()
-    if (dst.exists()) dst.delete()
-    return try {
-        Files.createLink(dst.toPath(), src.toPath())
-        true
-    } catch (_: Throwable) {
-        copyRange(src, dst, 0L, src.length())
-        false
-    }
-}
-
 val gameAssetsRoot = layout.buildDirectory.dir("generated/gameAssets")
 
 // `-PeratwAllowStaleErbc` 是 fixture 口子，`-PeratwRequireComplete` 是正式包闸：两者同给
@@ -947,383 +656,56 @@ if (allowStaleErbc && requireComplete) {
 }
 
 if (bundlingEnabled) {
-    val stageGameAssets = tasks.register("stageGameAssets") {
+    // stageGameAssets 的任务类与执行体在 buildSrc（StageGameAssetsTask / BundledAssets），
+    // 这里只做配置期接线：算好的参数逐个注入，不读 project 全局态。
+    // 输入指纹由任务类注解声明，与旧 inputs.dir/file/property 逐条同义；属性名从
+    // 位置序号改成实名 —— 增量键改名会让本次改动后的首次构建重跑一次 staging，产物不变。
+    // 注：cfg* 中转变量是必须的 —— 注册 lambda 的隐式接收者是任务实例，Kotlin 里
+    // 接收者成员会遮蔽外层同名 val（requireComplete/allowStaleErbc 都重名），
+    // 裸名引用会拿到 Property 而不是脚本侧的布尔值。
+    val cfgChunkMiB = erbcChunkMiB
+    val cfgRequireComplete = requireComplete
+    val cfgAllowStaleErbc = allowStaleErbc
+    val cfgProgramStored = !erbcCompressed
+    val cfgGameRoot = bundledGameRoot
+    val cfgErbcDir = bundledErbcDir
+    val cfgIsFallback = erbcDirIsFallback
+    val cfgDataDirs = stagedDataDirs(!skipBadFrames)
+    val cfgConfigFiles = stagedConfigFiles
+    val cfgSuffixes = stagedSuffixes
+    // apkOverheadAllowance 与任务属性重名，必须中转（同上遮蔽规则）；set 自己 = 循环解析
+    val cfgApkOverhead = apkOverheadAllowance
+    val stageGameAssets = tasks.register<StageGameAssetsTask>("stageGameAssets") {
         group = "eratw"
         description = "把 erbc 产物 + CSV/resources/sound/plugins/配置搬进 assets staging（装机即玩随包）"
-        val chunkBytes = (erbcChunkMiB.toLong()) * 1024L * 1024L
-        val outRoot = gameAssetsRoot.get().asFile
-        val gameRoot = bundledGameRoot
-        val erbcDir = bundledErbcDir
-        val dataDirs = stagedDataDirs
-        val configFiles = stagedConfigFiles
-        val programStored = !erbcCompressed
-
-        // 输入：产物目录 + 三类语料目录 + 配置文件。语料是 335 MB，Gradle 每次要 xxhash 一遍
-        // （实测几十秒内）；不改这条的代价是「改了 CSV 却命中 UP-TO-DATE」出旧包，不能省。
-        erbcDir?.let { inputs.dir(it) }
-        gameRoot?.let { root ->
-            dataDirs.forEach { name ->
-                val dir = File(root, name)
-                if (dir.isDirectory) inputs.dir(dir)
-            }
-            configFiles.forEach { name ->
-                val f = File(root, name)
-                if (f.isFile) inputs.file(f)
-            }
+        chunkMiB.set(cfgChunkMiB)
+        chunkBytes.set(cfgChunkMiB.toLong() * 1024L * 1024L)
+        programStored.set(cfgProgramStored)
+        requireComplete.set(cfgRequireComplete)
+        allowStaleErbc.set(cfgAllowStaleErbc)
+        erbcDirIsFallback.set(cfgIsFallback)
+        gameRoot.set(cfgGameRoot)
+        erbcDir.set(cfgErbcDir)
+        dataDirs.set(cfgDataDirs)
+        configFiles.set(cfgConfigFiles)
+        noCompressSuffixes.set(cfgSuffixes.toList())
+        apkOverheadAllowance.set(cfgApkOverhead)
+        outRoot.set(gameAssetsRoot)
+        // 输入指纹（与旧 inputs.dir/file 逐条同义）：erbcDir 已在上面 set（@Optional @InputDirectory），
+        // 这里补语料目录/配置文件；语料是 335 MB，Gradle 每次要 xxhash 一遍（实测几十秒内）；
+        // 不改这条的代价是「改了 CSV 却命中 UP-TO-DATE」出旧包，不能省。
+        cfgGameRoot?.let { root ->
+            cfgDataDirs.forEach { name -> File(root, name).takeIf { it.isDirectory }?.let { corpusDirInputs.from(it) } }
+            cfgConfigFiles.forEach { name -> File(root, name).takeIf { it.isFile }?.let { configFileInputs.from(it) } }
+            // CMP-66：语料根本身也是输入 —— 否则「ERB 改了、erbc 没重编」会被 UP-TO-DATE 整个
+            // 跳过，新鲜度对账根本没机会跑（实测：只改 ERB 再跑，`stageGameAssets UP-TO-DATE`）。
+            File(root, "ERB").takeIf { it.isDirectory }?.let { corpusErb.set(it) }
         }
-        // 分片大小与压缩口径是任务输入：不加这两行，改 -PeratwErbcChunkMb /
-        // -PeratwErbcCompress 会命中 UP-TO-DATE 静默不重切、不重打包。
-        inputs.property("chunkBytes", chunkBytes)
-        inputs.property("programStored", programStored)
-        // CMP-66：语料根本身也是输入 —— 否则「ERB 改了、erbc 没重编」会被 UP-TO-DATE 整个跳过，
-        // 新鲜度对账根本没机会跑（实测：只改 ERB 再跑，`stageGameAssets UP-TO-DATE`）。
-        // 语料 167 MB / 4.5k 文件，Gradle 的指纹比自算 SHA-256 快得多；不声明这条，
-        // 后面 verifyErbcFreshness 的源 sha 对账就只是「跑得到的时候才有效」。
-        gameRoot?.let { root ->
-            val erbDir = File(root, "ERB")
-            if (erbDir.isDirectory) inputs.dir(erbDir).withPropertyName("corpusErb")
-        }
-        // 完整度开关同样是输入：不加这行，上一轮「语料齐但没 erbc 产物」的 staging 会命中
-        // UP-TO-DATE、doLast 整个跳过 ⇒ -PeratwRequireComplete 那条挡住不了任何东西，
-        // 照样静默出一个「装上也玩不了」的正式包（2026-10-21 接力实测）。
-        inputs.property("requireComplete", requireComplete)
-        // CMP-66：新鲜度对账的判据本身也是输入 —— 版本单源改了（= 编译器变了）或放行开关翻了，
-        // 都必须重跑 doLast，否则对账会被 UP-TO-DATE 整个跳过。
-        inputs.property("allowStaleErbc", allowStaleErbc)
-        inputs.file(erbccVersionSrc)
-            .withPropertyName("erbccVersionSource")
-        // CMP-66 编译器指纹：改编译器实现不改 VERSION 时，上一轮的 staging 会命中 UP-TO-DATE、
-        // doLast 整个跳过，compiler-digest 对账就永远不跑。这里只登记输入指纹（不是跨项目
-        // dependsOn，不触发编译），不声明它等于把新判据又关掉。
-        inputs.files(
-            fileTree(coreVmKotlinSrc) { include("**/*.kt") },
-        ).withPropertyName("compilerSources")
-        outputs.dir(outRoot)
-
-        doLast {
-            // 兜底目录（erbcc 的默认输出位）里的产物是「上一次谁编的」：本任务只读目录、不触发编译，
-            // 而 `program.meta` 的 program-sha256 只能证明 erbc/meta 互相配对，证明不了它出自当前源码。
-            // 所以正式包（-PeratwRequireComplete）直接拒绝兜底目录，调试包留警告 + report 标记。
-            // （不挂 `dependsOn(":tools:erbcc:compileCorpus")`：跨项目依赖在 configure-on-demand 下
-            //  会在执行计划阶段撞 erbcc 的 classloader scope 未锁定，2026-10-22 实测。）
-            if (erbcDir != null && erbcDirIsFallback) {
-                if (requireComplete) {
-                    throw GradleException(
-                        "随包 erbc 取自兜底目录（$erbcDir），无法证明是当前源码编译的：" +
-                            "先跑 ./gradlew :tools:erbcc:compileCorpus，或用 -PeratwErbcDir 显式指定产物目录",
-                    )
-                }
-                logger.warn(
-                    "stageGameAssets: erbc 取自兜底目录（$erbcDir）⇒ 不保证是最新编译；" +
-                        "正式包请先跑 :tools:erbcc:compileCorpus 或显式 -PeratwErbcDir。" +
-                        "产物指纹见 package.report 的 program-sha256 行",
-                )
-            }
-            fun mb(bytes: Long): String = String.format("%.1f MiB", bytes / 1024.0 / 1024.0)
-            fun b(bytes: Long): String = String.format("%,d", bytes)
-
-            // CMP-66：显式 pin 的 erbc 目录必须能自证「出自当前编译器 + 当前语料」。
-            // 判据全在 manifest（version / build-mode / 容器版本 / 产物摘要 / 逐文件源 sha）；
-            // 显式档 hard=true（不符即拒），兜底档沿用既有政策（警告 + report 标记，正式包
-            // 由 -PeratwRequireComplete 在下面挡）。fixture 用 -PeratwAllowStaleErbc 放行。
-            val erbcFreshness: String = when {
-                erbcDir == null -> "no-erbc-dir"
-                allowStaleErbc -> {
-                    logger.warn(
-                        "stageGameAssets: -PeratwAllowStaleErbc → 跳过 CMP-66 新鲜度对账（$erbcDir）；" +
-                            "只许在 fixture/体积测算用，正式包去掉这个开关",
-                    )
-                    "override(-PeratwAllowStaleErbc)"
-                }
-                else -> verifyErbcFreshness(erbcDir, gameRoot?.let { File(it, "ERB") }, hard = !erbcDirIsFallback)
-                    ?: "unverified(见上面的告警)"
-            }
-
-            outRoot.deleteRecursively()
-            var linked = 0
-            var copied = 0
-            var extensionless = 0
-            val report = LinkedHashMap<String, String>()
-            report["schema"] = "eratw-package-report"
-            report["version"] = "1"
-            report["program-mode"] = if (programStored) "stored" else "deflate"
-            report["program-chunk-mb"] = erbcChunkMiB.toString()
-            report["game-root"] = gameRoot?.absolutePath ?: "-"
-            report["erbc-source"] = erbcDir?.absolutePath ?: "-"
-            // 兜底档 = 目录内容可能是上一次任意一次编译留下的；显式 pin 才是刻意复用。
-            report["erbc-dir-fallback"] = erbcDirIsFallback.toString()
-            // CMP-66：新鲜度对账结论（verified(...) / override(...) / no-erbc-dir / unverified）。
-            report["erbc-freshness"] = erbcFreshness
-
-            // --- 1. 程序产物：单条或分片 + 侧车 + 编译清单 -------------------------------
-            val target = File(outRoot, "erbc.v1").apply { mkdirs() }
-            var erbcEntries = 0
-            var erbcBytes = 0L
-            var programParts = 0
-            // 分片表（文件名 / 字节数 / SHA-256），行序即拼接顺序；单条档为空。
-            // `program.parts` 仍保持两列（文件名 TAB 字节数）：设备侧
-            // `GameAssetInstaller.readPartsManifest` 只解析两列（platform 模块不在本路文件面），
-            // 每片 sha 因此登记在随包清单的 `shard` 行里（inspect_apk.py 对账用）。
-            val shards = mutableListOf<Triple<String, Long, String>>()
-            if (erbcDir != null) {
-                val program = File(erbcDir, "program.erbc")
-                val meta = File(erbcDir, "program.meta")
-                if (!program.isFile || !meta.isFile) {
-                    throw GradleException("erbc 目录缺 program.erbc / program.meta：$erbcDir")
-                }
-                // 侧车自带 program-sha256（BootMetaWriter 写在头部，见 BootMetaWriter 类头第 3 段），
-                // 打包期先对账：配对错的组合装上去只会停在装载器失败屏，不如在这里挡住。
-                val declaredSha = meta.useLines { lines ->
-                    lines.map { it.trim() }
-                        .firstOrNull { it.startsWith("program-sha256 ") }
-                        ?.removePrefix("program-sha256 ")
-                        ?.trim()
-                        ?.trim('"')
-                        ?.takeIf { it.isNotEmpty() && it != "-" }
-                }
-                // 无条件算指纹：对账用它，package.report 也写它 —— 拿到 APK 的人可以拿这一行
-                // 与构建日志对齐，不必再猜「这份包里的产物是哪次编的」。
-                val digest = MessageDigest.getInstance("SHA-256")
-                RandomAccessFile(program, "r").use { input ->
-                    val buffer = ByteArray(1 shl 20)
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        digest.update(buffer, 0, read)
-                    }
-                }
-                val programSha = digest.digest().hexLower()
-                report["program-sha256"] = programSha
-                if (declaredSha != null) {
-                    if (!programSha.equals(declaredSha, ignoreCase = true)) {
-                        throw GradleException(
-                            "program.erbc 与 program.meta 不配对：meta 声明 $declaredSha，实际 $programSha",
-                        )
-                    }
-                    logger.lifecycle("stageGameAssets: program-sha256 对账通过 $programSha")
-                } else {
-                    logger.lifecycle("stageGameAssets: meta 未声明 program-sha256，跳过对账（实际 $programSha）")
-                }
-
-                val programBytes = program.length()
-                report["program-bytes"] = programBytes.toString()
-                if (chunkBytes <= 0L || programBytes <= chunkBytes) {
-                    // 单条：整文件落 staging（能链接就链接，省 378 MB 的拷贝）
-                    if (linkOrCopy(program, File(target, "program.erbc"))) linked++ else copied++
-                    logger.lifecycle("stageGameAssets: program.erbc 单条 asset ${mb(programBytes)}")
-                } else {
-                    // 分片 = **裸字节切片**（不是独立容器）：`program.parts` 的行序就是拼接顺序，
-                    // 逐片拷贝时顺手算 sha256（manifest 的 shard 行 / inspect_apk 对账用）。
-                    var offset = 0L
-                    var index = 0
-                    while (offset < programBytes) {
-                        val size = minOf(chunkBytes, programBytes - offset)
-                        val name = "program.part%03d.erbc".format(index)
-                        val shardDigest = MessageDigest.getInstance("SHA-256")
-                        copyRange(program, File(target, name), offset, size, shardDigest)
-                        copied++
-                        shards += Triple(name, size, shardDigest.digest().hexLower())
-                        offset += size
-                        index += 1
-                    }
-                    File(target, "program.parts").writeText(
-                        shards.joinToString("\n", postfix = "\n") { "${it.first}\t${it.second}" },
-                    )
-                    programParts = shards.size
-                    logger.lifecycle(
-                        "stageGameAssets: program.erbc 切 ${shards.size} 片（每片<=${mb(chunkBytes)}），合计 ${mb(programBytes)}",
-                    )
-                }
-                report["program-parts"] = programParts.toString()
-                if (linkOrCopy(meta, File(target, "program.meta"))) linked++ else copied++
-                // 段 3 语句记录偏移表侧车（可选加速件）：装载期读它可跳过逐条反序列化
-                // 171 万条语句的索引趟（真机实测 9.5 s → 百毫秒级）。没有该文件就打一条
-                // 提示，装载器会自动回落扫描。
-                val stmtIdx = File(erbcDir, "program.stmt.idx")
-                if (stmtIdx.isFile) {
-                    if (linkOrCopy(stmtIdx, File(target, "program.stmt.idx"))) linked++ else copied++
-                    logger.lifecycle("stageGameAssets: program.stmt.idx ${mb(stmtIdx.length())}（装载提速侧车）")
-                } else {
-                    logger.warn("stageGameAssets: erbc 目录缺 program.stmt.idx（装载会回落语句扫描，慢 9 秒级）")
-                }
-
-                // --- CMP-74：随包清单 = 清单 ↔ 随包文件集的可对账单源 -------------------
-                // erbcc 的构建清单（manifest-format 2）已登记 program.erbc/program.meta/
-                // program.stmt.idx；分片是**打包期**才发生的，所以在同一份清单末尾追加
-                // `manifest-source package` 段：package-artifact = 本包 erbc.v1 里实际存在的
-                // 每个文件（除 manifest.txt 自身），container-artifact = 切分前的整容器，
-                // shard = 按行序可拼回整容器的每片（字节数 + sha256）。
-                // 旧产物（无 manifest-format 行，CMP-74 之前的 `artifacts 1`）在这里补格式标记，
-                // 随包面始终是可对账的新格式；构建面目录里的清单保持原样不动。
-                val buildManifest = File(erbcDir, "manifest.txt")
-                val baseManifest = if (buildManifest.isFile) {
-                    buildManifest.readText()
-                } else {
-                    logger.warn("stageGameAssets: erbc 目录缺 manifest.txt（$erbcDir）；随包清单按实际文件重建，源文件清单缺席")
-                    "# erbc package manifest —— erbcc 构建清单缺席，打包期按实际随包文件生成\n"
-                }
-                val markedManifest = if (baseManifest.lineSequence().any { it.startsWith("manifest-format ") }) {
-                    baseManifest
-                } else {
-                    "manifest-format $eratwManifestFormat\n" + baseManifest
-                }
-                val physical = target.listFiles().orEmpty()
-                    .filter { it.isFile && it.name != "manifest.txt" }
-                    .sortedBy { it.name }
-                val shardSha = shards.associate { it.first to it.third }
-                val packageBlock = buildString {
-                    append("manifest-source package\n")
-                    append("package-artifacts ").append(physical.size).append('\n')
-                    for (f in physical) {
-                        val sha = when {
-                            f.name == "program.erbc" -> programSha
-                            f.name in shardSha -> shardSha.getValue(f.name)
-                            else -> sha256Of(f)
-                        }
-                        append("package-artifact erbc.v1/").append(f.name).append(' ')
-                            .append(f.length()).append(' ').append(sha).append('\n')
-                    }
-                    append("container-artifact erbc.v1/program.erbc ")
-                        .append(programBytes).append(' ').append(programSha).append('\n')
-                    append("container-shards ").append(shards.size).append('\n')
-                    for ((name, size, sha) in shards) {
-                        append("shard erbc.v1/").append(name).append(' ')
-                            .append(size).append(' ').append(sha).append('\n')
-                    }
-                }
-                val stagedManifest = File(target, "manifest.txt")
-                stagedManifest.writeText(
-                    (if (markedManifest.endsWith("\n")) markedManifest else markedManifest + "\n") + packageBlock,
-                )
-                // package.report 的 `manifest-sha256` 让「报告 ↔ 清单」也能对账（inspect_apk.py）。
-                report["manifest-sha256"] = sha256Of(stagedManifest)
-
-                erbcEntries = target.listFiles().orEmpty().count { it.isFile }
-                erbcBytes = target.listFiles().orEmpty().sumOf { it.length() }
-                report["entries-erbc"] = erbcEntries.toString()
-                report["bytes-erbc"] = erbcBytes.toString()
-            } else {
-                logger.warn(
-                    "stageGameAssets: 没有 erbc 产物目录（-PeratwErbcDir / ERATW_ERBC_DIR 都没给，" +
-                        "默认路径也不存在）：这个 APK 装上不会有 program.erbc，**玩不了**；" +
-                        "先跑 ./gradlew :tools:erbcc:compileCorpus",
-                )
-            }
-
-            // --- 2. 语料四类目录（CSV / resources / sound / plugins）：按原相对路径落链接农场 ----
-            val stagedDirs = LinkedHashMap<String, Pair<Int, Long>>()
-            if (gameRoot != null) {
-                dataDirs.forEach { name ->
-                    val src = File(gameRoot, name)
-                    if (!src.isDirectory) {
-                        logger.warn("stageGameAssets: 游戏根缺 $name/（$src）：该类条目不随包")
-                        stagedDirs[name] = 0 to 0L
-                        return@forEach
-                    }
-                    var count = 0
-                    var bytes = 0L
-                    src.walkTopDown().filter { it.isFile }.forEach { f ->
-                        val rel = f.toRelativeString(src)
-                        if (!f.name.contains('.')) extensionless++
-                        val dst = File(outRoot, "$name/$rel")
-                        if (linkOrCopy(f, dst)) linked++ else copied++
-                        count++
-                        bytes += f.length()
-                    }
-                    stagedDirs[name] = count to bytes
-                    report["entries-$name"] = count.toString()
-                    report["bytes-$name"] = bytes.toString()
-                    logger.lifecycle(
-                        "stageGameAssets: $name $count 个文件 ${mb(bytes)}（${bytes} B）",
-                    )
-                }
-                // 配置：`emuera.config` 是 GameStorage 的游戏根标志、也是解包器「只拷一次」那条；
-                // default/fixed 存在才带。
-                var configCount = 0
-                var configBytes = 0L
-                configFiles.forEach { name ->
-                    val f = File(gameRoot, name)
-                    if (f.isFile) {
-                        if (linkOrCopy(f, File(outRoot, name))) linked++ else copied++
-                        configCount++
-                        configBytes += f.length()
-                    }
-                }
-                stagedDirs["配置"] = configCount to configBytes
-                report["entries-config"] = configCount.toString()
-                report["bytes-config"] = configBytes.toString()
-                if (configCount == 0) {
-                    logger.warn("stageGameAssets: 游戏根没有 emuera.config：首启只能靠内部根兜底")
-                }
-            } else {
-                logger.lifecycle(
-                    "stageGameAssets: 未给 -PeratwGameRoot 且 ERATW_GAMEDIR 无效 ⇒ 只随包 erbc.v1，" +
-                        "缺图缺声音（不是「装机即玩」形态）",
-                )
-            }
-
-            // --- 3. package.report：随包读数落进 assets，供 inspect_apk.py 逐类对账 -------
-            val stagedBytes = erbcBytes + stagedDirs.values.sumOf { it.second }
-            val stagedEntries = erbcEntries + stagedDirs.values.sumOf { it.first }
-            report["staged-entries"] = stagedEntries.toString()
-            report["staged-bytes"] = stagedBytes.toString()
-            report["extensionless-files"] = extensionless.toString()
-            report["linked-files"] = linked.toString()
-            report["copied-files"] = copied.toString()
-            report["no-compress-suffixes"] = (stagedSuffixes + if (programStored) listOf("erbc", "meta") else emptyList())
-                .sorted()
-                .joinToString(",")
-            // APK 体积上限 = 随包字节 + 代码/资源开销余量 + 分片死区余量。
-            // 单条实测总开销 5,245,013 B（718,297,161 − 713,052,148）。
-            // **开分片必须额外留「一片」的死区**：2026-10-21 实测 `-PeratwErbcChunkMb=128`
-            // 打成 3 片后 APK 778,661,112 B / 随包 713,052,148 B ⇒ 空隙 65.6 MB，
-            // 而单条同样内容只差 5.2 MB —— AGP 的 zip 写入在「先写完语料、再回补大条目」时
-            // 会把其中一片挪到包尾、原地留洞。结论：随包形态别开分片（缺省就是单条）。
-            val alignSlack = if (programParts > 1) chunkBytes else 0L
-            val apkCeiling = stagedBytes + apkOverheadAllowance + alignSlack
-            report["align-slack-bytes"] = alignSlack.toString()
-            report["apk-ceiling-bytes"] = apkCeiling.toString()
-            File(target, "package.report").bufferedWriter().use { w ->
-                report.forEach { (k, v) -> w.write("$k $v\n") }
-            }
-
-            // --- 4. 闸：单条目 2 GiB 上限 + 完整形态自检 --------------------------------
-            // 单条目 2 GiB 是 ZIP32 / libziparchive 的硬上限；超了装得进也读不出。
-            val cap = 2L * 1024L * 1024L * 1024L - 1L
-            val files = outRoot.walkTopDown().filter { it.isFile }.toList()
-            files.filter { it.length() > cap }.forEach {
-                throw GradleException("assets 单条目超过 2 GiB 上限：${it.name} = ${it.length()}")
-            }
-            if (requireComplete) {
-                val missing = mutableListOf<String>()
-                val artifactDir = File(outRoot, "erbc.v1")
-                if (!File(artifactDir, "program.erbc").isFile && !File(artifactDir, "program.parts").isFile) {
-                    missing += "erbc.v1 程序产物（program.erbc 或 program.parts + 分片）"
-                }
-                if (!File(artifactDir, "program.meta").isFile) missing += "erbc.v1/program.meta"
-                stagedDataDirs.forEach { name ->
-                    val dir = File(outRoot, name)
-                    if (!dir.isDirectory || dir.walkTopDown().none { it.isFile }) missing += "$name/"
-                }
-                if (!File(outRoot, "emuera.config").isFile) missing += "emuera.config"
-                if (missing.isNotEmpty()) {
-                    throw GradleException(
-                        "随包形态不完整（-PeratwRequireComplete）：缺 ${missing.joinToString("、")}" +
-                            "；游戏根=${gameRoot?.absolutePath ?: "(未给)"} erbc=${erbcDir?.absolutePath ?: "(未给)"}",
-                    )
-                }
-            }
-
-            logger.lifecycle(
-                "stageGameAssets: ${files.size} 条 staging 文件（链接 $linked / 拷贝 $copied，" +
-                    "无后缀 $extensionless 个），随包 ${b(stagedBytes)} B（${mb(stagedBytes)}）" +
-                    "，其中程序 ${b(erbcBytes)} B",
-            )
-            logger.lifecycle(
-                "stageGameAssets: 程序条目 ${if (programStored) "STORED（首启纯拷贝、可按字节判重拷）" else "允许 DEFLATE（首启多一次 inflate）"}；" +
-                    "APK 体积上限 ${b(apkCeiling)} B（${mb(apkCeiling)}，含分片死区余量 ${b(alignSlack)} B）",
-            )
-        }
+        // root=game 的语料补丁（CSV/_Rename.csv 等）在 staging 时改随包字节；索引改了必须重跑。
+        rootProject.file("devtools/corpus-patches").takeIf { it.isDirectory }?.let { corpusPatchesDir.set(it) }
+        erbccVersionSource.set(erbccVersionSrc)
+        compilerSources.from(fileTree(coreVmKotlinSrc) { include("**/*.kt") })
+        repoRoot.set(eraKcoreHome)
     }
 
     android.sourceSets.getByName("main").assets.srcDir(gameAssetsRoot)

@@ -14,12 +14,14 @@ import com.eratw.port.core.config.SettingsConstraint
 import com.eratw.port.core.config.SettingsModel
 import com.eratw.port.core.config.SettingsRejectReason
 import com.eratw.port.core.config.SettingsSetResult
+import com.eratw.port.core.host.CellWidth
 import com.eratw.port.core.host.InputRequest
 import com.eratw.port.core.proc.QueueInputSink
 import com.eratw.port.platform.config.SettingsStore
 import com.eratw.port.platform.image.AndroidGraphicsSink
 import com.eratw.port.platform.input.KeyMacroController
 import com.eratw.port.platform.input.TouchGestureController
+import com.eratw.port.render.adapter.HtmlRunFlatten
 import com.eratw.port.render.displaylist.InlineGraphic
 import com.eratw.port.render.glyph.CellMetrics
 import com.eratw.port.render.input.InputSession
@@ -796,6 +798,45 @@ class PlatformContractAuditTest {
         val parts = layer.drainInline()
         assertEquals(0xFF_FF8800.toInt(), (parts[0] as InlineGraphic.Rect).colorArgb)
         assertEquals("高位脏值按 RGB 域解释，alpha 恒 0xFF", 0xFF_FF8800.toInt(), (parts[1] as InlineGraphic.Rect).colorArgb)
+    }
+
+    // -----------------------------------------------------------------
+    // 7. PRINT_IMG 的尺寸源转发（`ConsoleImagePart.cs:60-71` 的单出口）
+    // -----------------------------------------------------------------
+
+    /**
+     * 壳层必须把 `sizeSource` 原样转发给共享桥（`GraphicsSinkBridge`）：注入后
+     * **查表未命中** ⇒ `Text = AltText` + 按文本量宽（`ConsoleImagePart.cs:60-65`、
+     * `:104-115`），高度停在构造初值 `bottom = Config.FontSize`（`:37`）。
+     */
+    @Test
+    fun `print img 注入尺寸源后 miss 行按 AltText 计格`() {
+        val layer = GraphicsLayer()
+        val sink = AndroidGraphicsSink(
+            layer,
+            CellMetrics(18),
+            sizeSource = HtmlRunFlatten.ImageSizeSource { null },
+        )
+        sink.printImage("pic", null, null, listOf(0L to false, 200L to false))
+        val img = layer.drainInline().single() as InlineGraphic.Image
+        val alt = "<img src='pic' height='36'>"
+        assertEquals("AltText 重建与绘制侧回落同一串", alt, img.altText)
+        assertEquals("miss 宽 = AltText 显示格", CellWidth.displayCells(alt), img.widthCells)
+        assertEquals("miss 的高度 = 一行高（ConsoleImagePart.cs:37 的初值）", 18, img.heightPx)
+    }
+
+    /** 注入后**命中**且缺宽 ⇒ 仍按基图纵横比推宽（`ConsoleImagePart.cs:66-71`）。 */
+    @Test
+    fun `print img 注入尺寸源后命中行按基图纵横比推宽`() {
+        val layer = GraphicsLayer()
+        val sink = AndroidGraphicsSink(
+            layer,
+            CellMetrics(18),
+            sizeSource = HtmlRunFlatten.ImageSizeSource { (100 shl 16) or 50 },
+        )
+        sink.printImage("pic", null, null, listOf(0L to false, 200L to false))
+        val img = layer.drainInline().single() as InlineGraphic.Image
+        assertEquals("基图 100×50、高 36 ⇒ 100 * 36 / 50", 72, img.widthPx)
     }
 
     // -----------------------------------------------------------------

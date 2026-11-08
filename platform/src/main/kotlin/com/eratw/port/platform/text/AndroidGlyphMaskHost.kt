@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.os.Build
 import com.eratw.port.core.host.GlyphMask
 import com.eratw.port.core.host.GlyphMaskHost
 import com.eratw.port.core.host.GlyphRequest
@@ -39,10 +40,10 @@ class AndroidGlyphMaskHost(context: Context) : GlyphMaskHost {
     private val appContext: Context = context.applicationContext
 
     /**
-     * 族名 → Typeface 的实例缓存。多族（GFX-12）：默认正文族（当前 Saitamaar）
-     * 与设置页的备选族。`createFromAsset` 每次都要解一遍 ttf，必须缓存。
+     * 族名 → Typeface 的实例缓存。多族（GFX-12）：默认正文族（当前 Sarasa Mono SC）
+     * 与设置页的备选族/兜底族。`createFromAsset` 每次都要解一遍 ttf，必须缓存。
      */
-    private val typefaces = HashMap<String, Typeface>(5)
+    private val typefaces = HashMap<String, Typeface>(8)
 
     private val cache = HashMap<String, GlyphMask?>()
 
@@ -73,7 +74,7 @@ class AndroidGlyphMaskHost(context: Context) : GlyphMaskHost {
         val text = GlyphMaskMath.codePointToString(cp) ?: return null
         val plan = GlyphMaskMath.paintPlanFor(req.sizePx, req.styleMask) ?: return null
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            typeface = typefaceFor(req)
+            typeface = typefaceFor(req, cp)
             textSize = plan.textSizePx
             isFakeBoldText = plan.syntheticBold
             // 斜体走合成斜切（随包字体只有常规字面）；斜切量 -0.25 是 Android 合成惯例，
@@ -121,14 +122,38 @@ class AndroidGlyphMaskHost(context: Context) : GlyphMaskHost {
     /**
      * 字体名 → Typeface 的最小映射（CONTRACT §5 判据②）：**一律用随包字体**，
      * `req.fontName` **参与选族**（GFX-12 换字体波）：族名经 [BundledFontFamilies.resolve]
-     * 折成登记族（`ＭＳ ゴシック` / `黑体` / 空串 / 未知名 → 默认族 Saitamaar，
-     * `Saitamaar` 同族），再按族取 Typeface。
+     * 折成登记族（`ＭＳ ゴシック` / `黑体` / 空串 / 未知名 → 默认族 Sarasa Mono SC），
+     * 再按族取 Typeface；该族缺此码点时按随包回落链换族（[effectiveFamily]）。
      * 与 `CanvasConsoleView.typefaceFor` 同一张表、同一条回落链 —— 两处口径必须一致，
      * 否则 `GDRAWTEXT` 的掩码与屏上正文会是两种字形。
      * 族缺失（裁剪包/坏包）时回落 [Typeface.DEFAULT]（判据②钉的就是 DEFAULT）。
      */
-    private fun typefaceFor(req: GlyphRequest): Typeface {
-        val entry = BundledFontFamilies.resolve(req.fontName)
+    private fun typefaceFor(req: GlyphRequest, codePoint: Int): Typeface =
+        typefaceOf(effectiveFamily(BundledFontFamilies.resolve(req.fontName), codePoint))
+
+    /**
+     * 逐字形缺字回落（与 `CanvasConsoleView.effectiveFamily` 同一条链）：请求族没有该码点
+     * 时按 [BundledFontFamilies.fallbacksFor] 试随包兜底族，全缺才回请求族（方框）。
+     * `Paint.hasGlyph` 需要 API 23，旧设备直接跳过（等价于让 Paint 走系统回退）。
+     */
+    private fun effectiveFamily(requested: BundledFontFamily, codePoint: Int): BundledFontFamily {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return requested
+        val text = GlyphMaskMath.codePointToString(codePoint) ?: return requested
+        if (hasGlyph(requested, text)) return requested
+        for (fallback in BundledFontFamilies.fallbacksFor(requested)) {
+            if (hasGlyph(fallback, text)) return fallback
+        }
+        return requested
+    }
+
+    /** 该族是否有 [text] 的字形；`hasGlyph` 抛异常时按「有」处理（不因探测失败换族）。 */
+    private fun hasGlyph(family: BundledFontFamily, text: String): Boolean {
+        val probe = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = typefaceOf(family) }
+        return runCatching { probe.hasGlyph(text) }.getOrDefault(true)
+    }
+
+    /** 登记族 → Typeface（实例缓存；缺包回落 [Typeface.DEFAULT]）。 */
+    private fun typefaceOf(entry: BundledFontFamily): Typeface {
         synchronized(typefaces) {
             typefaces[entry.family]?.let { return it }
             val loaded = loadTypeface(appContext, entry) ?: Typeface.DEFAULT

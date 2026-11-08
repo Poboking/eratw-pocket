@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <!-- 无 AndroidX：直接继承系统 Material 主题（API 21+） -->
-    <style name="Theme.Eratw" parent="@android:style/Theme.Material.NoActionBar">
+    <!--
+      `tools:targetApi="23"`：`android:windowLightStatusBar` 是 API 23 才有的属性，
+      minSdk 是 21 —— 21/22 上平台会**忽略**未知属性，不会崩，所以这里不是缺兼容分支，
+      而是 lint 的 NewApi 误报。用 tools 声明（纯 lint 指令，不改任何运行时行为）。
+    -->
+    <style name="Theme.Eratw" parent="@android:style/Theme.Material.NoActionBar" tools:targetApi="23">
         <item name="android:windowBackground">@android:color/black</item>
         <item name="android:statusBarColor">@android:color/black</item>
         <item name="android:navigationBarColor">@android:color/black</item>

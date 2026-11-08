@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    androidTest 装置包的 manifest（只随取证 APK 走，不进玩家包）。
+
+    存在的理由是 [NetProbeActivity]：它要能被 `am start` 起来，所以得注册一个 exported 的
+    Activity（testOnly 包，不对外发布）。
+
+    这里刻意**不**声明 `ACCESS_NETWORK_STATE` —— 那正是玩家反馈那件事的实验条件 A
+    （没有这条权限的包，在这台 ROM 上读得到读不到网络类型）。加上它跑第二次是条件 B。
+
+    条件 B 已跑过（2026-11-03，vivo V2199A / Android 14，连着 Wi-Fi）：
+    - A（本文件不写这条权限）：`getActiveNetwork()` 抛
+      `SecurityException: ConnectivityService: Neither user ... nor current process has
+      android.permission.ACCESS_NETWORK_STATE` ⇒ 判不出网络类型 ⇒ 界面按蜂窝说「不是 Wi-Fi」。
+    - B（把下面这条注释放开）：同一个调用交回 `transports=WIFI, notMetered=true` ⇒ 判定为不计量。
+    留 A 形态入库：装置包的默认形态要与「应用没声明会怎样」这一侧对齐，B 是临时改法。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 条件 B 时放开这一行（本轮实测过，读数见上面）：
+         <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" /> -->
+
+    <application>
+        <activity
+            android:name="com.eratw.port.android.dbg.NetProbeActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+    </application>
+
+</manifest>

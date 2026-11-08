@@ -1,16 +1,18 @@
 plugins {
-    id("com.android.library")
-    kotlin("android")
+    alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlin.android)
 }
 
 // M4-SKEL：平台能力模块。M5 的触屏 / 音频 / 设置页绑定都落在本模块；
 // 当前只提供真机数据根与 APK assets 读取口，core-vm 的启动接线从这里拿路径。
 android {
     namespace = "com.eratw.port.platform"
-    compileSdk = 35
+    // A-5：本波唯一放行的值变化 —— compileSdk 35→36，对齐 app 的 36
+    // （catalog 的 versions.compileSdk）。
+    compileSdk = libs.versions.compileSdk.get().toInt()
 
     defaultConfig {
-        minSdk = 21
+        minSdk = libs.versions.minSdk.get().toInt()
     }
 
     testOptions {
@@ -23,8 +25,8 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.toVersion(libs.versions.jvmTarget.get())
+        targetCompatibility = JavaVersion.toVersion(libs.versions.jvmTarget.get())
     }
 
     buildFeatures {
@@ -34,7 +36,7 @@ android {
 
 kotlin {
     compilerOptions {
-        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.fromTarget(libs.versions.jvmTarget.get()))
     }
 }
 
@@ -45,5 +47,9 @@ dependencies {
     // core-vm 是纯 JVM 库，不反向依赖 platform，无环。
     implementation("com.eratw.port:core-vm")
     // 纯 JVM 单测（M5-A：手势/宏控制器不碰 Android API）；Android 单测默认跑 JUnit4
-    testImplementation("junit:junit:4.13.2")
+    testImplementation(libs.junit4)
+    // 素材包解包：官方 BGM 资源包以 .7z（LZMA2 solid）分发，JDK 的 ZipFile 读不了；
+    // commons-compress 是纯 JVM 实现，xz 供 LZMA2 解码，两者都不碰 Android API。
+    implementation(libs.commons.compress)
+    implementation(libs.xz)
 }

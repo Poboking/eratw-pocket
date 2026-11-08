@@ -2524,7 +2524,6 @@ HSPLcom/eratw/port/render/canvas/CanvasConsoleView$RowMetrics;->indexOf(F)I
 HSPLcom/eratw/port/render/canvas/CanvasConsoleView$animeTick$1;->run()V
 HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->$r8$lambda$i-0IkmFHayTY2cqOoNz9iHrJD-8(Landroid/graphics/Bitmap;)J
 HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->access$scheduleAnimeTick(Lcom/eratw/port/render/canvas/CanvasConsoleView;)V
-HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->applyPageFit(II)V
 HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->attachGraphics(Lcom/eratw/port/render/view/GraphicsLayer;Lcom/eratw/port/render/view/ImageFrameSource;)V
 HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->baselineOffsetOf(Ljava/lang/String;)F
 HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->blitSurface(Landroid/graphics/Canvas;)V
@@ -2536,7 +2535,6 @@ HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->clientX(F)I
 HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->clientY(F)I
 HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->consoleForFit()Lcom/eratw/port/render/view/ConsoleScreen;
 HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->contentHeightPx()I
-HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->currentPageRows()I
 HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->dispatchTouchEvent(Landroid/view/MotionEvent;)Z
 HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->drawBackgrounds(Landroid/graphics/Canvas;FFFF)V
 HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->drawBackgroundsMeasured(Landroid/graphics/Canvas;FFFF)V
@@ -2561,7 +2559,6 @@ HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->packGlyphKey(Lcom/eratw/por
 HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->pumpAndInvalidateIfNeeded()V
 HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->rasterTextRow(Landroid/graphics/Canvas;Ljava/util/List;IFFFFFFZIII)V
 HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->rebuildScreen(II)V
-HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->refitIfPageChanged()V
 HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->requestRedraw()V
 HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->resizeFeedScreen(Lcom/eratw/port/render/view/ConsoleScreen;I)V
 HSPLcom/eratw/port/render/canvas/CanvasConsoleView;->rowCache$lambda$3(Landroid/graphics/Bitmap;)J
@@ -2689,8 +2686,6 @@ HSPLcom/eratw/port/render/view/ConsoleScreen;->getViewport()Lcom/eratw/port/rend
 HSPLcom/eratw/port/render/view/ConsoleScreen;->getVisibleRowBase()I
 HSPLcom/eratw/port/render/view/ConsoleScreen;->hit(II)Lcom/eratw/port/render/HitTarget;
 HSPLcom/eratw/port/render/view/ConsoleScreen;->islandHtml()Ljava/util/List;
-HSPLcom/eratw/port/render/view/ConsoleScreen;->pageExtentRows$default(Lcom/eratw/port/render/view/ConsoleScreen;IILjava/lang/Object;)I
-HSPLcom/eratw/port/render/view/ConsoleScreen;->pageExtentRows(I)I
 HSPLcom/eratw/port/render/view/ConsoleScreen;->refresh()Ljava/util/List;
 HSPLcom/eratw/port/render/view/ConsoleScreen;->submitSnapshot(Ljava/util/List;)Ljava/util/List;
 HSPLcom/eratw/port/render/view/GraphicGeometry;->artRowScale(FFFI)F
@@ -2707,8 +2702,6 @@ HSPLcom/eratw/port/render/view/ImageFrame;->getHandle()Ljava/lang/Object;
 HSPLcom/eratw/port/render/view/ImageFrame;->getHeight()I
 HSPLcom/eratw/port/render/view/ImageFrame;->getSrcH()I
 HSPLcom/eratw/port/render/view/ImageFrame;->getWidth()I
-HSPLcom/eratw/port/render/view/PageFit;-><init>(IIII)V
-HSPLcom/eratw/port/render/view/PageFitter;->fit(IIII)Lcom/eratw/port/render/view/PageFit;
 HSPLcom/eratw/port/render/view/RowRasterCache$Entry;->getCmdCount()I
 HSPLcom/eratw/port/render/view/RowRasterCache$Entry;->getHeightPx()I
 HSPLcom/eratw/port/render/view/RowRasterCache$Entry;->getValue()Ljava/lang/Object;
@@ -2716,7 +2709,6 @@ HSPLcom/eratw/port/render/view/RowRasterCache;->find(IIII)Lcom/eratw/port/render
 HSPLcom/eratw/port/render/view/RowRasterCache;->put(ILjava/lang/Object;III)V
 HSPLcom/eratw/port/render/view/RunChrome;->backgroundFill(Lcom/eratw/port/render/displaylist/DrawCmd;Z)Ljava/lang/Integer;
 HSPLcom/eratw/port/render/view/RunChrome;->opaque(I)I
-HSPLcom/eratw/port/render/view/ScreenLayout$Companion;->fit(IIII)Lcom/eratw/port/render/view/ScreenLayout;
 HSPLcom/eratw/port/render/view/ScreenRows;->textLine$default(Lcom/eratw/port/render/view/ScreenRows;Ljava/lang/String;IIZZILjava/lang/Object;)Lcom/eratw/port/render/RenderLine;
 HSPLcom/eratw/port/render/view/ScreenRows;->textLine(Ljava/lang/String;IIZZ)Lcom/eratw/port/render/RenderLine;
 HSPLcom/eratw/port/render/view/ScreenSurfacePlanner;->getFull()Z

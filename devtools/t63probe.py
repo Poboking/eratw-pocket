@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -30,7 +31,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hawkeye as hk  # noqa: E402
 
-DIAG = Path(r"D:\DSH\t63-diag")
+_DEFAULT_T63_DIAG = Path(__file__).resolve().parent / ".t63-diag"
+DIAG = Path(os.environ.get("ERATW_T63_DIAG_DIR") or _DEFAULT_T63_DIAG)
 DIAG.mkdir(parents=True, exist_ok=True)
 
 

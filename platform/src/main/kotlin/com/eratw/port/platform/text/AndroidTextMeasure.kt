@@ -3,6 +3,7 @@ package com.eratw.port.platform.text
 import android.content.Context
 import android.graphics.Paint
 import android.graphics.Typeface
+import com.eratw.port.render.font.BundledFontFamilies
 import com.eratw.port.render.glyph.CellMetrics
 
 /**
@@ -36,9 +37,10 @@ import com.eratw.port.render.glyph.CellMetrics
  * 原版按名字取族：空名先归一成 `Config.FontName`（FontFactory.cs:13-17，StringStyle.cs:26-31），
  * 族名比较是**序号相等**（`fontFamily.Name == text`，FontFactory.cs:40，大小写敏感）；
  * 查不到族时 `new Font` 走 GDI+ 的缺省族、异常则整体回 null（FontFactory.cs:33-55）。
- * 本类把族表做成注入式 `Map<String, Typeface>`：命中原名用对应族，空名/未知族/大小写不一致
- * 一律回落 [defaultTypeface]（[TextMeasureMath.resolveFamily]）。随包字体名到真族名的多族映射
- * 与 `AndroidGlyphMaskHost` 一样仍是 TODO(verify)，卡点是随包 ttf 只有单一字面。
+ * 本类持有登记族名 → Typeface 的实例表：字体名先经 [BundledFontFamilies.resolve] 折成
+ * 登记族（别名表把 `黑体` / `ＭＳ ゴシック` 等 PC 名折到默认族），再按族名查表，
+ * 空名/未登记/缺包一律回落 [defaultTypeface]。选族口径与 `CanvasConsoleView` /
+ * `AndroidGlyphMaskHost` 共用同一张注册表，量宽与绘制不会各用一族。
  *
  * ## charSpace
  *
@@ -138,8 +140,19 @@ class AndroidTextMeasure private constructor(
         return TextMeasureMath.pixelsToCells(pixels, fontSize)
     }
 
-    private fun typefaceFor(fontName: String): Typeface =
-        TextMeasureMath.resolveFamily(fontName, families.keys)?.let { families[it] } ?: defaultTypeface
+    /**
+     * 字体名 → Typeface：先经 [BundledFontFamilies.resolve] 折成登记族（与原版 GDI 的
+     * 通用替换同向），再按登记族的族名查实例表；缺包/未登记回落 [defaultTypeface]。
+     *
+     * 为什么不像旧实现那样只认 `families.keys` 的原文相等：量宽和屏上绘制必须选**同一个**
+     * 族，而绘制侧（`CanvasConsoleView` / `AndroidGlyphMaskHost`）走的是登记表 + 别名表
+     * （`黑体` / `ＭＳ ゴシック` → 默认族），只按原文比会把这类名字量成缺省族宽度，
+     * HTML 段的排版与正文对不上。
+     */
+    private fun typefaceFor(fontName: String): Typeface {
+        val family = BundledFontFamilies.resolve(fontName)
+        return families[family.family] ?: defaultTypeface
+    }
 
     companion object {
 
@@ -156,16 +169,25 @@ class AndroidTextMeasure private constructor(
             AndroidTextMeasure(families.toMap(), defaultTypeface)
 
         /**
-         * 缺省构造：族表为空、默认族 = 随包字体（缺包回落 [Typeface.DEFAULT]，
-         * 载入路径与 `AndroidGlyphMaskHost` 同一处，不复制第二份 asset 常量）。
+         * 缺省构造：把 [BundledFontFamilies.ALL] 全部载入（键 = 登记族名），
+         * 默认族取登记表的 [BundledFontFamilies.default]；缺包时该族回 null，
+         * 由调用侧落 [Typeface.DEFAULT]。载入路径与 `AndroidGlyphMaskHost` 同一处，
+         * 不复制第二份 asset 常量。
          *
-         * TODO(verify)：多族映射未定（随包 ttf 只有单一字面），此时任何 fontName 都落随包字体；
-         * 卡点与 `AndroidGlyphMaskHost.typefaceFor` 的 TODO 同源，归组长真机对账。
+         * `families` 形参保留给显式注入（单测/宿主替换）：非空时**与随包族合并**，
+         * 同键以显式表为准。
          */
         fun fromContext(context: Context, families: Map<String, Typeface> = emptyMap()): AndroidTextMeasure {
-            val default = AndroidGlyphMaskHost.loadBundledTypeface(context.applicationContext)
+            val app = context.applicationContext
+            val bundled = LinkedHashMap<String, Typeface>()
+            for (family in BundledFontFamilies.ALL) {
+                AndroidGlyphMaskHost.loadTypeface(app, family)?.let { bundled[family.family] = it }
+            }
+            bundled.putAll(families)
+            val default = bundled[BundledFontFamilies.default.family]
+                ?: AndroidGlyphMaskHost.loadBundledTypeface(app)
                 ?: Typeface.DEFAULT
-            return AndroidTextMeasure(families.toMap(), default)
+            return AndroidTextMeasure(bundled, default)
         }
     }
 }
@@ -189,6 +211,20 @@ object TextMeasureMath {
 
     /** 脚本样式位：下划线（Process.cs:1524-1527）。 */
     const val STYLE_UNDERLINE: Int = 8
+
+    /**
+     * 可用字号上界（像素，Long 入参口径）：语料最大的 `GSETFONT` 字号是 100
+     * （`ERB/SHOP関連/TEST.ERB:663`），测量回退常量也是 100；这条闸只挡病态值
+     * （几千以上 Paint 量出的宽会一路溢到 Int 折算），与 [GlyphMaskMath.MAX_SIDE_PX] 同量级。
+     */
+    const val MAX_FONT_PX: Long = 4096L
+
+    /**
+     * 整串宽度的上界（像素）：取 `Int.MAX_VALUE` —— 下游 `pixelsToCells` 与 core 的布局都按 Int
+     * 像素用这个读数，超过它就会被折成负宽；因此这条闸只会拒掉「本来就表不出来」的读数，
+     * 任何能落成 Int 的合法串宽逐值不变。
+     */
+    const val MAX_TOTAL_PIXELS: Long = Int.MAX_VALUE.toLong()
 
     /**
      * 样式位摊平结果。只有 [bold] / [italic] 影响量宽；[strikeout] / [underline] 是装饰位，
@@ -243,9 +279,15 @@ object TextMeasureMath {
      * （GraphicsMethods.kt:539-543 同判、FunctionMethodCreator.cs:6550-6590 分支的 KDoc 引行），
      * 移植侧不抛。`Config.cs:431-434` 的「小于 8 抬到 8」是**配置层**的修正，不属于
      * 本守卫（真实配置不会给 0），只在 [pixelsToCells] 经 `CellMetrics` 时生效。
+     *
+     * 上界 [MAX_FONT_PX] 是**移植侧的稳定性闸**（原版没有）：`GSETFONT` 的字号实参来自脚本，
+     * 病态值（几千、甚至 `Long.MAX_VALUE`）会让 `Paint.setTextSize` 拿到 Float 溢出级字号、
+     * 量出 Inf / 接近 `Long.MAX_VALUE` 的宽度，再经 core 的 Int 布局截断成负宽。
+     * 超限按「无法量宽」回 null（与字号 ≤ 0 同一条回落链），core 落回等宽近似；
+     * 语料最大的 `GSETFONT` 字号是 100（`ERB/SHOP関連/TEST.ERB:663`），正常脚本碰不到。
      */
     fun fontSizePx(fontSize: Long): Float? =
-        if (fontSize <= 0L) null else fontSize.toFloat()
+        if (fontSize <= 0L || fontSize > MAX_FONT_PX) null else fontSize.toFloat()
 
     /**
      * 码位数（charSpace 的「每字」口径）。增补平面算**一个**字
@@ -263,14 +305,18 @@ object TextMeasureMath {
      * 本仓 `TextMetrics.measurePixels` 也是「整串一次截断」而不是逐字截断
      * （render/glyph/TextMetrics.kt 的测量 KDoc），两者都不许逐字各自取整后再相加。
      *
-     * @return null = basePx 非有限/为负或码位数为负（调用方数据坏）；负 charSpace 允许
-     *   （收紧字距），合计为负时按 0 处理
+     * @return null = basePx 非有限/为负、码位数为负（调用方数据坏），或合计溢出
+     *   [MAX_TOTAL_PIXELS]（病态字号 × 超长串：`Math.round` 会饱和成 `Long.MAX_VALUE`，
+     *   再被 core 折成 Int 就是负宽）。负 charSpace 允许（收紧字距），合计为负时按 0 处理
      */
     fun totalPixels(basePx: Double, charCount: Int, charSpace: Long): Long? {
         if (!basePx.isFinite() || basePx < 0.0) return null
         if (charCount < 0) return null
         val total = basePx + charCount.toDouble() * charSpace.toDouble()
+        // NaN / Inf：basePx 有限时只可能来自 `0 × Inf` 或双精度上溢，同样是坏读数。
+        if (!total.isFinite()) return null
         if (total <= 0.0) return 0L
+        if (total > MAX_TOTAL_PIXELS.toDouble()) return null
         return Math.round(total)
     }
 

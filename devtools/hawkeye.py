@@ -28,6 +28,7 @@ from __future__ import annotations
 import base64
 import os
 import re
+import shutil
 import shlex
 import subprocess
 import sys
@@ -36,8 +37,37 @@ import xml.etree.ElementTree as ET
 
 from PIL import Image, ImageChops
 
-ROOT = r"D:\DSH\eratw-安卓移植计划"
-ADB = os.path.join(ROOT, ".tooling", "android-sdk", "platform-tools", "adb.exe")
+def _shared_root() -> str:
+    """共享根按主机名解析（AGENTS §1 同口径），环境变量 `ERATW_ROOT` 优先。
+
+    公开仓不内置个人机器路径：共享根只从 ERATW_ROOT 取，未设置时直接报错而不是猜路径。
+    """
+    import platform
+
+    env = os.environ.get("ERATW_ROOT")
+    if env and os.path.isdir(env):
+        return env
+    raise SystemExit("共享根未知：请设 ERATW_ROOT 环境变量后重跑")
+
+
+def _find_adb(root: str) -> str:
+    """adb 候选：共享根自带 → `ANDROID_HOME`/`ANDROID_SDK_ROOT` → PATH。"""
+    candidates = [os.path.join(root, ".tooling", "android-sdk", "platform-tools", "adb.exe")]
+    for var in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        home = os.environ.get(var)
+        if home:
+            candidates.append(os.path.join(home, "platform-tools", "adb.exe"))
+    found = shutil.which("adb")
+    if found:
+        candidates.append(found)
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return candidates[0]
+
+
+ROOT = _shared_root()
+ADB = _find_adb(ROOT)
 SERIAL = (os.environ.get("ERATW_SERIAL") or "10ACCD2B4Y004PK")  # 无线 adb 时用 ERATW_SERIAL=192.168.x.x:port 覆盖
 PKG = "com.eratw.port.android"
 DEV = "/sdcard/Android/data/com.eratw.port.android/files/eratw/dev"
@@ -316,8 +346,18 @@ def install_unattended(apk: str, remote: str, timeout_s: int = 420) -> str:
     return out
 
 
-def c_deploy(_arg: str = "") -> None:
-    apk = os.path.join(ROOT, "eratw-android", "app", "build", "outputs", "apk", "debug", "app-debug.apk")
+def c_deploy(apk_arg: str = "") -> None:
+    """装 APK 并冷启。给路径就装那个包，不给就装 debug 包。
+
+    为什么要这个参数：发布章的包与 debug 章互不兼容（覆盖安装被系统直接拒，
+    `INSTALL_FAILED_UPDATE_INCOMPATIBLE`），设备上躺着 release 包时想装机复核
+    release 产物，就必须能指到 `app-release.apk`。
+    """
+    apk = (apk_arg or "").strip() or os.path.join(
+        ROOT, "eratw-android", "app", "build", "outputs", "apk", "debug", "app-debug.apk"
+    )
+    if not os.path.isfile(apk):
+        raise SystemExit(f"找不到 APK：{apk}")
     remote = "/data/local/tmp/eratw.apk"
     stamp = time.strftime("%H:%M:%S", time.localtime(os.path.getmtime(apk)))
     log(f"部署 {os.path.basename(apk)} {os.path.getsize(apk):,} bytes（{stamp}）")

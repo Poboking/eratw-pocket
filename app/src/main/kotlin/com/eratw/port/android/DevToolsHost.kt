@@ -2,9 +2,14 @@ package com.eratw.port.android
 
 import android.util.Log
 import android.content.pm.ApplicationInfo
+import com.eratw.port.core.diag.LockWatch
+import com.eratw.port.core.diag.PageFunctionTrail
 import com.eratw.port.core.host.SingleDaemonSlot
+import com.eratw.port.core.proc.ProcessRuntime
+import com.eratw.port.core.proc.QueueInputSink
 import com.eratw.port.render.canvas.CanvasConsoleView
 import java.io.File
+import java.util.Locale
 
 /**
  * 真机实时调试通道（**仅 debug 包**）：轮询命令文件 → 宿主侧执行 → 结果回写。
@@ -31,6 +36,8 @@ import java.io.File
  *   「图为什么不显示」的第一排查口
  * - `bg` — 当前背景层列表（SETBGIMAGE 落了什么）
  * - `lines [n]` — console 末 n 行文本快照
+ * - `lockwatch [on|off|readout|reset|status]` — 锁持有/等待采样器的**真机出口**（OBS2-L2）；
+ *   **缺省关**，装配期不自动挂载，只有这条命令把它打开（[LockWatchCommand] 逐条口径）
  * - `submit <文本>` — 提交输入（驱动选单 / 推进对话）
  * - `tap <x> <y>` — 模拟点击命中（等价手指点屏幕上的按钮行）
  *
@@ -94,12 +101,15 @@ class DevToolsHost private constructor(
             "chips" -> chips()
             "hits" -> view.debugHits()
             "turnlog" -> turnlog()
+            "inputtrail" -> inputTrail()
             "loadtrace" -> loadtrace()
+            "lockwatch" -> LockWatchCommand.execute(arg)
             "sample" -> sample(arg.toIntOrNull() ?: 3000)
             "var" -> varRead(arg)
             "vars" -> varsList(arg)
             "callstack" -> callstack()
             "where" -> where()
+            "dating" -> datingForensics()
             "feed" -> feed(arg)
             "dumpvars" -> dumpVars(arg.toIntOrNull() ?: 8)
             "trace" -> traceCmd(arg)
@@ -109,6 +119,8 @@ class DevToolsHost private constructor(
             "snapshot" -> DevState.snapshotCmd(host, dir, snapSandbox(), arg)
             "restore" -> DevState.restoreCmd(host, dir, snapSandbox(), arg)
             "log" -> DevState.logCmd(host, dir, arg, logSlot)
+            "caps" -> caps()
+            "events" -> events(arg.toIntOrNull() ?: 50)
             "submit" -> {
                 host.submit(arg)
                 "submitted: $arg"
@@ -117,11 +129,25 @@ class DevToolsHost private constructor(
                 val parts = arg.split(',', ' ').filter { it.isNotBlank() }.map { it.toFloat() }
                 val x = parts.getOrElse(0) { 0f }
                 val y = parts.getOrElse(1) { 0f }
-                val text = view.tap(x, y, host.acceptance())
-                if (text == null) "tap($x,$y) 未命中"
-                else {
-                    host.submit(text)
-                    "tap($x,$y) 命中并提交: $text"
+                // `tap` 返回 `TapOutcome`（命中文本 + 本击是否回贴底，见 CanvasConsoleView.tap）。
+                // 回贴底那一击按原版 `MainWindow.cs:799-820` **只回贴底、不提交**（`:808` 的
+                // `if (!flag)` 罩住整段命中分支），实测通道照抄同一条口径，否则调试时会把
+                // 「滚动着的视图上点一下」记成一次按钮提交，取证就与真机行为对不上。
+                val outcome = view.tap(x, y, host.acceptance())
+                val text = outcome.hit
+                when {
+                    outcome.snappedToBottom ->
+                        "tap($x,$y) 回贴底，未提交" + if (text == null) "" else "（命中 $text 已丢弃）"
+                    text == null -> "tap($x,$y) 未命中"
+                    else -> {
+                        // 与真机命中同一条投喂口：MainActivity.handleConsoleTap 命中后走
+                        // submitButtonValue → GameHost.submitButton。带鼠标的 INPUT
+                        // （QOL 子选单的 `INPUT -1, 1`）要靠这一维写 `RESULT:1` 左键位，
+                        // 走 host.submit 会把调试通道变成「键盘回车」，取证与真机对不上
+                        // （原版 MainWindow.cs:824-849 的 changedByMouse 分支）。
+                        host.submitButton(text)
+                        "tap($x,$y) 命中并提交: $text"
+                    }
                 }
             }
             else -> USAGE
@@ -148,16 +174,74 @@ class DevToolsHost private constructor(
         return "generation=$generation running=$running devtoolsThreads=$devtools threads=${names.joinToString(",")}"
     }
 
-    /** `turnlog`：逐页「提交 → 下一次进入等待点」的墙钟毫秒（最近 64 页）。 */
+    /**
+     * `turnlog`：逐页「提交 → 下一次进入等待点」的墙钟毫秒（最近 64 页）＋末尾一行分位摘要。
+     *
+     * 摘要口径 = [TurnPercentiles]（定长窗口最近秩 p50/p95/max，窗口未满 20 条时 p95 即 max），
+     * 「这一局整体变慢没有」看末尾这一行，逐页定位仍看上面 64 条。
+     */
     private fun turnlog(): String {
         val log = host.debugTurnLog()
-        return if (log.isEmpty()) "（无翻页读数：本会话还没提交过输入）" else log.joinToString("\n")
+        val body = if (log.isEmpty()) "（无翻页读数：本会话还没提交过输入）" else log.joinToString("\n")
+        return body + "\n" + host.debugTurnPercentilesSummary()
+    }
+
+    /**
+     * `inputtrail`：输入四层流水的现场读数（obs-inputseq 波 + 组长接的宿主面）。
+     *
+     * 一行四层差分 + core 面流水原文。「玩家点了没反应」的四层判据在这里一次读全：
+     * `received`（宿主收到几次提交，含被闸丢的）→ `dropped(gate)`（执行期闸 = 原版
+     * Running 早退，`EmueraConsole.cs:1374-1377`，属**预期行为**）→ `enq`（`lastSubmittedSeq`）
+     * → `con`（`lastConsumedSeq`）；对不上的差额才是要查的层。`awaiting` 给当前等待点标识，
+     * `pending` 给队列积压条数。
+     */
+    private fun inputTrail(): String {
+        val (received, gateDropped) = host.debugInputGateCounters()
+        val r = host.debugInputTrail()
+            ?: return "received=$received dropped(gate)=$gateDropped（会话未装配：core 面无流水）"
+        return buildString {
+            append(
+                "received=$received dropped(gate)=$gateDropped enq=${r.lastSubmittedSeq} " +
+                    "con=${r.lastConsumedSeq} drop(void)=${r.dropVoidCount} " +
+                    "drop(parse)=${r.dropParseCount} pending=${r.pendingCount} " +
+                    "awaiting=${r.awaitingTag ?: "-"} closed=${r.isClosed}",
+            )
+            append('\n')
+            if (r.trail.isEmpty()) {
+                append("（流水为空：本会话还没有一次提交走到队列）")
+            } else {
+                append(r.trail.joinToString("\n"))
+            }
+        }
     }
 
     /** `loadtrace`：本次装载逐段读数（段名 + 已用堆 + 距起点毫秒），口径同 logcat `load.*`。 */
     private fun loadtrace(): String {
         val lines = host.debugLoadTraceLines()
         return if (lines.isEmpty()) "（无装载读数：还没进入装载链）" else lines.joinToString("\n")
+    }
+
+    /**
+     * `caps`（R3）：能力声明。读侧 / 写侧 / 快照 / 事件四类一行点名，供外部脚本按版本协商；
+     * 未声明的命令维持 [USAGE] 拒绝路径，不因为这张表而多认任何命令。
+     */
+    private fun caps(): String = "schema=1 caps=read,write,snapshot,events"
+
+    /**
+     * `events [n]`（R3）：常开事件环尾 n 行（缺省 50，与落盘格式逐字相同）+ 环统计与落盘位置。
+     *
+     * 未 [EventJournal.begin] 时文件为 null —— 此时如实说明「只读内存环」，不造一个假路径。
+     */
+    private fun events(n: Int): String {
+        val tail = if (n <= 0) emptyList() else EventJournal.lines().takeLast(n)
+        val file = EventJournal.file()
+        val where = if (file == null) {
+            "mem-only（未绑定落盘目录）"
+        } else {
+            "file=${file.path} bytes=${if (file.isFile) file.length() else 0L}"
+        }
+        val head = "${EventJournal.stats()} $where"
+        return if (tail.isEmpty()) head else head + "\n" + tail.joinToString("\n")
     }
 
     /**
@@ -300,8 +384,11 @@ class DevToolsHost private constructor(
 
     /**
      * `callstack`：ERB 函数调用栈（#0 = 最内帧）+ VM 线程 Java 栈顶 5 帧。
-     * 反射口径与 GameBootSmoke 一致（`ProcessRuntime.vm` → `funcStack`/`depth`，
-     * 帧表映射 `program.functions[i].name`）；字段名变更时优雅降级。
+     * 反射口径与 [ErrorReportCollector.vmStackLines] 一致（`ProcessRuntime.vm` → `funcStack`/`depth`）；
+     * 帧名走运行期 [com.eratw.port.core.proc.FunctionTable]（[ErrorReportCollector.functionNameResolver]），
+     * 不读 `program.functions`：`.erbc` 产物档那张惰性表在调试线程上解码会与 VM 线程抢未加锁的
+     * 实例缓冲（报告路径上同样的问题已收口）。帧序/截断统一由 [VmStack.frameLines] 判
+     * （`depth` 是栈顶下标而不是帧数，见那里的说明）。字段名变更时优雅降级。
      */
     private fun callstack(): String {
         val session = host.debugSession() ?: return "（未装载）"
@@ -313,8 +400,7 @@ class DevToolsHost private constructor(
             val dF = vm.javaClass.getDeclaredField("depth").apply { isAccessible = true }
             val fs = fsF.get(vm) as IntArray
             val d = dF.getInt(vm)
-            val fns = session.program.functions
-            (d - 1 downTo 0).mapIndexed { k, i -> "#$k ${fns.getOrNull(fs[i])?.name ?: "?"}" }
+            VmStack.frameLines(fs, d, Int.MAX_VALUE, ErrorReportCollector.functionNameResolver(session.runtime))
         }.getOrElse { return "读数不可用：${it.javaClass.simpleName}（字段名变更？）" }
         val javaTop = host.debugVmThread()?.stackTrace?.take(5)
             ?.joinToString("\n") { "  at ${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" }
@@ -322,7 +408,25 @@ class DevToolsHost private constructor(
         return racePrefix() + (frames?.joinToString("\n") ?: "（无帧：VM 未在执行）") + "\n--- java ---\n$javaTop"
     }
 
-    /** `where`：游戏现在在干嘛的浓缩读数（等待面 + revision + 末行 + 调用栈顶 3 帧）。 */
+    /**
+     * `where`：游戏现在在干嘛的浓缩读数（等待面 + revision + 末行 + 调用栈顶 3 帧 + 本页函数流水）。
+     *
+     * ## 本页流水两行的口径（fix-pagetrailwire）
+     *
+     * - `本页`：`Vm`/`QueueInputSink` 上那个进帧环的**实时**读数（[GameHost.debugPageFlow]）。
+     *   它在**等待点之后**恒为空 —— 页边界清零紧跟 `onTurnReady` 交付
+     *   （`QueueInputSink` 的 `readAnyKey`/`waitInput` 结算段，core 侧 `PageFunctionTrail`），
+     *   而 VM 停在等待点时那一页已经交付过了。所以「等待点之后读到的是**上一页**」
+     *   指的是下面那一行：宿主在交付回调里、清零之前拍下的快照。
+     * - `上一页`：刚结束那一页的 `最旧→最新` 进帧序列（[GameHost.debugLastPageFlow]）。
+     *   「这一页为什么慢」要读它；`longturn` 钉行里的 `page:` 段就是同一份文本。
+     *
+     * 线程：本命令跑在 DevTools daemon 线程，两行都是**跨线程读** ⇒ 尽力而为（环绕覆盖 /
+     * 清零并发时可能个别槽新旧混合、长度 ±1），只作人工定位、**不参与任何判定**。
+     * 名字解析走运行期函数表（`FuncMeta`，不可变数组），不碰 `.erbc` 惰性函数表的
+     * 未加锁解码缓冲（判词与 `callstack` 同源）。名字解析失败/越界降级成 `#<下标>`，
+     * 流水为空才写 `-`。
+     */
     private fun where(): String {
         val pending = host.pendingRequest()
         val pendingText = pending?.let {
@@ -335,9 +439,32 @@ class DevToolsHost private constructor(
         } ?: "无"
         val lastLine = host.debugConsoleLines(1).firstOrNull()?.take(80) ?: "（console 空）"
         val top3 = callstack().lineSequence().take(3).joinToString(" ; ")
+        val pageNow = PageTrailWire.trailText(host.debugPageFlow())
+        val pageLast = PageTrailWire.trailText(host.debugLastPageFlow())
         return racePrefix() +
             "running=${host.isRunning()} pending=$pendingText anyKey=${host.awaitingAnyKey()} " +
-            "rev=${host.debugRevision()}\n末行: $lastLine\n栈顶: $top3"
+            "rev=${host.debugRevision()}\n末行: $lastLine\n栈顶: $top3\n" +
+            "本页: $pageNow\n上一页: $pageLast"
+    }
+
+    /**
+     * `dating`：「约会中／路人子」现场读数（diag-datingsync，与错误报告里那一行同源同口径）。
+     *
+     * 用途是把两条只能靠玩家描述的反馈变成可读数：①某人被 `CHK_DATENOW` 判成"正在约会"
+     * 时到底哪几个角色的 `CFLAG:约会中` 不等于 `MAIN_MAP`；②路人子那两半闸
+     * （`TALENT:路人` 与 `TFLAG:一日一回` 的第 9 位）当时各是什么。
+     * 只读，不改状态；语料侧的 `#DIM SAVEDATA` 基准读不到时直说不可用（系统变量恒可读，
+     * 一片 0 的现场比没有现场更容易误导定性）。
+     */
+    private fun datingForensics(): String {
+        val session = host.debugSession() ?: return "（未装载）"
+        val f = runCatching { com.eratw.port.core.proc.datingForensics(session.store) }
+            .getOrElse { return "读数失败：${it.javaClass.simpleName}: ${it.message}" }
+        return racePrefix() + if (f.isEmpty) {
+            "（不可用：MAIN_MAP / RANDOM_CHARANUM 未声明——语料没装或不是 eraTW 包）"
+        } else {
+            f.render()
+        }
     }
 
     /** `feed v1,v2,...`：批量入队输入（调试后门口径：允许先入队后取值，与 UI 代理的「不抢跑」不同）。 */
@@ -449,7 +576,8 @@ class DevToolsHost private constructor(
             // （给右侧栏徽标用），地图类按钮印 `[27]` 而值是 227 时它是 null，
             // 拿 null 当「非数值按钮」会把诊断读数码歪。
             val id = (c.value as? Long)?.let { "#$it" } ?: "str"
-            "$id value=${c.value} origin=${c.origin} label=${c.label}"
+            val color = c.colorRgb?.let { "#%06X".format(it and RGB_MASK) } ?: "-"
+            "$id value=${c.value} origin=${c.origin} visual=${c.visual} color=$color label=${c.label}"
         }
     }
 
@@ -466,6 +594,7 @@ class DevToolsHost private constructor(
 
         /** `dumpvars` 的行数上限（防撑爆外部存储）。 */
         private const val MAX_DUMP_LINES = 20_000
+        private const val RGB_MASK = 0xFFFFFF
 
         /**
          * 调试通道的**进程级单代槽**（CMP-17）。
@@ -523,15 +652,19 @@ class DevToolsHost private constructor(
   gen              调试通道代次 + 存活 eratw-* 线程（CMP-17 判据）
   stats            重绘计数明细
   view             当前度量（行/列/字号/行高/页行数/日志行数）
-  turnlog          逐页翻页耗时（提交 → 下一等待点，最近 64 页）
+  turnlog          逐页翻页耗时（提交 → 下一等待点，最近 64 页）＋末尾一行 n/p50/p95/max 分位摘要
+  inputtrail       输入四层流水差分（received / dropped(gate) / enq / con + 两类丢弃 + 积压 + 当前等待点）
   loadtrace        本次装载逐段读数（段名/已用堆/毫秒）
+  lockwatch [on|off|readout|reset|status]
+                   锁持有/等待采样器（缺省关；readout 一行一个「挂载点+线程」；本通道仅 debug 包）
   sample <ms>      VM 线程穷采样（聚合叶子帧 top 25，默认 3000）
   img <资源名>     试取图（宽高+命中文件）
   bg               背景层列表
   lines [n]        console 末 n 行
   chips            当前页可点按钮（引擎按钮层枚举，含非数字按钮）
   hits             命中表行/列几何（每行 y/行高/列区间，与截图对拍；含空行）
-  where            游戏现场浓缩读数（等待面/revision/末行/栈顶）
+  where            游戏现场浓缩读数（等待面/revision/末行/栈顶/本页与上一页函数流水）
+  dating           约会中／路人子现场读数（MAIN_MAP 对照 + 路人子两半闸，只读）
   var NAME[:i[:j]] 读单变量（int|str 双槽；名归一大写）
   vars <前缀>      枚举变量名（系统面+用户 #DIM 面，上限200）
   callstack        ERB 调用栈（#0 最内）+ VM 线程 Java 栈顶
@@ -545,7 +678,164 @@ class DevToolsHost private constructor(
   restore <路径>                     还原快照（LOADDATA 语义：下次推进走读档链）
   log --tags event,rng,var [--watch 名单] [--max N]
                                      黑匣子事件流（三观察口；log 落盘 / log off 摘除）
+  caps             能力声明（schema=1 caps=read,write,snapshot,events）
+  events [n]       常开事件环尾 n 行（缺省 50）+ 环统计与落盘路径/字节
   submit <文本>    提交输入
   tap <x>,<y>      模拟点击"""
+    }
+}
+
+/**
+ * 「本页函数流水」的 app 侧接线 + 行格式（`obs-pagefuncs` 的消费端，本路唯一的纯逻辑层）。
+ *
+ * core 侧 [PageFunctionTrail] 只负责**记录**（进帧环、页边界清零、读侧解析名字），
+ * 它自己不知道被谁挂上；本对象补齐三件 app 侧的事：
+ * 1. [attachSink] / [attachVm]：把同一个实例挂到 `QueueInputSink.pageTrail` 与
+ *    `VirtualMachine.pageTrail` 两处（缺省 null = 零行为，关不记由挂载点决定）。
+ * 2. [trailText]：读数空串 → `-`。**只把「这一页没有进帧」写成人能看的占位**；
+ *    名字解析失败/下标越界仍由 core 的 `readout()` 降级成 `#<下标>`，不许在这里吞成空。
+ * 3. [longTurnLine]：`longturn` 钉行的唯一拼装口（页中压力检查点与页尾交付两处共用，
+ *    格式只此一份）。
+ *
+ * ## 为什么 attachVm 只能反射
+ *
+ * `ProcessRuntime.vm` 是 private（`ProcessRuntime.kt:298`），core 没开公共取用面，而本路
+ * 禁改 `core-vm`。反射在这里不是新发明：`callstack` / `ErrorReportCollector.vmStackLines` /
+ * `longTurnFrame` 三处既有调用点读的都是同一个 private 字段（判词见那些 KDoc）。
+ * 反射失败（字段改名）只让流水**挂不上**（读数退化成 `#<下标>` 与 `-`），不改任何语义；
+ * 字段名由 `PageTrailWireTest` 钉住，改名在桌面单测就红。
+ *
+ * ## 线程口径（读侧两类，core 侧 `PageFunctionTrail` KDoc 同源）
+ *
+ * - **同线程直读**（逐字确定）：页中压力检查点与页尾 `onTurnReady` 都在 **VM 线程**上跑，
+ *   读到的就是此刻/刚结束那一页的流水，无可见性问题。
+ * - **跨线程读**（尽力而为）：DevTools `where` 跑在 daemon 线程，可能撞上环绕覆盖或页边界
+ *   清零 ⇒ 个别槽新旧混合、长度 ±1。只作人工定位，**绝不参与任何判定**。
+ */
+internal object PageTrailWire {
+
+    /**
+     * `VirtualMachine` 上那个挂载点的字段名（`Vm.kt` 的 `var pageTrail: PageFunctionTrail?`）。
+     *
+     * 单测钉住这个名字还在这两个类上；改名 ⇒ 桌面单测红，而不是真机静默降级。
+     */
+    const val VM_FIELD = "pageTrail"
+
+    /**
+     * 挂到输入队列（页边界清零点在 `QueueInputSink` 的两个等待点结算段）。
+     *
+     * 必须与 [attachVm] 传**同一个实例**：清零点在 sink 侧、记录点在 VM 侧，
+     * 两个实例会让「本页流水」被清零却仍在累加（读数变成跨页混合）。
+     */
+    fun attachSink(sink: QueueInputSink, trail: PageFunctionTrail) {
+        sink.pageTrail = trail
+    }
+
+    /**
+     * 挂到 VM（进帧记录点：`Vm.run` 入口帧 / `callInto` / `jumpInto` 三处）。
+     *
+     * @return true = 真的挂上了；false = 反射不通（字段改名 / 未装配），调用方只需照实记日志。
+     */
+    fun attachVm(runtime: ProcessRuntime, trail: PageFunctionTrail): Boolean = runCatching {
+        val vmField = ProcessRuntime::class.java.getDeclaredField("vm").apply { isAccessible = true }
+        val vm = vmField.get(runtime) ?: return@runCatching false
+        val f = vm.javaClass.getDeclaredField(VM_FIELD).apply { isAccessible = true }
+        f.set(vm, trail)
+        true
+    }.getOrDefault(false)
+
+    /** 流水读数的人读形态：空串（本页没有进帧）写成 `-`；`#<下标>` 这类降级原样保留。 */
+    fun trailText(readout: String): String = readout.ifEmpty { "-" }
+
+    /**
+     * `longturn` 钉行（**格式只此一份**）：
+     * `longturn <ms>ms @<栈顶> [heap=<used>/<max>] | page: <最旧→最新>`。
+     *
+     * 页中检查点带 `heap=`（那一路本来就要读堆水位），页尾交付不带（保持既有 `turn`
+     * 那一套读数之外**只多一段**流水）。`longturn` 前缀逐字保留：报告里「长页」仍按
+     * 这一行认，新增的只是行尾的 `| page:` 段。
+     *
+     * @param pageMs 这一页已经跑了多少毫秒
+     * @param top 最内层 ERB 函数名（取不到调用方给 `-`，见 `GameHost.longTurnFrame`）
+     * @param pageReadout `PageFunctionTrail.readout()` 原文（空 = 本页无进帧 ⇒ `-`）
+     * @param heap 形如 `480MiB/512MiB`；null = 不写这一段
+     */
+    fun longTurnLine(pageMs: Long, top: String, pageReadout: String, heap: String? = null): String {
+        val heapPart = if (heap == null) "" else " heap=$heap"
+        return "longturn ${pageMs}ms @$top$heapPart | page: ${trailText(pageReadout)}"
+    }
+}
+/**
+ * DevTools 的 `lockwatch` 子命令（OBS2-L2，2026-11-05；契约 §2 L2 第 4 项）——
+ * [com.eratw.port.core.diag.LockWatch] 的**真机出口**。
+ *
+ * ## 为什么这一格要单独成对象
+ *
+ * `LockWatch` 的开关只吃 JVM 性质 `eratw.lockwatch`（`core/diag/LockWatch.kt` 的
+ * `PROPERTY_ENABLED`），桌面有 `-Plockwatch=true`（`core-vm/build.gradle.kts:131` 透传），
+ * **真机上没有人能设性质** ⇒ 采样器在设备上永远关着、永远读不到。本对象把四条出口接在
+ * 既有命令通道上：`on` → [LockWatch.attach]、`off` → [LockWatch.detach]、
+ * `readout` → [LockWatch.readout]、`reset` → [LockWatch.reset]。
+ *
+ * 三条硬口径（逐条有单测：`app/src/test/kotlin/com/eratw/port/android/DevToolsLockWatchCommandTest.kt`）：
+ * 1. **缺省关**：装配期不自动挂载（本对象没有任何 init / 其他调用点会 attach），
+ *    打开只由这条命令发生；
+ * 2. **纯文本返回、绝不抛**：`readout` 本体已禁抛（`LockWatch` 类 KDoc「读侧禁抛降级」），
+ *    这里再兜一层 `try/catch` —— 命令面抛出会让轮询线程那一轮只剩 `EXC ...`，
+ *    而观测通道自己炸掉是最不该发生的事；
+ * 3. **零语义位移**：只读写 `LockWatch` 自己的定长表，不碰任何锁、不碰 VM 状态。
+ *
+ * ## 能不能在 release 包里打到（契约 §2 L2 第 5 项的答案）
+ *
+ * **打不到**：本命令挂在 [DevToolsHost] 的轮询通道上，而该通道的启动点在
+ * `本文件的 startOnce` 里 —— 它的第一件事就是
+ * `if (view.context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) return`
+ * （`startOnce` 的 KDoc 原文在它上两行：「buildFeatures.buildConfig 显式关闭
+ * （`app/build.gradle.kts:227`），用 debuggable 标志判定」）。
+ * release 包不带 `FLAG_DEBUGGABLE` ⇒ 轮询线程根本不起、`cmd.txt` 没人读 ⇒ 这条命令
+ * 对玩家 / 正式作者**不可达**，只有 debug 包装机后能用。剩下那一格（release 里按
+ * QOL / 设置开关把观测打开）要动装配面（`GameHost` / `UiPrefs` / 设置页），超出本路
+ * 文件所有权 ⇒ 逐条写在 OBS2-L2 交付的「需组长接线」里。
+ */
+internal object LockWatchCommand {
+
+    /** 子命令名（[DevToolsHost.execute] 的 `when` 分支与单测都引这一个常数）。 */
+    const val NAME = "lockwatch"
+
+    /** 用法行：不带参、参不认识、异常兜底都要把这一行带出去。 */
+    const val HELP = "用法: lockwatch on|off|readout|reset|status"
+
+    /**
+     * 执行一条 `lockwatch` 子命令，返回**纯文本**（多行以换行分隔，直接进 `out.txt`）。
+     *
+     * @param arg [DevToolsHost.execute] 切掉命令名之后的余部（可为空串）。
+     */
+    fun execute(arg: String): String = try {
+        when (arg.trim().lowercase(Locale.ROOT)) {
+            "on" -> {
+                LockWatch.attach()
+                "lockwatch on：挂载点已打开（全进程一档，UI/VM/装载线程同时开始记；" +
+                    "off 摘除、readout 取数、reset 清表）\n" +
+                    LockWatch.readout()
+            }
+            "off" -> {
+                LockWatch.detach()
+                "lockwatch off：挂载点回到零行为（一次 volatile 布尔读，" +
+                    "不取时钟、不进监视器、零分配）\n" +
+                    "表内读数保留到下一次 reset\n" +
+                    LockWatch.readout()
+            }
+            "readout" -> LockWatch.readout()
+            "reset" -> {
+                LockWatch.reset()
+                "lockwatch reset：读数已清（挂载态=" +
+                    (if (LockWatch.enabled) "on" else "off") + "）"
+            }
+            "", "status", "help", "?" -> HELP + "\n" + LockWatch.readout()
+            else -> "$HELP（收到: $arg）\n" + LockWatch.readout()
+        }
+    } catch (t: Throwable) {
+        // 命令面绝不抛（口径照 LockWatch.readout 的读侧降级）。
+        "lockwatch 不可用：${t.javaClass.simpleName}: ${t.message}\n$HELP"
     }
 }

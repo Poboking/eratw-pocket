@@ -1,0 +1,32 @@
+; OPT-GRID 渲染验证夹具（2026-11-05 遗留③：桌面渲染替代真机复核）
+@SYSTEM_TITLE
+	CALL OPTGRID_SHOW
+
+@OPTGRID_SHOW
+	PRINTL === OPT-GRID RENDER CHECK ===
+	PRINTL
+	HTML_PRINTC "<font color='#64fa8c'><button value='403'>休憩[403]</button></font>"
+	HTML_PRINTC "<font color='#64fa8c'><button value='406'>日记本[406]</button></font>"
+	HTML_PRINTC "<font color='#64fa8c'><button value='410'>扫除[410]</button></font>"
+	HTML_PRINTC "<font color='#64fa8c'><button value='412'>学习[412]</button></font>"
+	HTML_PRINTC "<font color='#64fa8c'><button value='413'>制作料理[413]</button></font>"
+	HTML_PRINTC "<font color='#64fa8c'><button value='416'>演奏（子选单）[416]</button></font>"
+	HTML_PRINTC "<font color='#64fa8c'><button value='425'>下药[425]</button></font>"
+	HTML_PRINTC "<font color='#64fa8c'><button value='446'>进行调合[446]</button></font>"
+	HTML_PRINTC "<font color='#64fa8c'><button value='450'>查看酒虫的情况[450]</button></font>"
+	HTML_PRINTC "<font color='#64fa8c'><button value='451'>自慰[451]</button></font>"
+	HTML_PRINTC "<font color='#64fa8c'><button value='482'>追踪雏[482]</button></font>"
+	HTML_PRINTC "<font color='#64fa8c'><button value='490'>道具[490]</button></font>"
+	HTML_PRINTC "<font color='#64fa8c'><button value='495'>眺望天空[495]</button></font>"
+	HTML_PRINTC "<font color='#64fa8c'><button value='496'>使用收音机[496]</button></font>"
+	HTML_PRINTC "<font color='#64fa8c'><button value='498'>料理之铁人[498]</button></font>"
+	HTML_PRINTC "<font color='#64fa8c'><button value='641'>能力卡牌[641]</button></font>"
+	PRINTL
+	HTML_PRINT "<img src='a' width='216px' height='144px'><button value='1'>设置角色</button>", 1
+	PRINTL
+	HTML_PRINT "<img src='a' width='216px' height='144px'><button value='2'>变更对象</button>", 1
+	PRINTL
+	HTML_PRINT "<nobr><shape type='space' param='100'><button value='0'>[  0] 你进行自定义角色</button>", 1
+	PRINTL
+	PRINTL === END ===
+	INPUT

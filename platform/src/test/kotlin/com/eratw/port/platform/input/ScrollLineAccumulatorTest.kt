@@ -36,12 +36,14 @@ class ScrollLineAccumulatorTest {
     }
 
     @Test
-    fun `方向随手指走且符号一致`() {
+    fun `方向随手指走且与 scrollRows 同号`() {
         val acc = ScrollLineAccumulator()
-        // 手指下移（distanceY < 0）= 看更早的行。12px = 0.63 行 ⇒ 付 -1 行。
+        // 手指上移 12px = 0.63 行 ⇒ 付 -1 行；`scrollRows(-1)` 走 scrollDown = 走向更晚的行。
         assertEquals(-1, acc.add(-12f, lineH))
-        // 付完欠下 +7px 零头，再来 -2px 仍不到半行 ⇒ 这一帧不动。
+        // 付完反向欠下 +7px 零头，再来 -2px 仍不到半行 ⇒ 这一帧不动。
         assertEquals(0, acc.add(-2f, lineH))
+        // 手指下移同号 ⇒ 付 +1 行；`scrollRows(+1)` 走 scrollUp = 回看更早的行 = 内容跟着手指走。
+        assertEquals(1, ScrollLineAccumulator().add(12f, lineH))
     }
 
     @Test
@@ -67,6 +69,32 @@ class ScrollLineAccumulatorTest {
         val acc = ScrollLineAccumulator()
         assertEquals("8px 不到半行 ⇒ 先欠着", 0, acc.add(8f, 19f))
         assertEquals("欠着 8px + 本次 11px = 19px，按新行高 30 算 0.63 行 ⇒ 付 1 行", 1, acc.add(11f, 30f))
+    }
+
+    @Test
+    fun `半行临界上下两个方向都算一行`() {
+        // 与 TouchGestureController.onUp 同口径（先取绝对值再判方向）：快扫兜底对恰好半行
+        // 的总位移上下方向都付 1 行；慢拖攒零头这一路曾是带符号 roundToInt —— Math.round
+        // 半数向 +∞ 收，-0.5 行收成 0，同一个临界两条路读数破口（2026-11-04 收口）。
+        assertEquals("下移恰好半行 ⇒ 付 1 行", 1, ScrollLineAccumulator().add(9.5f, lineH))
+        assertEquals("上移恰好半行同样付 1 行（旧实现收 0）", -1, ScrollLineAccumulator().add(-9.5f, lineH))
+        val down = ScrollLineAccumulator()
+        assertEquals(1, down.add(9.5f, lineH))
+        assertEquals("下移付 1 行后欠 -9.5px 零头", -9.5f, down.carry())
+        val up = ScrollLineAccumulator()
+        assertEquals(-1, up.add(-9.5f, lineH))
+        assertEquals("上移付 1 行后欠 +9.5px 零头", 9.5f, up.carry())
+    }
+
+    @Test
+    fun `半行零头跨段攒齐也照付`() {
+        // 9px 欠着 + 0.5px 攒成恰好半行 ⇒ 这一段付账；与一次给 9.5px 等价（切分无关性在临界也成立）。
+        val seg = ScrollLineAccumulator()
+        assertEquals("9px 不到半行 ⇒ 先欠着", 0, seg.add(9f, lineH))
+        assertEquals("攒到恰好半行 ⇒ 付 1 行", 1, seg.add(0.5f, lineH))
+        val neg = ScrollLineAccumulator()
+        assertEquals(0, neg.add(-9f, lineH))
+        assertEquals(-1, neg.add(-0.5f, lineH))
     }
 
     @Test

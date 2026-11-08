@@ -57,17 +57,17 @@ class AndroidApiSurfaceGuardTest {
         "com/eratw/port/platform/audio/AndroidAudioFocusRequester.kt",
         // MediaPlayerChannelDecoder：MediaPlayer 解码流与 PlaybackParams 变速是平台唯一音频解码通道；纯逻辑在 SoundFormatPlan（SoundFormatPlanTest 6 例钉判定表）；播放/变速本体归真机（KDoc TODO(verify) 登记）。
         "com/eratw/port/platform/audio/MediaPlayerChannelDecoder.kt",
-        // BitmapImageDecoder：BitmapFactory 补有损 webp 解码缺口（core 的 WebpDecoder 不做 VP8 位流，原版走系统解码，spec Utils.cs:511-516）；换算是 getPixels 直落 GraphicsBuffer 的薄封装、无独立伴生类，纯 JVM 侧对应 core 的 PngDecoder/WebpDecoder（语料闸生效）；解码本体归真机（桩下 decodeFile 恒 null）。
+        // BitmapImageDecoder：BitmapFactory 补有损 webp 解码缺口（core 的 WebpDecoder 不做 VP8 位流，原版走系统解码，spec Utils.cs:511-516）；换算是 getPixels 直落 GraphicsBuffer 的薄封装，纯 JVM 判定面在 companion（pixelLandingAllowed / pixelBytes 转发 render 的 PixelPreflight，由 GraphicsDecodePreflightGateTest 注入真机挡位读数钉住「预检不足 ⇒ 缺图降级不抛」）；解码本体归真机（桩下 decodeFile 恒 null）。
         "com/eratw/port/platform/image/BitmapImageDecoder.kt",
         // GameImageFiles：BitmapFactory 按资源名兜底文件解码；候选名扫描与并发索引留在本类，由 GameImageFilesTest 2 例在 android.jar 桩下纯 JVM 钉住（isReturnDefaultValues）；解码本体归真机。
         "com/eratw/port/platform/image/GameImageFiles.kt",
-        // ResourceCsvHost：resources 下 CSV 资源的图片头探测只能走 BitmapFactory.inJustDecodeBounds（core 侧无 JPEG/有损 webp 头部解析，原版 AppContents.cs:273-283 直接 LoadImage 取 Width/Height），解码本体复用 ImageDecoderHost 与 GCREATEFROMFILE 同通道；纯逻辑（CSV 后缀判定 + 根相对路径换算）已抽进 internal companion（isCsvName / relativeOf），由 ResourceCsvHostTest 6 例纯 JVM 钉死（含 Windows 反斜杠与尾分隔符两种形态）；桩下 decodeByteArray 恒返回 outWidth/outHeight=0 ⇒ imageSize 恒 null，头部读数本体归真机人工验收（KDoc TODO(verify)）。
+        // ResourceCsvHost：resources 下 CSV 资源的图片头探测只能走 BitmapFactory.inJustDecodeBounds（core 侧无 JPEG/有损 webp 头部解析，原版 AppContents.cs:273-283 直接 LoadImage 取 Width/Height），解码本体复用 ImageDecoderHost 与 GCREATEFROMFILE 同通道；纯逻辑（CSV 后缀判定 + 根相对路径换算 + 整文件读字节的分配前预检 bytesReadable）已抽进 internal companion，由 ResourceCsvHostTest 6 例与 GraphicsDecodePreflightGateTest（真机贴顶挡位注入读数下 readBytes 返回 null 不抛）纯 JVM 钉死；桩下 decodeByteArray 恒返回 outWidth/outHeight=0 ⇒ imageSize 恒 null，头部读数本体归真机人工验收（KDoc TODO(verify)）。
         "com/eratw/port/platform/image/ResourceCsvHost.kt",
         // SpriteBitmapSource：Bitmap/LruCache/SystemClock 上屏取图口平台专属；纯逻辑在 companion packDestSize（SpriteBitmapSourcePackTest 3 例）与 render 的 SpriteAnimeClock/Timeline；取图本体归真机。
         "com/eratw/port/platform/image/SpriteBitmapSource.kt",
-        // AndroidInputAdapter：KeyEvent/MotionEvent 事件源只在 Android 存在；规则全在 TouchGestureController 与 KeyMacroController（两文件测试合计 22 例纯 JVM）；事件本体归真机触控验收。
+        // AndroidInputAdapter：KeyEvent/MotionEvent 事件源只在 Android 存在；规则全在 TouchGestureController 与 KeyMacroController（两文件测试合计 27 例纯 JVM）；事件本体归真机触控验收。
         "com/eratw/port/platform/input/AndroidInputAdapter.kt",
-        // AndroidAssetTree：AssetManager 是 APK assets 唯一读取口；解包逻辑在 GameAssetInstaller（GameAssetInstallerTest 13 例用临时目录顶替 GameAssetTree 接口）；AssetManager 三条老脾气口径归真机首启解包。
+        // AndroidAssetTree：AssetManager 是 APK assets 唯一读取口；解包逻辑在 GameAssetInstaller（GameAssetInstallerTest 17 例用临时目录顶替 GameAssetTree 接口）；AssetManager 三条老脾气口径归真机首启解包。
         "com/eratw/port/platform/storage/AndroidAssetTree.kt",
         // GameStorage：Context 的 filesDir/外部根是数据根唯一来源；根选择在 selectRoot/candidateRoots 纯函数（GameStorageRootChoiceTest 6 例不建 Context）；真机根解析归真机。
         "com/eratw/port/platform/storage/GameStorage.kt",

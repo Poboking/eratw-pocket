@@ -1,0 +1,44 @@
+# 语料内容补丁索引 —— specs/corpus-bugs.md §3 的机制资产（首个补丁 CB-001 随机制落地）。
+#
+# 消费方 = buildSrc 的 CorpusPatches（:tools:erbcc:compileCorpus 执行前解析）。
+# 这是**窄 schema**，手写解析、不引 YAML 库；不认识的行一律判红，宁红不猜。
+# 字段（除 root / skip-sha256 外全部必填）：
+#   id           台账 id（= specs/corpus-bugs.md §1 的行）
+#   target       目标文件相对路径，相对 root 指定的根，'/' 分隔
+#   root         目标根（可选，缺省 corpus）：corpus = compileCorpus 的 corpus 根（=<游戏根>/ERB）；
+#                game = 游戏根（CSV/_Rename.csv 这类与 ERB 平级的随包数据）。root=game 的补丁
+#                同时作用于编译 staging 副本与出包资产 staging（两处判据同源，避免「erbc 修了、随包数据没修」）
+#   patch        unified diff 资产文件名（与本索引同目录）
+#   bad-sha256   病灶版目标文件 sha256（小写 64 hex）。命中 = 应用补丁
+#   fixed-sha256 修后版目标文件 sha256（小写 64 hex）。命中 = 已是修后版，跳过；
+#                套用后产物 sha 也必须等于它（双重判据，套用器 bug 兜底）
+#   skip-sha256  可选，逗号分隔的「已知无需补丁的版本」sha256（如 4.980 根已有同一批键）。
+#                命中 = 跳过留痕；其余未知 sha 仍判红
+#   corpus       适用语料版本（台账「语料落点」列的根名；不在册的语料靠 sha 三档自然判定）
+#   status       台账状态（改这里要连 specs/corpus-bugs.md §1 的处置列一起改）
+#   summary      病灶/修法摘要（单行；不要换行折叠）
+#   evidence     证据指针（台账行 / 上报正文样张）
+#
+# 判定：目标缺席=跳过留痕（原样直编）；sha=bad=套用；sha=fixed=已是修后版跳过；
+# sha∈skip-sha256=已知无需补丁的版本跳过；其余不命中=未知漂移，判红（防上游语料换版悄悄绕过补丁）。
+patches:
+  - id: CB-001
+    target: 口上・メッセージ関連/個人口上/051 Nitori [にとり]/Nitori/M_KOJO_K51_everyday_commmands.ERB
+    patch: CB-001.patch
+    bad-sha256: 3482ab97bbdea05f7c33d6b4b69de43abfaea2576ce9bbef20e859ac81c586a8
+    fixed-sha256: 5a3a8c7b62d58860d900843c722925e222c1aaf952d10a2d31f1c9d99240db71
+    corpus: eraTW4.981-261017-EAGLOV3
+    status: 已批修（主人 11-06）——补丁随 wave/report-cb001 分发，编译期应用
+    summary: 调用点去参 —— M_KOJO_K51_everyday_commmands.ERB:64 `CALL K51_EGG_SPECIAL_EVENT(Counter)` 改 `CALL K51_EGG_SPECIAL_EVENT()`（声明 special_events.ERB:806 零参；兄弟调用 DRUNK/ANGRY/AWKWARD/PROJECT_CHANGE/SEMEN_EXCHANGE 全带 Counter、conversations.ERB:3269 零参调用不炸，唯此一参系笔误；给声明补参=替官方写新逻辑，越权不做）
+    evidence: specs/corpus-bugs.md §1 CB-001 行（raw2 2026-11-05__1793845051968-*.txt，调用栈 ProcessRuntime.requireArgCount ← M_KOJO_EGG_MESSAGE_COM_K51_300）
+  - id: CB-005
+    target: CSV/_Rename.csv
+    root: game
+    patch: CB-005.patch
+    bad-sha256: 97fc9f66067111550dd41eb7ef345d4e67bad93f9fc87573a5d73f162dabe935
+    fixed-sha256: 1a5e48d95443bffc714e50a1f99ad1bd0c90c49a87de023ea02b3b88bd2d9431
+    skip-sha256: 0ecde4a4f22c49685ccda00b860c2debc56e10bea311ede885b0bd955786a142
+    corpus: eraTW4.981-261017-EAGLOV3
+    status: 已批修（主人 11-08 裁定③）——编译 staging 与出包资产 staging 同源应用
+    summary: 补 4 个料理解名键 —— 4.981 的 CSV/_Rename.csv 只留了 AutoConst_DISH.ERH 的 #DIM CONST DISH_* 常量，丢了 4.980 旧译名 → DISH 编号的 [[…]] 映射；第三方口上 M_KOJO_K16_5_日常系指令.ERB:6311/6365/6419/6473 的 CASE [[油炸跳蛋/电动按摩风跳蛋湯引/夹子用跳蛋握手/飛機杯剪裁跳蛋水煮]] 整段降级。编号以 4.981 自身 DISH 表为准（351 揚げローター / 352 Eマッサージャ風ローターの湯引き / 353 クリキャップ用ローターの握り / 354 オナホール仕立てのローター煮込み），只补旧名键、不改第三方源
+    evidence: specs/corpus-bugs.md §1 CB-005 行；ERB/Headers/AutoConst_DISH.ERH:531-540（4.981 同编号常量）；4.980 CSV/_Rename.csv:1649-1652（旧译名原表）

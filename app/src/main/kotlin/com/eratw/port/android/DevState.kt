@@ -299,7 +299,8 @@ object DevState {
      * funcStack / depth 反射快照（**只记录**）：[ProcessRuntime] 私有 `vm` → [VirtualMachine]
      * 的私有 `funcStack`（IntArray，函数下标栈）与 `depth`。与 DevToolsHost.callstack 同一套
      * 反射口径；字段改名 / 反射不可得 → 空栈 + (-1)，不阻塞快照主流程。函数下标 → key 映射
-     * 用 [GameSession.program] 的函数表。
+     * 走运行期 [com.eratw.port.core.proc.FunctionTable]（[ErrorReportCollector.functionNameResolver]），
+     * 不读 `.erbc` 的惰性函数表：调试线程解码会与 VM 线程抢未加锁的实例缓冲。
      */
     private fun reflectFuncStack(session: GameSession): Pair<List<String>, Int> {
         val rt = session.runtime
@@ -326,8 +327,8 @@ object DevState {
         } ?: return emptyList<String>() to -1
         val arr = stack ?: return emptyList<String>() to depth
         if (depth < 0 || depth >= arr.size) return emptyList<String>() to depth
-        val fns = session.program.functions
-        return (0..depth).map { fns.getOrNull(arr[it])?.name ?: "#" + arr[it] } to depth
+        val resolve = ErrorReportCollector.functionNameResolver(rt)
+        return (0..depth).map { resolve(arr[it]) ?: "#" + arr[it] } to depth
     }
 
     /** "[1,2,3]" → LongArray（restore 的 rngState 解析；坏形状返回空数组）。 */

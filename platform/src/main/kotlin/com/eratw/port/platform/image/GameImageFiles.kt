@@ -49,14 +49,25 @@ class GameImageFiles(
     private val maxSide: Int = DEFAULT_MAX_SIDE,
 ) {
 
-    private val options = BitmapFactory.Options().apply {
-        inScaled = false
-        inPreferredConfig = Bitmap.Config.ARGB_8888
-    }
-
     /** 只量尺寸不分配像素（`<img>` 缺 `width` 时推纵横比用）；见 [resourceNameSize] 的建实例理由。 */
     private fun newBoundsOnly(): BitmapFactory.Options =
         BitmapFactory.Options().apply { inJustDecodeBounds = true }
+
+    /**
+     * 整文件解码的 `Options`，**每次解码新建**，与 [newBoundsOnly] 同源同理由。
+     *
+     * 早先它是一个共享的 `private val options` 字段，被 [decodeByResourceName] 复用 —— 单线程时
+     * 省一次分配，接上后台预取（[SpriteBitmapSource.prefetchAsync]）之后就成了并发写：
+     * `BitmapFactory` 把 `outWidth` / `outHeight` 等 `out*` 字段写在同一个实例上，后台预取线程与
+     * UI 同步解码线程同时解两张不同的图时，读到的尺寸/配置可能来自另一张图（表现为错图、
+     * 错尺寸，最坏按错误的宽高分配像素）。`Options` 是纯数据对象、构造成本可忽略，
+     * 所以按「每次解码一份」换掉跨线程串味。
+     */
+    private fun newDecodeOptions(): BitmapFactory.Options =
+        BitmapFactory.Options().apply {
+            inScaled = false
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
 
     /**
      * 名字 → 文件的索引。**并发容器**：本类被两个线程同时用 —— VM 线程（`GCREATEFROMFILE`
@@ -107,8 +118,19 @@ class GameImageFiles(
      * 1）`decodeFile` 解不动时不保证复位这两个字段，读到的可能是**上一次量的那张图**；
      * 2）本类同时被 VM 线程（排版量宽）与绘制线程（每帧取图，见 `SpriteBitmapSource`
      *    的 KDoc「绘制侧每帧都会重新问一次」）调用，共享可变字段就是跨线程串味。
+     *
+     * ## 正值尺寸缓存（feat-memory-image-cache 2026-11-02）
+     *
+     * 本方法在 VM 线程的 HTML 排版链上被反复调（`HtmlRunFlatten` 对每个缺 `width` 的
+     * `<img>` 都要问一次纵横比，同一页多次展平就多次问），旧写法每次都真开一次文件量头
+     * （`decodeFile` 的 bounds 档也要 open + 解析容器头）。语料是静态的：同一个名字量出来
+     * 的尺寸在进程内不会变（mod 覆盖内容走「重启游戏生效」，进程重启即重建），所以量到的
+     * **正值**结果按归一化名字缓存（[sizeCache]），排版链从此零文件 IO。
+     * 负结果（量不出）不缓存：那是损坏文件的形态，罕见，缓存它要另立过期语义，不值得。
      */
     fun resourceNameSize(resource: String): IntArray? {
+        val key = normalizeKey(resource) ?: return null
+        sizeCache[key]?.let { return unpackSize(it) }
         val file = locate(resource) ?: return null
         val boundsOnly = newBoundsOnly()
         // inJustDecodeBounds：解出来的 Bitmap 恒为 null，尺寸写在 options 上
@@ -116,7 +138,51 @@ class GameImageFiles(
         val w = boundsOnly.outWidth
         val h = boundsOnly.outHeight
         if (w <= 0 || h <= 0) return null
+        // 只缓存正值；putIfAbsent —— 并发首量同一文件时谁先都行（同一文件同一尺寸）。
+        sizeCache.putIfAbsent(key, packSize(w, h))
         return intArrayOf(w, h)
+    }
+
+    /**
+     * 正值尺寸缓存：归一化名字 → 打包的 (宽, 高)（[packSize] / [unpackSize]）。
+     *
+     * 条目数上界 = 语料里被问过尺寸的不同名字数（索引本身 ~3 千文件 × 2 键形态），
+     * 每条只是一个 Long —— 总量与单条都天然有界，**不设 LRU、不做整表清空**：
+     * 语料静态，这点重量的代价远小于一套淘汰机制的复杂度（取舍同 [FailedLookupCache]，
+     * 但它有 TTL 语义要清、这里没有）。
+     */
+    private val sizeCache = ConcurrentHashMap<String, Long>()
+
+    /** 归一化键：与 [locate] 同式（trim + 小写 + 拒空/拒 `..`）；null = 该串不做键。 */
+    private fun normalizeKey(resource: String): String? {
+        val key = resource.trim().lowercase()
+        if (key.isEmpty() || key.contains("..")) return null
+        return key
+    }
+
+    /**
+     * 按**路径**整文件解码（`GraphicsBuffer.fileSource` 的落地口）。
+     *
+     * 与 [decodeByResourceName] 的区别只有两点，都是为了「一张工作表当多帧图源」这个形态：
+     * - 键是**路径**而不是资源名（G_ID 缓冲登记的就是 `GCREATEFROMFILE` 拿到的那个路径）；
+     * - 不套 [maxSide] 那道闸：`GCREATEFROMFILE` 已经按 `GraphicsBuffer.MAX_IMAGE_SIZE`
+     *   校过尺寸，这里再按「单边像素」拒一次会把 8000x4000 的立绘工作表整个丢掉。
+     *
+     * 解出来的位图在 native 堆（API 26+），不进 Dalvik 堆 —— 这正是绕开 512 MiB 堆挡的关键：
+     * 同尺寸的 ARGB 若先解成 `IntArray`，单张就是 122 MiB。
+     */
+    fun decodeFileByPath(path: String): Bitmap? {
+        val key = path.trim()
+        if (key.isEmpty() || key.contains("..")) return null
+        val direct = File(key)
+        val file = if (direct.isAbsolute) direct else File(gameRoot, key)
+        if (!file.isFile) return null
+        return try {
+            BitmapFactory.decodeFile(file.absolutePath, newDecodeOptions())
+        } catch (t: Throwable) {
+            Log.i(TAG, "按路径解码失败 $key: ${t.javaClass.simpleName}")
+            null
+        }
     }
 
     /** DevTools `img` 命令：资源名实际命中的文件（null = 索引与直查都miss）。 */
@@ -125,6 +191,18 @@ class GameImageFiles(
     /** 资源名 → 整文件解码；查不到 / 解不出返回 null。调用方负责缓存与回收。 */
     fun decodeByResourceName(resource: String): Bitmap? {
         val file = locate(resource) ?: return null
+        // bounds-first（feat-memory-image-cache）：先只量容器头、不分配像素，
+        // 超 [maxSide] 直接拒 —— 旧写法先把整张图解成 native 位图再 recycle，
+        // 语料实测那 5 张超限图单张 72–122 MiB，等于每命中一次白付一次全尺寸解码
+        // （主线程上就是一次可感的停顿 + native 堆尖峰）。量不出的坏文件
+        // （outWidth/outHeight ≤ 0）放行走原路：下面的整解码会如实返回 null。
+        val bounds = newBoundsOnly()
+        runCatching { BitmapFactory.decodeFile(file.absolutePath, bounds) }
+        if (exceedsMaxSide(bounds.outWidth, bounds.outHeight, maxSide)) {
+            Log.i(TAG, "按名解码拒超大图 ${file.name} ${bounds.outWidth}x${bounds.outHeight}")
+            return null
+        }
+        val options = newDecodeOptions()
         val bitmap = try {
             BitmapFactory.decodeFile(file.absolutePath, options)
         } catch (t: Throwable) {
@@ -132,10 +210,12 @@ class GameImageFiles(
             null
         } ?: return null
         // recycle 后再读 width/height 在 AOSP 是 undefined behavior（日志会打出 0x0），
-        // 所以先取进局部变量，判断与日志都用局部值
+        // 所以先取进局部变量，判断与日志都用局部值。解码后再判一遍是兜底：
+        // bounds 与实际解码之间语料不会变（同 [resourceNameSize] 的静态性论证），
+        // 留着它只为防解码器对损坏头量错尺寸的极端形态。
         val w = bitmap.width
         val h = bitmap.height
-        if (w > maxSide || h > maxSide) {
+        if (exceedsMaxSide(w, h, maxSide)) {
             bitmap.recycle()
             Log.i(TAG, "按名解码跳过超大图 ${file.name} ${w}x$h")
             return null
@@ -222,5 +302,25 @@ class GameImageFiles(
          */
         private const val DEFAULT_MAX_SIDE = 4096
         private const val TAG = "eratw-image"
+
+        /**
+         * 把 (宽, 高) 打包成一个 Long（宽在高 32 位、高在低 32 位），给 [sizeCache] 当值 ——
+         * 一条 Long 顶一个 `intArrayOf`，条目小一半还不引数组分配。只对正值宽高有意义
+         * （[GameImageFiles.resourceNameSize] 只缓存正值），负数不进这条通道。
+         */
+        internal fun packSize(w: Int, h: Int): Long =
+            (w.toLong() shl 32) or (h.toLong() and 0xFFFFFFFFL)
+
+        /** [packSize] 的逆变换；返回 (宽, 高)。 */
+        internal fun unpackSize(packed: Long): IntArray =
+            intArrayOf((packed shr 32).toInt(), (packed and 0xFFFFFFFFL).toInt())
+
+        /**
+         * 单边超限判定（纯函数，测试口径用）：任一边 > [maxSide] 即超限。
+         * 宽/高 ≤ 0（解码器量不出的坏头）**不**算超限 —— 那该由解码路径自己返回 null，
+         * 超限闸只管「解得出来但太大」这一种形态。
+         */
+        internal fun exceedsMaxSide(w: Int, h: Int, maxSide: Int): Boolean =
+            w > maxSide || h > maxSide
     }
 }

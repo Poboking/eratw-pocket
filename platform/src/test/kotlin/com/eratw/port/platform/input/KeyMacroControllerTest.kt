@@ -177,4 +177,58 @@ class KeyMacroControllerTest {
         assertEquals("不动框", "原内容", controller.session.box.text)
         assertTrue(controller.session.submissions.isEmpty())
     }
+
+    /**
+     * WIRE-5 / C-MACRO-FLAG@1：当前等待请求 `macroEnabled = false` 时无修饰功能键**不预填**
+     * （`MacroKeys.prefillAllowed`，判据单源）；记录（Shift+Fn）与换组（Ctrl+数字）不受影响
+     * —— 关掉的是「往框里塞宏」，不是宏机制本身。
+     */
+    @Test
+    fun `macroEnabled关闭时F1不预填但记录与换组照常`() {
+        val controller = controllerWithMacro("123")
+        controller.session.box.assign("原内容")
+
+        val f1 = controller.onKey(
+            keyCode = MacroKeys.VK_F1,
+            modifier = MacroKeys.Modifier.NONE,
+            macroEnabled = false,
+        )
+        assertTrue("关闸 ⇒ 预填整条不响应", f1.decision is MacroKeys.Decision.Ignored)
+        assertFalse("不响应也不吞键", f1.consumed)
+        assertEquals("不许动框", "原内容", controller.session.box.text)
+
+        controller.session.box.assign("存进宏")
+        val record = controller.onKey(
+            keyCode = MacroKeys.VK_F1,
+            modifier = MacroKeys.Modifier.SHIFT,
+            macroEnabled = false,
+        )
+        assertTrue("记录不在闸内（WIRE-5 只关预填）", record.decision is MacroKeys.Decision.Record)
+        assertEquals("写表照常", "存进宏", controller.session.macroTable.get(fkey = 0, group = 0))
+
+        val switch = controller.onKey(
+            keyCode = MacroKeys.VK_DIGIT_0 + 2,
+            modifier = MacroKeys.Modifier.CONTROL,
+            macroEnabled = false,
+        )
+        assertTrue("换组不在闸内", switch.decision is MacroKeys.Decision.SwitchGroup)
+        assertEquals(2, controller.session.macroGroup)
+    }
+
+    /** 右键菜单那一路同样吃 `macroEnabled` 闸（[KeyMacroController.prefillFromMenu] 贯通）。 */
+    @Test
+    fun `macroEnabled关闭时菜单预填也不响应`() {
+        val controller = controllerWithMacro("123")
+        controller.session.box.assign("原内容")
+
+        val decision = controller.prefillFromMenu(fkey = 0, macroEnabled = false)
+        assertTrue(decision is MacroKeys.Decision.Ignored)
+        assertEquals("不动框", "原内容", controller.session.box.text)
+        assertTrue(controller.session.submissions.isEmpty())
+
+        assertTrue(
+            "闸开着时同参照常预填",
+            controller.prefillFromMenu(fkey = 0, macroEnabled = true) is MacroKeys.Decision.Prefill,
+        )
+    }
 }

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    DevKeepAliveActivity 只进 debug 包：声明放在 debug 源集，release 面不再有这个组件。
+    main/AndroidManifest.xml 原有声明（2026-11-04 移入）会把组件带进 release APK 的
+    组件面（exported=true 可被外部拉起），而它的用途只有真机取证与自动化测试
+    （devtools/hawkeye.py 的 am start、androidTest 的 start 与 stop）。
+    exported 或 excludeFromRecents 或 theme 若要动，连同 main manifest 里留的注释一起改。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <activity
+            android:name=".dbg.DevKeepAliveActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+    </application>
+
+</manifest>

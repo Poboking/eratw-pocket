@@ -28,3 +28,9 @@ Thumbs.db
 
 # golden 自跑快照（派生；PC 基准为准）
 fixtures/golden/baseline/self-*.txt
+
+# Python 字节码缓存（devtools 本地 py_compile 产物）
+__pycache__/
+*.pyc
+# t63 真机采集默认目录（devtools 本地派生）
+.t63-diag/

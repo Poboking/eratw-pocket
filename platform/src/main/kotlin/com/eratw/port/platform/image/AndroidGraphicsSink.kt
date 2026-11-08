@@ -1,6 +1,7 @@
 package com.eratw.port.platform.image
 
 import com.eratw.port.core.host.GraphicsSink
+import com.eratw.port.render.adapter.HtmlRunFlatten
 import com.eratw.port.render.glyph.CellMetrics
 import com.eratw.port.render.view.GraphicsLayer
 import com.eratw.port.render.view.GraphicsSinkBridge
@@ -27,17 +28,28 @@ import com.eratw.port.render.view.GraphicsSinkBridge
  * @param metrics 像素 ↔ 半角格换算器（与绘制侧不同源就会错位）
  * @param scriptFontPixelSize 脚本 `px` 的基准字号（= 引擎生效 `Config.FontSize`），
  *                与 HTML 侧同尺的判据见 `render/glyph/CellMetrics.scriptPixels`；0 = 不折算
- * @param onInvalidate 屏上要变了的通知（null = 不通知，测试用）
+ * @param onImage 一入队就回调资源名（生产接线是 `SpriteBitmapSource.prefetchAsync`）：
+ *                只做查表与入队，语义见 [GraphicsSinkBridge] 的同名参数；null = 不预取
+ * @param sizeSource 图元尺寸源（[HtmlRunFlatten.ImageSizeSource]，生产形状 = `SpriteBitmapSource`）：
+ *                `PRINT_IMG` 缺宽按基图纵横比推宽、图元 miss 按 AltText 量宽
+ *                （`ConsoleImagePart.cs:60-71`）。null（缺省）= 判不了图元在不在，
+ *                保持旧的见方占位（登记偏差，见 [GraphicsSinkBridge] 的同名参数）
+ * @param onInvalidate 屏上要变了的通知（null = 不通知，测试用）。**保持在最后一个**：
+ *                既有调用点用尾随 lambda 传它
  */
 class AndroidGraphicsSink(
     layer: GraphicsLayer,
     metrics: CellMetrics,
     scriptFontPixelSize: Int = 0,
+    onImage: ((String) -> Unit)? = null,
+    sizeSource: HtmlRunFlatten.ImageSizeSource? = null,
     onInvalidate: (() -> Unit)? = null,
 ) : GraphicsSink by GraphicsSinkBridge(
     layer,
     metrics,
     scriptFontPixelSize = scriptFontPixelSize,
+    onImage = onImage,
+    sizeSource = sizeSource,
     onInvalidate = onInvalidate,
 ) {
 

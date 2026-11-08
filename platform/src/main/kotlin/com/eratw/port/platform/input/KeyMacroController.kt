@@ -136,18 +136,22 @@ class KeyMacroController(val session: InputSession = InputSession()) {
      * @param modifier 已折成三旗标的修饰键（Android 的 metaState 折叠见 [AndroidInputAdapter]）
      * @param waitingPrimitive `console.IsWaitingPrimitive`（`MainWindow.cs:385`）
      * @param useKeyMacro `Config.UseKeyMacro`（`MainWindow.cs:488`）
+     * @param macroEnabled 当前等待请求的宏预填开关（WIRE-5）；贯通到
+     *   [InputSession.onMacroKey] → [MacroKeys.dispatch]。为假时无修饰功能键不预填。
      */
     fun onKey(
         keyCode: Int,
         modifier: MacroKeys.Modifier,
         waitingPrimitive: Boolean = false,
         useKeyMacro: Boolean = true,
+        macroEnabled: Boolean = true,
     ): Outcome {
         val decision = session.onMacroKey(
             keyCode = keyCode,
             modifier = modifier,
             waitingPrimitive = waitingPrimitive,
             useKeyMacro = useKeyMacro,
+            macroEnabled = macroEnabled,
         )
         val groupLabel = (decision as? MacroKeys.Decision.SwitchGroup)
             ?.let { session.macroTable.groupName(it.group) }
@@ -233,9 +237,15 @@ class KeyMacroController(val session: InputSession = InputSession()) {
      * [MacroKeys.prefillFromMenu]，本函数只负责取表与落框。
      *
      * @param fkey 0..11（菜单项 `ShortcutKeys - 112`，:1569）
+     * @param macroEnabled 当前等待请求的宏预填开关（WIRE-5）；为假时不预填
+     *   （返回 [MacroKeys.Decision.Ignored]）
      * @return 实际结论；[MacroKeys.Decision.Ignored] 表示菜单项该是灰的/没有动作
      */
-    fun prefillFromMenu(fkey: Int, useKeyMacro: Boolean = true): MacroKeys.Decision {
+    fun prefillFromMenu(
+        fkey: Int,
+        useKeyMacro: Boolean = true,
+        macroEnabled: Boolean = true,
+    ): MacroKeys.Decision {
         // 原版菜单处理器第一道就是 console != null（MainWindow.cs:1567）；没有控制台时
         // 连宏都不查、框也不动。InputSession.consolePresent 就是这一个条件（:924 的同源字段）。
         if (!session.consolePresent) {
@@ -246,6 +256,7 @@ class KeyMacroController(val session: InputSession = InputSession()) {
             macro = macro,
             inProcess = session.inProcess,
             useKeyMacro = useKeyMacro,
+            macroEnabled = macroEnabled,
         )
         session.applyMacro(decision)
         return decision

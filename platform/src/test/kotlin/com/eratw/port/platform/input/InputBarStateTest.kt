@@ -207,4 +207,24 @@ class InputBarStateTest {
         assertEquals(InputBarState.Submit.DISABLED, s.submit)
         assertNull("没有提交就没有写框动作", s.textBoxAfterSubmit("5"))
     }
+
+    /**
+     * WIRE-5 / C-MACRO-FLAG@1：[InputBarState.macroEnabled] 由 `pending.macroEnabled`
+     * **单源**推导（R4-AC3）—— 真源是 `InputRequest.macroEnabled`
+     * （`core-vm/.../host/InputSink.kt:86`，下发点 `StatementExecutor.kt:3907`），
+     * 本层不另存真源。为假 ⇒ 输入宿主不执行宏预填（R4-AC1）；为真/缺省 ⇒ 照旧（R4-AC2）。
+     */
+    @Test
+    fun `macroEnabled 由等待请求单源推导`() {
+        val enabled = state(pending = InputRequest(InputRequest.InputType.STR, macroEnabled = true))
+        assertTrue("请求开着宏 ⇒ 允许预填（R4-AC2）", enabled.macroEnabled)
+
+        val disabled = state(pending = InputRequest(InputRequest.InputType.STR, macroEnabled = false))
+        assertFalse("请求关着宏 ⇒ 宿主不预填（R4-AC1）", disabled.macroEnabled)
+
+        // 未在等待（pending == null）时按缺省 true：原版没有取值请求时不背这个标志。
+        assertTrue("未在等待时缺省允许", state().macroEnabled)
+        // 缺省构造的 InputRequest 就是 true（InputSink.kt:86 的 `= true`）。
+        assertTrue(InputRequest(InputRequest.InputType.INT).macroEnabled)
+    }
 }

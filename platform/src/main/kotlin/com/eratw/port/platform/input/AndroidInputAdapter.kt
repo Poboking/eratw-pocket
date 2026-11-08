@@ -120,11 +120,16 @@ class AndroidInputAdapter(
      *
      * @param waitingPrimitive `console.IsWaitingPrimitive`（`MainWindow.cs:385`），默认 false
      * @param useKeyMacro `Config.UseKeyMacro`（`MainWindow.cs:488`），默认 true（`ConfigData.cs:53`）
+     * @param macroEnabled 当前等待请求的宏预填开关（WIRE-5，`InputRequest.macroEnabled`）；
+     *   缺省 true（原版输入框常规行为）。不给这个口子，走本适配器的宿主**没法**执行这道闸 ——
+     *   宏条按钮那一路（`ShellUi` 的 `MacroKeys.prefillAllowed`）有闸、功能键这一路没有，
+     *   正是 WIRE-5 收口时漏掉的半边
      */
     fun handleKeyEvent(
         event: KeyEvent,
         waitingPrimitive: Boolean = false,
         useKeyMacro: Boolean = true,
+        macroEnabled: Boolean = true,
     ): Boolean {
         if (event.action != KeyEvent.ACTION_DOWN) {
             return false
@@ -135,6 +140,7 @@ class AndroidInputAdapter(
             modifier = modifierOf(event.metaState),
             waitingPrimitive = waitingPrimitive,
             useKeyMacro = useKeyMacro,
+            macroEnabled = macroEnabled,
         )
         onKeyOutcome(outcome)
         return outcome.consumed

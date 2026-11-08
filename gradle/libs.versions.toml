@@ -1,0 +1,63 @@
+# eratw-android 版本目录（A-5 波）：全仓依赖坐标与构建常量的唯一落点。
+# 纪律：只收纳现状，禁止顺手升级任何版本；JVM 面统一 17（纯 JVM 模块的
+# jvmToolchain 与 Android 模块的 jvmTarget / compileOptions 同值）；
+# compileSdk 以 app 为准（36）。render-canvas 仍锁 35 —— 本波零行为变化纪律
+# 只放行 platform 35 到 36 这一处，render-canvas 的对齐留给下一波决策
+# （见 render-canvas/build.gradle.kts 的原地注释）。
+# 注：JUnit4 与 JUnit5 并存是刻意现状（本波只收纳不统一，统一另立波）。
+
+[versions]
+agp = "8.8.2"
+kotlin = "2.0.20"
+junitJupiter = "5.10.2"
+junit4 = "4.13.2"
+asm = "9.8"
+desugarJdkLibsNio = "2.1.5"
+composeBom = "2024.12.01"
+activityCompose = "1.9.3"
+androidxTestRunner = "1.7.0"
+androidxTestCore = "1.7.0"
+androidxTestUiautomator = "2.3.0"
+androidxProfileinstaller = "1.4.1"
+# 构建常量：三个 sdk 值是 Int 域，使用处 toInt()；jvmTarget 同时喂
+# jvmToolchain(int)、JvmTarget.fromTarget(str) 与 JavaVersion.toVersion(str)。
+compileSdk = "36"
+minSdk = "21"
+targetSdk = "36"
+jvmTarget = "17"
+# A-6 质量闸：detekt 静态扫描；1.23.x 的最新补丁版，解析器兼容 Kotlin 2.0.20 源面。
+detekt = "1.23.8"
+# 素材导入：7z 解包（纯 JVM，Android 可用）；xz 是 commons-compress 读 LZMA2 的可选依赖。
+commonsCompress = "1.26.2"
+xz = "1.10"
+
+[libraries]
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junitJupiter" }
+# 无版本声明，与改前逐字同值：launcher 版由 junit-jupiter 的传递元数据供给。
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+asm = { module = "org.ow2.asm:asm", version.ref = "asm" }
+junit4 = { module = "junit:junit", version.ref = "junit4" }
+desugar-jdk-libs-nio = { module = "com.android.tools:desugar_jdk_libs_nio", version.ref = "desugarJdkLibsNio" }
+# Compose BOM 与三件套：ui / ui-graphics / material3 无版本（BOM 供版，与改前一致）。
+androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+androidx-compose-ui = { module = "androidx.compose.ui:ui" }
+androidx-compose-ui-graphics = { module = "androidx.compose.ui:ui-graphics" }
+androidx-compose-material3 = { module = "androidx.compose.material3:material3" }
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
+androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidxTestRunner" }
+androidx-test-core = { module = "androidx.test:core", version.ref = "androidxTestCore" }
+androidx-test-uiautomator = { module = "androidx.test.uiautomator:uiautomator", version.ref = "androidxTestUiautomator" }
+androidx-profileinstaller = { module = "androidx.profileinstaller:profileinstaller", version.ref = "androidxProfileinstaller" }
+# 素材包解包：zip 用 JDK 自带；7z 走 commons-compress（LZMA2 需 xz）。
+commons-compress = { module = "org.apache.commons:commons-compress", version.ref = "commonsCompress" }
+xz = { module = "org.tukaani:xz", version.ref = "xz" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+# 壳层 Compose（2026-10-23）：编译器插件版本必须与 Kotlin 同版，同走 kotlin ref。
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+# A-6 质量闸：detekt 只在根工程应用，单任务 `gradlew detekt` 全仓扫描（接线在根 build.gradle.kts）。
+detekt = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }

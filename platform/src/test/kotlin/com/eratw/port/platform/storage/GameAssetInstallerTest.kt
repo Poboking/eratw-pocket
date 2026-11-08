@@ -7,6 +7,7 @@ import java.security.MessageDigest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -22,6 +23,7 @@ import org.junit.rules.TemporaryFolder
  * 3. 分片按 `program.parts` 的**行序**拼接（不是文件名字典序）；
  * 4. SHA 不配对：清中间文件、抛可读错误，**旧产物保留**（上一版配对可降级）；
  * 5. 配对事务：program/meta 任一步失败，整对回滚到上一版（不留「新 program + 旧 meta」）；
+ *    回滚本身出岔子时按**收集式**逐条尽力恢复，未恢复项计数并点名（`回滚收集式` 一组用例）；
  * 6. 幂等：第二次全跳过，目标被截断则重拷；`emuera.config` 永不覆盖。
  *
  * 第 10 例拿 core 自己的 [BootMetadata] 编码器当 oracle：解包器读的「第 3 行头部」
@@ -180,6 +182,103 @@ class GameAssetInstallerTest {
         assertFalse(File(gameRoot, "erbc.v1/program.meta.bak").exists())
     }
 
+    /**
+     * 回滚是**收集式**的（W5-misc 第 2 条之二）：一条恢复失败不许终止剩余恢复。
+     *
+     * 旧写法在恢复循环里对第一条 `renameTo` 失败直接 `throw`，于是剩下所有 `.bak` 永远留在
+     * 原地 —— 真实事故形态（磁盘满 / fd 耗尽）下 program 恢复成功、meta 没恢复，盘上就是
+     * 「新 program + 旧 meta」这类半套配对，而下一轮解包的兜底只认单个 target，屏上看不到
+     * 是谁没回来。判据三条：
+     * 1. 能恢复的**全都**恢复（本例 2 份备份坏 1 份，另一份必须回到目标名）；
+     * 2. 未恢复项**逐条**写进异常文案（点名绝对路径 + `1/2` 计数）；
+     * 3. 原始失败仍是 cause 链上的那一个（屏上先要看得见的还是「这一轮为什么失败」）。
+     *
+     * 为什么走注入口：纯 JVM 临时目录里 `renameTo` **不会**失败（同卷改名成功率高到造不出
+     * false），真机路径传的是缺省实现。注入参数 `restore` 只为这一条判据存在。
+     */
+    @Test
+    fun `回滚收集式：一条失败不带走其余备份`() {
+        val dir = temp.newFolder("rollback")
+        val goodTarget = File(dir, "program.erbc")
+        val goodBak = File(dir, "program.erbc.bak").apply { writeText("旧 program") }
+        val badTarget = File(dir, "program.meta")
+        val badBak = File(dir, "program.meta.bak").apply { writeText("旧 meta") }
+        // 本轮已 rename 就位的新产物（回滚第一步要把它让位）
+        goodTarget.writeText("新 program")
+        badTarget.writeText("新 meta")
+        val cause = IllegalStateException("拷贝进行到一半 IO 断掉")
+
+        val thrown = GameAssetInstaller(DirAssetTree(assetsRoot), gameRoot).rollbackPairTargets(
+            LinkedHashMap<File, File>().apply {
+                put(goodTarget, goodBak)
+                put(badTarget, badBak)
+            },
+            cause,
+            restore = { bak, target ->
+                // 只有 meta 那一条恢复失败（磁盘满那一档的形状），program 照常改名
+                if (bak == badBak) false else bak.renameTo(target)
+            },
+        )
+
+        assertArrayEquals(
+            "第一条恢复失败绝不能带走其余备份（半套配对就是这条 bug 的产物）",
+            "旧 program".toByteArray(),
+            goodTarget.readBytes(),
+        )
+        assertFalse("恢复成功的备份应当改名走，不留 .bak", goodBak.exists())
+        assertTrue("失败的备份留在原地，由下一轮开头的恢复逻辑兜底", badBak.isFile)
+        assertTrue(
+            "有未恢复项时必须包成 AssetInstallException（实际 ${thrown.javaClass.simpleName}）",
+            thrown is AssetInstallException,
+        )
+        val msg = thrown.message!!
+        assertTrue("要点名未恢复的那一条：$msg", msg.contains(badBak.absolutePath))
+        assertTrue("要写出未恢复计数：$msg", msg.contains("1/2"))
+        assertTrue("原始失败要留在文案里：$msg", msg.contains("IO 断掉"))
+        assertSame("cause 链必须是原始失败本身（首个失败），不是新造的异常", cause, thrown.cause)
+    }
+
+    /** 回滚干净 ⇒ 原样交回原始失败：不许给一条本来可读的失败再套一层壳。 */
+    @Test
+    fun `回滚干净时抛的还是原始失败`() {
+        val dir = temp.newFolder("rollback-clean")
+        val target = File(dir, "program.erbc")
+        val bak = File(dir, "program.erbc.bak").apply { writeText("旧") }
+        target.writeText("新")
+        val cause = IllegalStateException("原始失败")
+
+        val thrown = GameAssetInstaller(DirAssetTree(assetsRoot), gameRoot)
+            .rollbackPairTargets(linkedMapOf(target to bak), cause)
+
+        assertSame(cause, thrown)
+        assertArrayEquals("旧".toByteArray(), target.readBytes())
+        assertFalse(bak.exists())
+    }
+
+    /** 没有备份（本轮还没 rename 就失败）⇒ 原样交回，且不许碰盘上的目标文件。 */
+    @Test
+    fun `没有备份时回滚是 no-op`() {
+        val dir = temp.newFolder("rollback-empty")
+        val target = File(dir, "program.erbc").apply { writeText("上一版") }
+        val cause = IllegalStateException("规划阶段就失败")
+        val thrown = GameAssetInstaller(DirAssetTree(assetsRoot), gameRoot)
+            .rollbackPairTargets(emptyMap(), cause)
+        assertSame(cause, thrown)
+        assertArrayEquals("上一版".toByteArray(), target.readBytes())
+    }
+
+    /** 备份自己没了（被人删 / 上一轮之后手抖清过）不算「未恢复」：没东西可恢复。 */
+    @Test
+    fun `备份缺失不计进未恢复项`() {
+        val dir = temp.newFolder("rollback-missing-bak")
+        val target = File(dir, "program.erbc")
+        val bak = File(dir, "program.erbc.bak") // 故意不建
+        val cause = IllegalStateException("原始失败")
+        val thrown = GameAssetInstaller(DirAssetTree(assetsRoot), gameRoot)
+            .rollbackPairTargets(linkedMapOf(target to bak), cause, restore = { _, _ -> false })
+        assertSame("没有 .bak 就没有未恢复项，不该造出回滚异常", cause, thrown)
+    }
+
     @Test
     fun `第二次全跳过而目标被截断后重拷`() {
         val program = bytes(40_000, seed = 5)
@@ -216,6 +315,113 @@ class GameAssetInstallerTest {
         assertEquals("ConfigVersion=1\nUseKeyMacro=NO\n", userConfig.readText())
     }
 
+    /**
+     * 缺键补齐的主钉（2026-10-31 玩家报告 ×5 的根因）：0.2.0 时代装的 gameRoot 没有
+     * `VALID EXTENSIONS FOR LOADTEXT AND SAVETEXT:xml,txt,json`（语料 `emuera.config:73`），
+     * 升级 app 后 4.980 语料的 `LOADTEXT("plugins/tw_csv_chs.xml")` 在白名单缺 `xml` 时
+     * 读回空串、开局中止。修复 = 升级路径上把「资产有、盘上缺」的键追加进旧配置。
+     */
+    @Test
+    fun `升级时旧配置缺的新键被补齐且已有键不被改值`() {
+        // 第一版：带 BOM 的旧配置（老包没有白名单行）。
+        asset("emuera.config", "\uFEFFConfigVersion=1\nUseKeyMacro=YES\n".toByteArray())
+        install()
+        val config = File(gameRoot, "emuera.config")
+
+        // 第二版资产：同一键改了值 + 新增了白名单行（模拟「新包新增键」）。
+        asset(
+            "emuera.config",
+            "\uFEFFConfigVersion=1\nUseKeyMacro=NO\nVALID EXTENSIONS FOR LOADTEXT AND SAVETEXT:xml,txt,json\n"
+                .toByteArray(),
+        )
+        val second = install()
+
+        assertEquals("升级轮不该重拷任何文件（配置存在即跳过）", 0, second.copiedFiles)
+        assertEquals(
+            "新键要补进来，已有键的玩家值不能被资产覆盖",
+            "\uFEFFConfigVersion=1\nUseKeyMacro=YES\nVALID EXTENSIONS FOR LOADTEXT AND SAVETEXT:xml,txt,json\n",
+            config.readText(),
+        )
+        assertFalse("补齐后不许残留中间文件", File(gameRoot, "emuera.config.tmp").exists())
+
+        // 幂等：第三轮不再追加第二份。
+        install()
+        assertEquals(
+            "重复启动不许把同一键追加两遍",
+            1,
+            config.readText().lines().count { it.startsWith("VALID EXTENSIONS FOR LOADTEXT AND SAVETEXT") },
+        )
+    }
+
+    @Test
+    fun `盘上配置已有键时资产同键行不追加`() {
+        asset("emuera.config", "UseKeyMacro=NO\n".toByteArray())
+        val config = File(gameRoot, "emuera.config").apply {
+            gameRoot.mkdirs()
+            writeText("UseKeyMacro=YES\n")
+        }
+
+        install()
+
+        assertEquals("已有键（哪怕值不同）不许追加第二份", "UseKeyMacro=YES\n", config.readText())
+    }
+
+    /** 注释行、无冒号行、空行都不算键；只有注释行与无冒号行的资产 ⇒ 无可补 ⇒ 零写入。 */
+    @Test
+    fun `注释行与无分隔符行不参与缺键补齐`() {
+        asset("emuera.config", "; 注释\nConfigVersion\n".toByteArray())
+        val config = File(gameRoot, "emuera.config").apply {
+            gameRoot.mkdirs()
+            writeText("UseKeyMacro=YES")
+        }
+
+        install()
+
+        assertEquals("没有缺失键就不许写盘（含行尾也不许动）", "UseKeyMacro=YES", config.readText())
+    }
+
+    /** 非 UTF-8 的盘上配置（原版回落 shift_jis 的日文另存）不重写 —— 重写等于替玩家换码页。 */
+    @Test
+    fun `非 UTF-8 配置整份跳过不重写`() {
+        // 「フウント」的 windows-31j 字节（0x83 0x74 0x83 0x87 0x83 0x93 0x83 0x67），严格 UTF-8 解不开。
+        val sjis = byteArrayOf(
+            0x83.toByte(), 0x74.toByte(),
+            0x83.toByte(), 0x87.toByte(),
+            0x83.toByte(), 0x93.toByte(),
+            0x83.toByte(), 0x67.toByte(),
+        )
+        asset("emuera.config", "UseKeyMacro=YES\n".toByteArray())
+        val config = File(gameRoot, "emuera.config").apply {
+            gameRoot.mkdirs()
+            writeBytes(sjis)
+        }
+
+        install()
+
+        assertArrayEquals("非 UTF-8 配置一个字节都不许动", sjis, config.readBytes())
+    }
+
+    /** 盘上配置不以换行结尾且缺键：补齐前先补一个换行，新键行不得黏在旧值行尾。 */
+    @Test
+    fun `无换行结尾的配置补键前先补行尾换行`() {
+        asset(
+            "emuera.config",
+            "ConfigVersion=1\nVALID EXTENSIONS FOR LOADTEXT AND SAVETEXT:xml,txt,json\n".toByteArray(),
+        )
+        val config = File(gameRoot, "emuera.config").apply {
+            gameRoot.mkdirs()
+            writeText("UseKeyMacro=YES") // 无换行结尾
+        }
+
+        install()
+
+        assertEquals(
+            "新键行必须从新行开始",
+            "UseKeyMacro=YES\nVALID EXTENSIONS FOR LOADTEXT AND SAVETEXT:xml,txt,json\n",
+            config.readText(),
+        )
+    }
+
     @Test
     fun `CSV resources sound plugins 四个目录递归落盘`() {
         val chara = bytes(1_200, seed = 17)
@@ -248,6 +454,9 @@ class GameAssetInstallerTest {
      * `bad/` 同理是**运行期**读的：`ERB/TITLE.ERB:123-158` 的 `@BADAPPLE` 每帧
      * `LOADTEXT("bad/bad_apple{count}.txt")`（1..6573）。少了它 DEMO 空帧全速循环，
      * 真机上首页被清空 + 高频抖动（2026-10-22 DevTools 实证空帧行）。
+     *
+     * `ERB/` 只随包 ERD 数据表（缺表时用户变量第 3 个下标不能用字符串指定，
+     * 运行期直接 CodeEE，2026-11-03 真机 4.981 新游戏实证），不随 ERB 源码。
      */
     @Test
     fun `DATA_DIRS 覆盖运行期读的 plugins 目录`() {
@@ -260,8 +469,8 @@ class GameAssetInstallerTest {
             GameAssetInstaller.DATA_DIRS.contains("bad"),
         )
         assertEquals(
-            "CSV/resources/sound/plugins/bad 五类语料目录不许被顺手删掉",
-            listOf("CSV", "resources", "sound", "plugins", "bad"),
+            "CSV/resources/sound/plugins/bad/ERB 六类语料目录不许被顺手删掉",
+            listOf("CSV", "resources", "sound", "plugins", "bad", "ERB"),
             GameAssetInstaller.DATA_DIRS,
         )
     }
@@ -274,6 +483,34 @@ class GameAssetInstallerTest {
         assertEquals(1, install(tree).copiedFiles)
         assertEquals("压缩条目不能为了比大小再解压一遍", 0, install(tree).copiedFiles)
         assertEquals(700L, File(gameRoot, "CSV/Chara.csv").length())
+    }
+
+    @Test
+    fun `压缩条目目标被截成 0 字节后重拷`() {
+        val csv = bytes(700, seed = 41)
+        asset("CSV/Chara.csv", csv)
+        val tree = DirAssetTree(assetsRoot, hideSizes = true)
+
+        assertEquals(1, install(tree).copiedFiles)
+        // 解包途中被杀留下的空壳：文件在、长度 0。压缩条目拿不到资产长度，
+        // 旧判据「存在即已装」会让这个空壳永久留存 —— 2026-10-31 真机 8 份
+        // `XML_DOCUMENT … 缺少根元素` 的现场就是 LOADTEXT 读到了这种壳。
+        val target = File(gameRoot, "CSV/Chara.csv")
+        target.writeBytes(ByteArray(0))
+
+        assertEquals("0 字节目标必须重拷", 1, install(tree).copiedFiles)
+        assertArrayEquals(csv, target.readBytes())
+    }
+
+    @Test
+    fun `零字节 STORED 标记每次都不重拷`() {
+        // sound/ 下 18 个零字节 bgm 标记是真·空文件，且是 STORED（fileSize 报 0）：
+        // 「0 字节就重拷」这条只对压缩条目成立，不能顺手把它们拖成每次启动都写一遍。
+        asset("sound/bgm01.ogg", ByteArray(0))
+
+        assertEquals(1, install().copiedFiles)
+        assertEquals("零字节是合法长度，不是残缺", 0, install().copiedFiles)
+        assertEquals(0L, File(gameRoot, "sound/bgm01.ogg").length())
     }
 
     @Test

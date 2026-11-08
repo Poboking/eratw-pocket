@@ -39,9 +39,10 @@ class TouchGestureControllerTest {
         col: Int,
         timeMs: Long,
         y: Float = 100f,
+        canSkip: Boolean = true,
     ): Action {
         controller.onDown(col, y, timeMs)
-        return controller.onUp(y, timeMs)
+        return controller.onUp(y, timeMs, canSkip = canSkip)
     }
 
     @Test
@@ -191,5 +192,120 @@ class TouchGestureControllerTest {
             Action.Skip,
             tap(tall, 3, 100L, y = 120f),
         )
+    }
+
+    /**
+     * 跳过闸①：宿主此刻不能跳过（`InputBarState.canSkip` 为假：数值/字符串取值等待、
+     * 非等待抢跑、宿主停转）时，第二击**必须仍是单击**，不能被吞。
+     *
+     * 出处：原版双击跳过整段挂在 `console.IsWaitingEnterKey` 上（`MainWindow.cs:806`），
+     * 而 `IsWaitingEnterKey` 只对 `EnterKey` / `AnyKey` 两种等待为真
+     * （`EmueraConsole.cs:324-343`）；`InputBarState.canSkip` 的判据同源（见该类类文档
+     * 「双击跳过只在 WAIT 系生效」）。玩家侧表现就是 2026-11-02 反馈的
+     * 「有的时候连点好几下都不动」——闸关着还照吞第二击，连点等于白点。
+     */
+    @Test
+    fun `跳过闸关着时窗口内第二击仍是单击`() {
+        val controller = controller()
+        assertEquals("第一击照常", Action.Tap(4), tap(controller, 4, 0L))
+        assertEquals(
+            "100ms 内但 canSkip = false ⇒ 不跳过、也不吞，按新单击起算",
+            Action.Tap(4),
+            tap(controller, 4, 100L, canSkip = false),
+        )
+        assertEquals("闸关着的那一击重新起算候选，闸开了立刻能配成跳过", Action.Skip, tap(controller, 4, 200L))
+    }
+
+    /**
+     * 跳过闸②：第一击**没有推进**（页面还在跑、没按钮可点、覆盖层挡着）时，第二击不跳过。
+     *
+     * 玩家的连点本意是「让这一页动起来」，不是「快进到下一个要按键的地方」；把它理解成跳过
+     * 就是 2026-11-02 的「双击快了还会卡顿」——跳过是 `MesSkip` 空转（`EmueraConsole.cs:1451-1456`），
+     * 会一口气跑过好几页。
+     */
+    @Test
+    fun `第一击没推进时第二击不跳过`() {
+        val controller = controller()
+        assertEquals(Action.Tap(4), tap(controller, 4, 0L))
+        controller.noteTapExecuted(advanced = false, hitButton = false)
+        assertEquals(
+            "第一击什么都没交出去 ⇒ 第二击只是普通推进，不快进",
+            Action.Tap(4),
+            tap(controller, 4, 100L),
+        )
+    }
+
+    /**
+     * 跳过闸③：第一击命中行内按钮时，第二击不跳过。
+     *
+     * 连点同一个按钮在原版 PC 上就是「按两次」（每次 `mainPicBox_MouseDown` 各提交一次，
+     * `MainWindow.cs:784-820`）；映射成跳过会把按钮的结果整段快进掉。
+     */
+    @Test
+    fun `第一击命中按钮时第二击不跳过`() {
+        val controller = controller()
+        assertEquals(Action.Tap(4), tap(controller, 4, 0L))
+        controller.noteTapExecuted(advanced = true, hitButton = true)
+        assertEquals("连点按钮 = 按两次", Action.Tap(4), tap(controller, 4, 100L))
+    }
+
+    /**
+     * 跳过闸④的反面：已逐段付过滚动的拖动，抬手不能再补一次点击。
+     *
+     * 拖动是逐段付的（`ScrollLineAccumulator`），「拖出去又拖回来」的总位移可能回到 0；
+     * 只看抬手纵坐标会把一次拖动补成一次提交。
+     */
+    @Test
+    fun `已付过滚动的拖动抬手不产单击`() {
+        val controller = controller()
+        assertEquals(Action.Tap(4), tap(controller, 4, 0L))
+        controller.onDown(col = 4, y = 100f, timeMs = 100L)
+        assertEquals(
+            "拖出去又拖回来（净位移 0）但已付过滚动 ⇒ 不补点击，也不留双击候选",
+            Action.None,
+            controller.onUp(y = 100f, timeMs = 150L, scrolled = true),
+        )
+        assertEquals("滚动清掉了候选：下一击重新起算", Action.Tap(4), tap(controller, 4, 200L))
+    }
+
+    /** 行高可写（「适应屏幕」在游玩中换字号）：改写后立刻按新行高判点/滑分界。 */
+    @Test
+    fun `行高可改写且立刻生效`() {
+        val controller = controller()
+        controller.pixelsPerLine = 40f
+        controller.onDown(col = 0, y = 100f, timeMs = 0L)
+        assertEquals(
+            "行高 40px 时 19px 不足半行 ⇒ 仍是单击",
+            Action.Tap(0),
+            controller.onUp(y = 119f, timeMs = 50L),
+        )
+        controller.onDown(col = 0, y = 100f, timeMs = 100L)
+        assertEquals("行高 40px 时 20px 恰好半行 ⇒ 一行", Action.Scroll(-1), controller.onUp(y = 120f, timeMs = 150L))
+    }
+
+    /**
+     * 横挥不是点击：横向位移超过 2 行（[TouchGestureController.DEFAULT_HORIZONTAL_SLOP_LINES]）
+     * 就不推进、也不留候选。
+     *
+     * 为什么需要这条：老实现把「判成滚动但纵向位移为 0」的那一下静默丢掉，换成
+     * 「按点击处理」后，玩家在屏上横扫一下就会翻页。拇指点按的手抖远小于 2 行，
+     * 所以这条不会把真正的点击重新弄丢（2026-11-02 反馈的病根之一）。
+     */
+    @Test
+    fun `横挥超过两行不算点击`() {
+        val controller = controller()
+        controller.onDown(col = 0, y = 100f, timeMs = 0L)
+        assertEquals(
+            "横向 19px（恰好一行）仍在点按抖动范围内 ⇒ 单击",
+            Action.Tap(0),
+            controller.onUp(y = 100f, timeMs = 50L, dx = 19f),
+        )
+        controller.onDown(col = 0, y = 100f, timeMs = 100L)
+        assertEquals(
+            "横向 39px > 2 行（38px）⇒ 横挥，不推进",
+            Action.None,
+            controller.onUp(y = 100f, timeMs = 150L, dx = 39f),
+        )
+        assertEquals("横挥清掉候选：下一击重新起算", Action.Tap(0), tap(controller, 0, 200L))
     }
 }

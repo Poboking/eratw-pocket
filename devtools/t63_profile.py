@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -42,7 +43,8 @@ import t63probe  # noqa: E402
 
 PKG = hk.PKG
 DEVICE_TRACE = "/data/local/tmp/t63.prof"
-LOCAL_PROF_DIR = Path(r"D:\DSH\t63-diag\prof")
+_DEFAULT_T63_DIAG = Path(__file__).resolve().parent / ".t63-diag"
+LOCAL_PROF_DIR = Path(os.environ.get("ERATW_T63_PROF_DIR") or (_DEFAULT_T63_DIAG / "prof"))
 
 
 def sh(cmd: str, timeout: float = 120.0) -> str:

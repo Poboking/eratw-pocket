@@ -53,13 +53,25 @@ class ConfigFileStore(val file: File) {
     )
 
     /**
-     * 读入当前文件；**不存在返回 null**。读失败或不是合法 UTF-8 时抛 [IOException]。
+     * 读入当前文件；**不存在返回 null**。读失败、超过 [MAX_CONFIG_BYTES] 或不是合法 UTF-8 时抛 [IOException]。
      *
      * 空文件（包括只有 BOM 的三字节文件）返回空串 —— 调用方按「无原文」处理。
+     *
+     * 体积闸：`emuera.config` 是玩家可编辑的普通文本档（实档只有几 KB），但选错文件/被写坏时
+     * 可以有几个 GB；本类先 `readBytes()` 全量进堆，512 MB 堆的机器上会直接 OOM 或把游戏
+     * 卡死在 GC 上，而且每次启动都要来一遍。因此先看 `length()`，超过上限就抛 [IOException]
+     * 拒绝读取（不做截断 —— 截断后写回会把玩家剩下的条目全丢掉），[save] 随之返回 false、
+     * 原文件一字不动。
      */
     fun load(): LoadedConfig? {
         if (!file.isFile) {
             return null
+        }
+        val size = file.length()
+        if (size > MAX_CONFIG_BYTES) {
+            throw IOException(
+                "emuera.config 过大（$size 字节，上限 $MAX_CONFIG_BYTES 字节），拒绝读取：${file.absolutePath}",
+            )
         }
         val bytes = file.readBytes()
         val hasBom = bytes.size >= UTF8_BOM.size &&
@@ -172,6 +184,12 @@ class ConfigFileStore(val file: File) {
     companion object {
         /** 文件名 —— 固定放在游戏目录根（spec: `ConfigData.cs:33` 的 `Program.ExeDir + "emuera.config"`）。 */
         const val FILE_NAME: String = "emuera.config"
+
+        /**
+         * 读入上限（1 MiB）。实档约几 KB（`EmueraConfigWriter` 写出的全量条目也不到这个量级），
+         * 留出三个数量级的余量给玩家手写条目；超过即视为坏档/选错文件，拒绝读取而不是吸进堆里。
+         */
+        const val MAX_CONFIG_BYTES: Long = 1L * 1024L * 1024L
 
         private const val CRLF = "\r\n"
         private const val LF = "\n"

@@ -8,6 +8,7 @@ import com.eratw.port.core.save.SaveConfig
 import com.eratw.port.core.save.SaveDataProbe
 import com.eratw.port.core.vars.GameBaseData
 import java.io.File
+import java.io.FileOutputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.Locale
@@ -43,7 +44,17 @@ import java.util.Locale
  * [gameBase] 为 null 表示**调用方读不到自己的 GAMEBASE**（换目录装/CSV 缺失），
  * 此时跳过游戏码与版本两道闸，只做「是不是存档 + 类别对不对」—— 判定权交回给读档那一刻的
  * 引擎（`LOADDATA` 侧仍有同一道 `GameBaseGate`），这里不伪造「属于另一个游戏」。
+ *
+ * ## `@Suppress("NewApi")` 的理由（不是掩盖问题）
+ *
+ * [commit] 用 `java.nio.file`（`Path` / `Files` / `StandardCopyOption`，平台 API 26 起才有）。
+ * 本模块 `minSdk = 21`，但**消费方 `:app` 开了核心库脱糖**，且用的是 `desugar_jdk_libs_nio`
+ * 变体（`app/build.gradle.kts` 的 `isCoreLibraryDesugaringEnabled = true` +
+ * `com.android.tools:desugar_jdk_libs_nio:2.1.5`）—— NIO 文件 API 正是该变体补的那一块，
+ * 打包后 Android 5.0 起可用。lint 的 `NewApi` 按模块判、看不到消费方的脱糖配置 ⇒ 误报。
+ * 只在「真的靠脱糖」的这两个类上抑制，别处仍按默认口径查。
  */
+@Suppress("NewApi")
 object SaveImport {
 
     /**
@@ -126,12 +137,15 @@ object SaveImport {
             slotLabel = "全局存档"
         } else {
             // 槽号优先按文件名认（PC 上就是把 sav 目录里的这一格搬过去），认不出来才找空位。
-            val named = SLOT_NAME.matchEntire(name)?.groupValues?.get(1)?.toLongOrNull()
+            // 位数超过 Long 的槽号同样是「编号太大」，不能掉进「找空位」分支：那会把一个
+            // 明确指定了槽位的文件静默塞进别的格（玩家以为覆盖了 save12，实际写进了 save0）。
+            val named = SLOT_NAME.matchEntire(name)?.groupValues?.get(1)
             val no = when {
                 named != null -> {
                     // 与函数 CHKDATA 的 ArgIsTooLarge 同一道界（FunctionMethodCreator.cs:3531-3534）。
-                    if (named > Int.MAX_VALUE) return Reject("存档位编号太大")
-                    named.toInt()
+                    val value = named.toLongOrNull() ?: return Reject("存档位编号太大")
+                    if (value > Int.MAX_VALUE) return Reject("存档位编号太大")
+                    value.toInt()
                 }
                 else -> (0 until slotCount.coerceAtLeast(1)).firstOrNull {
                     occupied(config.normalPath(it)) == null
@@ -155,21 +169,43 @@ object SaveImport {
      * 落位：先写同目录的 `.part` 再换名，**半截写不会污染已有槽位**（选中文件读到一半被
      * 系统杀掉 / 盘满时，玩家原来的档还在）。目标已存在时按覆盖处理（调用方已确认过）。
      *
-     * @return false = 落盘失败（只读目录 / 盘满 / 换名被拒），调用方按失败上屏，不重试不掩错
+     * 落位前的两道额外闸（都是防御性的，[plan] 生成的 `targetRel` 本来就在根内）：
+     *   * **根内约束**：`targetRel` 归一化后必须落在 `root` 之内（`../x`、绝对路径一律 false）。
+     *     本函数的第二个调用场景是「用户选的文件名 → 落位」，路径字符串一旦从外部进来，
+     *     就只认「归一化后仍以 root 为前缀」这一条。
+     *   * **先 sync 再换名**：`close()` 落的是内核页缓存，`rename` 不保证数据已落盘；
+     *     换名成功后掉电会留下长度正确但内容为空洞的档。这里先 `fd.sync()`（与
+     *     [com.eratw.port.platform.config.ConfigFileStore] 同一纪律），失败即 false、原档不动。
+     *
+     * 失败只吞 [Exception]：`Error`（OOM / StackOverflow）必须上抛给宿主的崩溃处理，
+     * 不能被当成「落盘失败」静默吞掉（BOARD 稳定性纪律）。
+     *
+     * @return false = 落盘失败（越界路径 / 只读目录 / 盘满 / 换名被拒），调用方按失败上屏，不重试不掩错
      */
-    fun commit(root: File, targetRel: String, bytes: ByteArray): Boolean = runCatching {
-        val dst = File(root, targetRel).toPath()
-        val dir = dst.parent ?: root.toPath()
-        Files.createDirectories(dir)
-        val tmp = dir.resolve(dst.fileName.toString() + ".part")
-        try {
-            Files.write(tmp, bytes)
-            Files.move(tmp, dst, StandardCopyOption.REPLACE_EXISTING)
-            true
-        } finally {
-            Files.deleteIfExists(tmp)
+    fun commit(root: File, targetRel: String, bytes: ByteArray): Boolean = try {
+        val rootPath = root.toPath().toAbsolutePath().normalize()
+        val dst = rootPath.resolve(targetRel).normalize()
+        if (dst == rootPath || !dst.startsWith(rootPath)) {
+            false
+        } else {
+            val dir = dst.parent ?: rootPath
+            Files.createDirectories(dir)
+            val tmp = dir.resolve(dst.fileName.toString() + ".part")
+            try {
+                FileOutputStream(tmp.toFile()).use { out ->
+                    out.write(bytes)
+                    out.flush()
+                    out.fd.sync()
+                }
+                Files.move(tmp, dst, StandardCopyOption.REPLACE_EXISTING)
+                true
+            } finally {
+                Files.deleteIfExists(tmp)
+            }
         }
-    }.getOrDefault(false)
+    } catch (_: Exception) {
+        false
+    }
 
     /**
      * 头探测。有 GAMEBASE 就走游戏内那条完整链（含两道闸）；没有就退到

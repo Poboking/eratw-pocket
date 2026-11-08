@@ -80,6 +80,18 @@ data class InputBarState(
     val textConsumed: Boolean = true,
     /** 空文本提交的去向，见类文档「空文本的去向」。 */
     val emptyText: EmptyText = EmptyText.LITERAL,
+    /**
+     * 本次等待是否允许宏预填（WIRE-5 / C-MACRO-FLAG@1）。
+     *
+     * **单一来源**：由 [of] 从 `pending.macroEnabled` 推导，即
+     * `InputRequest.macroEnabled`（`core-vm/src/main/kotlin/com/eratw/port/core/host/InputSink.kt:86`，
+     * 下发点 `StatementExecutor.kt:3907`）。壳层只**镜像**（`MainActivity.refreshShell` 每帧把
+     * 它刷进 `ShellState.macroEnabled`），不另存独立真源（R4-AC3）。
+     *
+     * 缺省 true = 原版输入框常规行为；`false` 时输入宿主不执行宏预填（宏条按钮 / 功能键预填）。
+     * 未在等待 / WAIT 系（[pending] 为 null）时按缺省 true：原版没有取值请求时不背这个标志。
+     */
+    val macroEnabled: Boolean = true,
 ) {
 
     /** 是否接受一次提交（空文本也算，理由见类文档）。 */
@@ -225,6 +237,7 @@ data class InputBarState(
          * @param hasHost 是否已有 `GameHost`（产物缺失的演示屏为 false）
          * @param running VM 线程是否还活着（`GameHost.isRunning`）
          * @param pending 当前等待的输入请求；null = 没在等 `waitInput`
+         *   （[macroEnabled] 由它的 `macroEnabled` 字段单源推导，见该属性 KDoc）
          * @param awaitingAnyKey 是否在等任意键（WAIT 系）
          */
         fun of(
@@ -252,6 +265,7 @@ data class InputBarState(
                 awaitingAnyKey = awaitingAnyKey,
                 textConsumed = pending != null && !awaitingAnyKey,
                 emptyText = emptyTextOf(pending, awaitingAnyKey),
+                macroEnabled = pending?.macroEnabled ?: true,
             )
         }
 
