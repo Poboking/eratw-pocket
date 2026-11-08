@@ -10,6 +10,8 @@
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.0.20-7F52FF?style=flat-square)
 ![Jetpack Compose](https://img.shields.io/badge/UI-Jetpack_Compose-4285F4?style=flat-square)
 ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)
+![players](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Poboking/eratw-pocket/main/badges/players.json)
+![playing today](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Poboking/eratw-pocket/main/badges/playing-today.json)
 
 **EraTW 的安卓原生移植版。**
 
@@ -22,6 +24,25 @@
 
 ---
 
+
+## 玩家数徽章
+
+上面两颗徽章分别是**累计玩家数**和**今日活跃**（服务端 UTC 日界）。这是可选的匿名计数：
+
+- 首次需要上报时，App 在本地生成一枚 32 字节随机编号（64 位小写十六进制）并稳定复用；
+  它与设备号、Android ID、账号、存档、路径一概无关。每天冷启最多上报一次。
+- 出网内容只有 `{"kind":"player-presence","id":"<编号>"}`。服务端只拿它去重，写入
+  Cloudflare R2 的 `player/<id>` 和 `active/<UTC 日>/<id>` 两个不可变对象；**不存**
+  IP、User-Agent、客户端时间、版本号或任何设备标识。公开出口只有聚合总数。
+  玩家正常更新走的是同一 R2 桶里的产物对象，不经过统计前缀，也不占 KV 额度。
+- 不想被数：设置 → 启动 → **匿名玩家数统计**，关掉即可。关掉后零出网、连编号都不生成；
+  开发包 / CI 包没配上报端点时同样零出网。
+- 徽章读取走 GitHub Actions：[`update-player-badges.yml`](.github/workflows/update-player-badges.yml)
+  每 30 分钟拉一次公开只读的 `/players/raw`，把数字写进本仓
+  [`badges/players.json`](badges/players.json) 与
+  [`badges/playing-today.json`](badges/playing-today.json)；shields.io 从
+  `raw.githubusercontent.com` 读这两份静态文件。端点暂时不可用时保留上一次读数，
+  不会把 0 冒充真实玩家数。
 
 ## 仓库结构
 

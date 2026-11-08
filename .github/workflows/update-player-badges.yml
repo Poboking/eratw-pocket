@@ -1,0 +1,63 @@
+name: Update player badges
+
+# README 的两颗徽章**不直接打 Worker**：这里定时取一次公开只读的 /players/raw，
+# 把聚合数写成仓库内 badges/*.json，shields.io 再从 raw.githubusercontent.com 读。
+# 好处：shields.io 与 GitHub 图片代理的请求不打端点；端点暂时不可用或还没部署时，
+# 保留上一次的读数，徽章不会变坏图，也不会把 0 冒充真实玩家数。
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-player-badges
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      # 仓库变量可覆盖端点（Settings → Secrets and variables → Actions → Variables）。
+      # 没配就用部署 runbook 里的自定义域名。这是公开只读出口，不需要任何 secret。
+      PLAYER_STATS_RAW_URL: ${{ vars.PLAYER_STATS_RAW_URL || 'https://eratw-android.asia/players/raw' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 取一次玩家数原始读数
+        id: fetch
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="$RUNNER_TEMP/players-raw.json"
+          # curl 失败 / 非 2xx / 超时都不算 CI 失败：Worker 可能还没部署。
+          if ! curl -fsS --max-time 20 --retry 1 \
+              -H 'Accept: application/json' \
+              "$PLAYER_STATS_RAW_URL" -o "$raw"; then
+            echo "::notice::玩家数端点暂时取不到（可能还没部署），保留已有徽章 JSON"
+            exit 0
+          fi
+          echo "raw=$raw" >> "$GITHUB_OUTPUT"
+          echo "fetched=true" >> "$GITHUB_OUTPUT"
+
+      - name: 生成两枚 shields endpoint 徽章 JSON
+        if: steps.fetch.outputs.fetched == 'true'
+        shell: bash
+        run: python3 .github/scripts/update_player_badges.py "$RUNNER_TEMP/players-raw.json" badges
+
+      - name: 有变化才提交
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- badges/players.json badges/playing-today.json; then
+            echo "读数没变或本轮跳过，不提交"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add badges/players.json badges/playing-today.json
+          git commit -m "chore(badges): refresh anonymous player counts [skip ci]"
+          git push

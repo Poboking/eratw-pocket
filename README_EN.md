@@ -10,6 +10,8 @@
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.0.20-7F52FF?style=flat-square)
 ![Jetpack Compose](https://img.shields.io/badge/UI-Jetpack_Compose-4285F4?style=flat-square)
 ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)
+![players](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Poboking/eratw-pocket/main/badges/players.json)
+![playing today](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Poboking/eratw-pocket/main/badges/playing-today.json)
 
 **A native Android port of EraTW.**
 
@@ -23,6 +25,30 @@ standalone on desktop.
 
 ---
 
+
+## Player count badges
+
+The two badges above show **total players** and **players active today** (UTC day, decided
+server-side). Counting is anonymous and optional:
+
+- On first use the app generates a 32-byte random ID (64 lowercase hex chars) locally and
+  reuses it. It is unrelated to device IDs, Android ID, accounts, saves or paths. At most
+  one ping per day, sent on a cold start.
+- The only payload is `{"kind":"player-presence","id":"<id>"}`. The server uses it purely
+  as a dedup key, writing two immutable objects to Cloudflare R2: `player/<id>` and
+  `active/<UTC day>/<id>`. It stores **no** IP, User-Agent, client time, app version or
+  device identifier. The public endpoint returns aggregate totals only. Normal app updates
+  read release artifacts from the same bucket under separate prefixes and never touch the
+  stats namespace or the KV quota.
+- Opt out any time under Settings → Launch → **Anonymous player count**. Once off, nothing
+  is sent and no ID is generated. Dev/CI builds without a configured report endpoint are
+  equally silent.
+- Badge reads go through GitHub Actions: [`update-player-badges.yml`](.github/workflows/update-player-badges.yml)
+  fetches the public read-only `/players/raw` every 30 minutes and writes the numbers to
+  [`badges/players.json`](badges/players.json) and
+  [`badges/playing-today.json`](badges/playing-today.json). shields.io reads those static
+  files from `raw.githubusercontent.com`. If the endpoint is unavailable, the previous
+  reading is kept instead of showing a fake zero.
 
 ## Repository Layout
 

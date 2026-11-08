@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "label": "playing today",
+  "message": "—",
+  "color": "lightgrey",
+  "cacheSeconds": 1800
+}
