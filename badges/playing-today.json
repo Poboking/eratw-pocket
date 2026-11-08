@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "label": "playing today",
+  "label": "active today",
   "message": "—",
   "color": "lightgrey",
   "cacheSeconds": 1800
