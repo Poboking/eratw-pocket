@@ -74,7 +74,7 @@ def main() -> None:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     payloads = {
-        "users.json": badge("users", thousands(players), "brightgreen"),
+        "players.json": badge("players", thousands(players), "brightgreen"),
         "active-today.json": badge("active today", thousands(active), "blue"),
     }
     for name, payload in payloads.items():

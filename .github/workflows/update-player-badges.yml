@@ -52,12 +52,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- badges/users.json badges/active-today.json; then
+          if git diff --quiet -- badges/players.json badges/active-today.json; then
             echo "读数没变或本轮跳过，不提交"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add badges/users.json badges/active-today.json
+          git add badges/players.json badges/active-today.json
           git commit -m "chore(badges): refresh anonymous player counts [skip ci]"
           git push
