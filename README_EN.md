@@ -27,13 +27,18 @@ standalone on desktop.
 
 ## Repository Layout
 
-| Module | Description |
+| Path | Description |
 |---|---|
-| `app` | Compose shell + assembly + release packaging |
-| `platform` | Platform capabilities: asset unpacking, save / audio / font / settings bindings (Android library) |
+| `app` | Compose shell + assembly + packaging; settings, input bar, overlays, error reporting, update UI |
+| `platform` | Platform capabilities: asset unpacking / material import, save import-export, audio focus, fonts, settings storage (Android library) |
 | `render-canvas` | Android custom View: hit regions and drawing, consuming eraKcore's display list |
-| `devtools/` | Release health-check scripts (`pack_release.py`) and debugging tools |
-| `docs/` | Design docs and runbooks |
+| `buildSrc` | Packaging-time tasks and pure helpers: asset staging, corpus patches, erbc freshness, ART profile conversion |
+| `devtools/` | Release health checks, update manifest / delta tools, error-report triage, performance and on-device probes |
+| `tools/apkpack/` | APK content self-check: manifest / shards / STORED / compression accounting |
+| `tools/report-endpoint/` | Cloudflare Worker template for the error-report endpoint (placeholder domain and KV id) |
+| `docs/` | Design docs, golden-runbook, and an interactive prototype; indexed in [docs/README.md](docs/README.md) |
+| `badges/` | Static player-count / active-today badge data used by the README |
+| `gradle/libs.versions.toml` | Single source for dependency coordinates and Android / Kotlin versions |
 
 ## Build
 
@@ -44,32 +49,80 @@ repository root.
 
 ```
 parent/
-├── eraKcore/      ← engine (core-vm / erbcc / render)
+├── eraKcore/      ← engine (core-vm / render / tools/erbcc)
 └── eratw-pocket/  ← this repo
 ```
 
+Everyday small package (no game data; the CI tier):
+
 ```bash
-./gradlew :app:assembleDebug
+./gradlew :app:assembleDebug -PeratwSkipAssets
 ```
 
-This repo ships no game data; bundled assets are provided via properties:
+Install-and-play full package (requires a game root and erbc artifacts):
+
+```bash
+./gradlew :app:assembleDebug -PeratwRequireComplete=1
+```
+
+Unit tests:
+
+```bash
+./gradlew :app:testDebugUnitTest :platform:testDebugUnitTest
+```
+
+The CI-equivalent command is:
+
+```bash
+./gradlew --no-daemon \
+  :app:assembleDebug -PeratwSkipAssets \
+  :app:testDebugUnitTest :platform:testDebugUnitTest
+```
+
+This repo ships no game data; bundled assets, artifacts, and update channels are
+configured through variables / properties:
 
 | Source | Purpose |
 |---|---|
-| `ERATW_GAMEDIR` / `-PeratwGameRoot` | Game root (`ERB/`, images, configs); unset produces an erbc-only small package |
+| `ERATW_GAMEDIR` / `-PeratwGameRoot` | Game root (`ERB/`, `CSV/`, `resources/`, `sound/`, configs); unset produces an erbc-only small package |
 | `ERATW_ERBC_DIR` / `-PeratwErbcDir` | erbcc output directory; defaults to probing `../eraKcore/tools/erbcc/build/erbc-out/erbc.v1` |
-| `-PeratwSkipAssets` | Skip asset bundling entirely (when the device has already unpacked data) |
+| `-PeratwSkipAssets` | Skip asset bundling entirely (device already unpacked / CI) |
+| `-PeratwRequireComplete` | Release gate: fail if any bundled category is missing or the artifact is stale |
+| `-PeratwErbcChunkMb` | Split `program.erbc` into `program.partNNN.erbc` + a `program.parts` manifest |
+| `-PeratwErbcCompress` | Allow DEFLATE for program entries (default STORED; see the package report) |
+| `-PeratwAbi` | Target ABI allow-list (default `arm64-v8a,armeabi-v7a`) |
+| `ERATW_REPORT_ENDPOINT` / `ERATW_REPORT_TOKEN` / `-PeratwReportEndpoint` | Error-report endpoint and token; the release script reads the environment, direct Gradle builds use `-PeratwReportEndpoint` / `-PeratwReportToken`, and `local.report.properties` also works |
+| `ERATW_UPDATE_MIRRORS` / `-PeratwUpdateMirrors` | Update mirror base URLs; the public repo default is empty (auto-update disabled), so configure explicitly |
+| `ERATW_KCORE_ROOT` | Where devtools locate the sibling engine checkout (default `../eraKcore`) |
+| `ERATW_T63_PROF_DIR` / `ERATW_T63_DIAG_DIR` | Output directories for the `t63_*` on-device profile / diagnostic scripts |
 
-For releases use the single entry point:
+`local.report.properties` is gitignored; see
+[local.report.properties.example](local.report.properties.example). Leaving it
+unconfigured only disables the reporting chain — packaging is unaffected.
+
+## Packaging & Toolchain
+
+Releases go through a single entry point:
 
 ```bash
 python devtools/pack_release.py            # full package + health checks
 python devtools/pack_release.py --skip-assets
 ```
 
-Error-report endpoint and token go into `local.report.properties`
-(template: `local.report.properties.example`, gitignored; leaving it
-unconfigured only disables reporting — packaging is unaffected).
+It reads back the actual strings and configuration inside the APK (report
+endpoint / token / corpus integrity / manifest and shards / STORED accounting)
+and exits non-zero on any mismatch.
+
+| Tool | Purpose |
+|---|---|
+| `devtools/pack_release.py` | Single release entry point and package health checks |
+| `devtools/emit_update.py` | Update manifests, signatures, and block deltas (`--selftest` runs offline) |
+| `devtools/update_drill.py` | Update drills / mock mirrors / resume verification |
+| `devtools/triage_reports.py` | Fetch and triage player error reports (token read only from local config) |
+| `devtools/boot2play.py` / `apk_truth.py` / `hawkeye.py` / `soak.py` | On-device boot, APK truth, performance, and soak probes |
+| `devtools/corpus-patches/` | Corpus content patches (CB-xxx) and manifest trace |
+| `tools/apkpack/inspect_apk.py` | Three-way reconciliation of manifest / parts / actual package |
+| `tools/report-endpoint/` | Report worker template (fill in your own domain and KV id at deploy time) |
 
 ## Architecture & Design Decisions
 
@@ -94,11 +147,22 @@ source fingerprint are verified during the app build; drift fails the build.
 There is no window where the engine is upgraded but the bytecode is not
 rebuilt.
 
-**Packaging self-checks.** After packing, `pack_release.py` reads back the
-actual strings and configuration inside the APK (report endpoint, token, corpus
-package integrity) and verifies them item by item; any mismatch exits non-zero.
-Problems like a silently broken reporting chain are stopped at packaging time,
-not discovered by players first.
+**Material import and Mod landing.** Resource-pack / Mod detection, safety
+gates, placement, and trilingual reporting all happen in the shell; the engine
+only sees the final `resources/`, `CSV/`, and `.erbc`. A material source name
+and a download job's `label` are different semantics, and source gates stop
+stale language labels from leaking into player-facing text.
+
+**Observable updates and reporting.** The update channel exposes readable
+states for checking / progress / failure retry / mirror fallback; error reports
+have a local queue, pruning, throttling, and manual export. Both work only with
+explicitly configured endpoints, and the public repo has them disabled by
+default.
+
+**Packaging self-checks.** `pack_release.py` and `tools/apkpack/inspect_apk.py`
+read back the real artifact and reconcile it at packaging time. Silent failures
+(reporting chain, stale erbc, missing assets, misaligned shards) are stopped
+there instead of being discovered by players.
 
 ## Corpus & Copyright
 
@@ -136,4 +200,3 @@ compatible and lawful); see its
 [NOTICE.md](https://github.com/Poboking/eraKcore/NOTICE.md) for Emuera
 attribution. Game data remains the property of its original authors — neither
 repo includes or replaces it.
-

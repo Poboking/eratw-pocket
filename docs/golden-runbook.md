@@ -10,7 +10,7 @@
 ## 1. 涉及的交付文件
 
 ```
-eratw-android/fixtures/golden/
+../eraKcore/fixtures/golden/
   GOLDEN_00_ROOT.ERB          入口 @GOLDEN_ROOT（根信息 + 依次 CALL 各节 + === END ===）+ 自动触发钩子 @EVENTFIRST/#PRI
   GOLDEN_01_BASIC.ERB         变量/赋值/数组/字符串/数学
   GOLDEN_02_PRINT.ERB         PRINT 全家族、按钮、颜色、字体、对齐、HTML、行控制
@@ -23,7 +23,7 @@ eratw-android/fixtures/golden/
   GOLDEN_09_MISC.ERB          SKIPDISP/NOSKIP/AWAIT/GETTIME/ASSERT/声音/TOOLTIP/RESETDATA/OUTPUTLOG
   GOLDEN_10_XMLMAP.ERB        XML/MAP/DataTable/变量与函数枚举
   GOLDEN_11_GVIEW.ERB         图形缓冲/精灵/CBG/窗口尺寸
-eratw-android/tools/golden-coverage.py    覆盖率统计（对照 specs，可重复运行）
+# 覆盖率统计：内部 golden-coverage.py（不随公开仓发布）
 ```
 
 编码注意：所有 ERB 为纯 ASCII（无 BOM）。`emuera.config` 的 `DEFAULT ANSI ENCODING:CHINESE_HANS`（GBK）与 UTF-8 读取结果一致，避免编码成为 diff 噪声源。
@@ -96,7 +96,7 @@ eratw-android/tools/golden-coverage.py    覆盖率统计（对照 specs，可�
 
 备用路径（菜单导出）：主窗口「文件 → 保存日志 / 输出日志」→ 另存为（同一 `OutputSystemLog` 代码路径，仅文件名自选）。
 
-**确切操作**：§2 步骤 5 跑完（打印 `=== END ===` 且套件已自动写出 `GOLDEN_ROOT_LOG.txt`）→ 取 exe 目录 `GOLDEN_ROOT_LOG.txt`。日志会混入游戏自身流程的行（标题页、钩子后的开局输出），截取基准时以 `=== GOLDEN RUN START ===` 到 `=== END ===` 为界（§5 的按节定位同样适用）。重命名保存到 `eratw-android/fixtures/golden/baseline/pc-golden-root.txt`。
+**确切操作**：§2 步骤 5 跑完（打印 `=== END ===` 且套件已自动写出 `GOLDEN_ROOT_LOG.txt`）→ 取 exe 目录 `GOLDEN_ROOT_LOG.txt`。日志会混入游戏自身流程的行（标题页、钩子后的开局输出），截取基准时以 `=== GOLDEN RUN START ===` 到 `=== END ===` 为界（§5 的按节定位同样适用）。重命名保存到 `../eraKcore/fixtures/golden/baseline/pc-golden-root.txt`。
 
 ## 4. 输入重放调研结论与操作单
 
@@ -158,13 +158,13 @@ grep -n "=== SECTION" /tmp/a.norm
 | OUTPUTLOG | 主采集 = 套件内 `OUTPUTLOG "GOLDEN_ROOT_LOG.txt"`（`=== END ===` 后立即执行，完整回放，§3）；游戏 `BEGIN` 会清空控制台日志，控制台 `@OUTPUTLOG` 在返回游戏后已失效（run4 实证）；GOLDEN_09 的 `GOLDEN_LOG.txt` 为中途快照，仅冗余 | 采集后把 `GOLDEN_ROOT_LOG.txt` 移入 baseline/ 并删除游戏目录的 GOLDEN_LOG.txt/GOLDEN_ROOT_LOG.txt/emuera.log 残留 |
 | 定时/实时输入 | `TONEINPUT*` 的 500ms 超时窗口内若有按键落入，结果会从默认值变为输入值（run3 `TONEINPUTS=TS` vs run4 空）；`INPUTMOUSEKEY`/`ISTIMEOUT` 同理 | 自动套件里 `TONEINPUT*` 一律带 `canskip`（mouse=0 必须显式给出，跳过路径无条件解引用 Mouse，FunctionIdentifier.cs:1040/1088）；`INPUTMOUSEKEY`+`ISTIMEOUT` 移到手工套件，不进自动基准 |
 
-## 7. 覆盖率现状（golden-coverage.py 输出）
+## 7. 覆盖率现状（内部 golden-coverage.py 输出）
 
 - isa.yaml 语句名（含 aliases 展开共 303 个）：**命中 300（99.0%）**，未命中 3 条（ADDSPCHARA / CALLSHARP / FORCE_BEGIN，理由见 §6）。
 - builtin-functions.yaml（271 个）：**命中 252（93.0%）**，未命中 19 条（全部属于 §6 表中的排除项）。
 - 13 个 ERB 文件共 1586 行（含 GOLDEN_12_SYMBOLS，采集符号解析规则用；A11c 加钩子/注释后计数）。
 
-统计可复现：`python eratw-android/tools/golden-coverage.py`
+统计可复现：内部 `golden-coverage.py`（不随公开仓发布）。
 
 ## 8. GOLDEN_12 的验证点与预期输出
 
@@ -227,15 +227,15 @@ EVENT-BUCKET-REMARK=collect one turn end to see markers
 
 本节断言已固化为单元测试，**不再依赖人工看 CLI 输出**：
 
-- 测试：`tools/erbcc/src/test/kotlin/com/eratw/port/erbcc/SymbolsTest.kt`
-- 命令：`gradle :tools:erbcc:test`（随 `:tools:erbcc:build` 一并执行）
+- 测试：`../eraKcore/tools/erbcc/src/test/kotlin/com/eratw/port/erbcc/SymbolsTest.kt`
+- 命令：`cd ../eraKcore && ./gradlew :tools:erbcc:test`（随 `:tools:erbcc:build` 一并执行）
 - 覆盖：`fixtures/golden` → 重名 4（非事件 2 / 事件 2）、`@G12_FUNC` 生效行 43、`@G12_PLAIN` 生效行 56、
   `@EVENTTURNEND` 执行序 65→61→70、标签名与系统语句零冲突；另有合成用例覆盖形参个数 / `#LOCALSIZE` /
   `#LOCALSSIZE` 的解析（含带默认值、字符串内含逗号、空括号、无括号）。
 - 全量语料冒烟：同一文件内的 `fullCorpusSmoke`，语料路径由环境变量 `ERATW_CORPUS`（或系统属性
   `-Deratw.corpus`）提供；缺失时自动 skip（CI 上没有语料）：
-  `ERATW_CORPUS=<游戏>/ERB gradle :tools:erbcc:test`
+  `(cd ../eraKcore && ERATW_CORPUS=<游戏>/ERB ./gradlew :tools:erbcc:test)`
   断言 6 组事件重名的定义数与 3 个抽样函数的 `argCount/localSize/localsSize`。
 
-调试时仍可单跑 CLI：`erbcc symbols --corpus fixtures/golden`（期望同上），
+调试时仍可单跑 CLI：`erbcc symbols --corpus ../eraKcore/fixtures/golden`（期望同上），
 `--collator-check` 对该目录应报 `PASS`（无定义集合翻转）。

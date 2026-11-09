@@ -30,4 +30,5 @@ jobs:
         run: ln -s "$GITHUB_WORKSPACE/eraKcore" "$GITHUB_WORKSPACE/../eraKcore"
 
       - name: 编译 debug 包 + 单测（-PeratwSkipAssets：CI 无语料）
+        # 4 个语料 / 真 GAMEBASE 门控用例按 JUnit assumption 跳过；其余全部真跑。
         run: ./gradlew --no-daemon :app:assembleDebug -PeratwSkipAssets :app:testDebugUnitTest :platform:testDebugUnitTest

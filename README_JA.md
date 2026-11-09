@@ -27,13 +27,18 @@
 
 ## リポジトリ構成
 
-| モジュール | 概要 |
+| パス | 概要 |
 |---|---|
-| `app` | Compose シェル + アセンブリ + リリースパッケージング |
-| `platform` | プラットフォーム機能：アセット展開、セーブ / オーディオ / フォント / 設定バインディング（Android library） |
+| `app` | Compose シェル + アセンブリ + パッケージング。設定画面、入力バー、オーバーレイ、エラーレポート、更新 UI |
+| `platform` | プラットフォーム機能：アセット展開 / 素材インポート、セーブ入出力、オーディオフォーカス、フォント、設定ストレージ（Android library） |
 | `render-canvas` | Android カスタム View：当たり判定と描画。eraKcore のディスプレイリストを消費 |
-| `devtools/` | リリース検査スクリプト（`pack_release.py`）とデバッグツール |
-| `docs/` | 設計ドキュメントとランブック |
+| `buildSrc` | パッケージ時のタスクと純関数：アセット staging、コーパスパッチ、erbc 鮮度、ART profile 変換 |
+| `devtools/` | リリース検査、更新マニフェスト / 差分、エラーレポート分診、性能・実機プローブ |
+| `tools/apkpack/` | APK 内容の自己検査：マニフェスト / シャード / STORED / 圧縮口径の照合 |
+| `tools/report-endpoint/` | エラーレポート用 Cloudflare Worker テンプレート（ドメインと KV id はプレースホルダ） |
+| `docs/` | 設計ドキュメント、golden 取得手順、操作可能なプロトタイプ。索引は [docs/README.md](docs/README.md) |
+| `badges/` | README のプレイヤー数 / アクティブ数バッジ用静的データ |
+| `gradle/libs.versions.toml` | 依存座標と Android / Kotlin バージョンの単一ソース |
 
 ## ビルド
 
@@ -45,32 +50,80 @@ JDK 17 以上と Android SDK（AGP 8.8.2）が必要です。コマンドはす�
 
 ```
 parent/
-├── eraKcore/      ← エンジン（core-vm / erbcc / render）
+├── eraKcore/      ← エンジン（core-vm / render / tools/erbcc）
 └── eratw-pocket/  ← 本リポジトリ
 ```
 
+日常用の小パッケージ（ゲームデータなし、CI 口径）：
+
 ```bash
-./gradlew :app:assembleDebug
+./gradlew :app:assembleDebug -PeratwSkipAssets
 ```
 
-本リポジトリはゲームデータを同梱しません。同梱アセットは変数で指定します：
+インストールしてすぐ遊べるフルパッケージ（ゲームルートと erbc 産物が必要）：
+
+```bash
+./gradlew :app:assembleDebug -PeratwRequireComplete=1
+```
+
+単体テスト：
+
+```bash
+./gradlew :app:testDebugUnitTest :platform:testDebugUnitTest
+```
+
+CI と同等のコマンド：
+
+```bash
+./gradlew --no-daemon \
+  :app:assembleDebug -PeratwSkipAssets \
+  :app:testDebugUnitTest :platform:testDebugUnitTest
+```
+
+本リポジトリはゲームデータを同梱しません。同梱アセット・産物・更新チャネルは
+変数 / プロパティで指定します：
 
 | ソース | 役割 |
 |---|---|
-| `ERATW_GAMEDIR` / `-PeratwGameRoot` | ゲームルート（`ERB/`・画像・設定）。未指定なら erbc のみの小パッケージになります |
+| `ERATW_GAMEDIR` / `-PeratwGameRoot` | ゲームルート（`ERB/`・`CSV/`・`resources/`・`sound/`・設定）。未指定なら erbc のみの小パッケージ |
 | `ERATW_ERBC_DIR` / `-PeratwErbcDir` | erbcc 産物ディレクトリ。既定では `../eraKcore/tools/erbcc/build/erbc-out/erbc.v1` を探索 |
-| `-PeratwSkipAssets` | アセット同梱を完全にスキップ（実機で展開済みの場合） |
+| `-PeratwSkipAssets` | アセット同梱を完全にスキップ（実機で展開済み / CI） |
+| `-PeratwRequireComplete` | 正式パッケージ用ゲート：同梱カテゴリの欠落や産物の鮮度切れで失敗 |
+| `-PeratwErbcChunkMb` | `program.erbc` を `program.partNNN.erbc` + `program.parts` マニフェストへ分割 |
+| `-PeratwErbcCompress` | プログラム項目の DEFLATE を許可（既定は STORED。出包レポート参照） |
+| `-PeratwAbi` | 対象 ABI 許可リスト（既定 `arm64-v8a,armeabi-v7a`） |
+| `ERATW_REPORT_ENDPOINT` / `ERATW_REPORT_TOKEN` / `-PeratwReportEndpoint` | エラーレポートのエンドポイントとトークン。出包スクリプトは環境変数、直接の Gradle ビルドは `-PeratwReportEndpoint` / `-PeratwReportToken`、`local.report.properties` でも可 |
+| `ERATW_UPDATE_MIRRORS` / `-PeratwUpdateMirrors` | 更新ミラー基址リスト。公開リポジトリの既定は空（自動更新は無効）なので明示設定が必要 |
+| `ERATW_KCORE_ROOT` | devtools が兄弟エンジンリポジトリを探す位置（既定 `../eraKcore`） |
+| `ERATW_T63_PROF_DIR` / `ERATW_T63_DIAG_DIR` | `t63_*` 実機 profile / 診断スクリプトの出力先 |
 
-リリース時は唯一の入口を使ってください：
+`local.report.properties` は gitignore 済みです。テンプレートは
+[local.report.properties.example](local.report.properties.example)。未設定でも
+レポート経路が無効になるだけで、ビルドや出包には影響しません。
+
+## 出包とツールチェーン
+
+リリースは唯一の入口を使います：
 
 ```bash
 python devtools/pack_release.py            # フルパッケージ + 検査
 python devtools/pack_release.py --skip-assets
 ```
 
-エラーレポートのエンドポイントとトークンは `local.report.properties` に
-（テンプレート：`local.report.properties.example`、gitignore 済み。未設定でも
-レポートが無効になるだけで、パッケージングには影響しません）。
+APK 内の実際の文字列と設定（レポートエンドポイント / トークン / コーパス完全性 /
+マニフェストとシャード / STORED 口径）を読み戻して項目ごとに照合し、不適合は
+非ゼロ終了します。
+
+| ツール | 用途 |
+|---|---|
+| `devtools/pack_release.py` | リリース唯一の入口と出包検査 |
+| `devtools/emit_update.py` | 更新マニフェスト・署名・ブロック差分の生成（`--selftest` でオフライン自己検査） |
+| `devtools/update_drill.py` | 更新ドリル / mock mirror / レジューム検証 |
+| `devtools/triage_reports.py` | プレイヤーエラーレポートの取得と分診（トークンはローカル設定からのみ） |
+| `devtools/boot2play.py` / `apk_truth.py` / `hawkeye.py` / `soak.py` | 実機起動、APK 真値、性能、ソークプローブ |
+| `devtools/corpus-patches/` | コーパス内容パッチ（CB-xxx）とマニフェスト痕跡 |
+| `tools/apkpack/inspect_apk.py` | マニフェスト / parts / 実パッケージの三者照合 |
+| `tools/report-endpoint/` | レポート Worker テンプレート（デプロイ時に自分のドメインと KV id を設定） |
 
 ## アーキテクチャと設計判断
 
@@ -93,10 +146,19 @@ python devtools/pack_release.py --skip-assets
 ビルド時に検証し、逸脱はビルド失敗。エンジンだけ更新してバイトコードを再ビルドし
 忘れる隙間はありません。
 
-**パッケージング自己検証。** `pack_release.py` はパック後、APK 内の実際の文字列と
-設定（レポートエンドポイント・トークン・コーパスパッケージの完全性）を読み戻して
-項目ごとに照合し、不適合は非ゼロ終了。クラッシュレポート経路の無音故障は、プレイヤー
-が気づく前に出荷段階で止まります。
+**素材インポートと Mod の落点。** リソースパック / Mod の判定、安全ゲート、
+配置、三言語レポートはシェル側で完結し、エンジンは最終的な `resources/`・`CSV/`・
+`.erbc` だけを見ます。素材の表示名とダウンロードジョブの `label` は別の意味論で、
+古い言語ラベルをプレイヤー面へ漏らさないためのソースガードがあります。
+
+**可観測な更新とレポート。** 更新チャネルは確認中 / 進捗 / 失敗再試行 / ミラー
+フォールバックを読み取れる文言で提示します。エラーレポートはローカルキュー、
+剪枝、スロットル、手動エクスポートを備えます。どちらも明示設定された端点でのみ
+動作し、公開リポジトリでは既定で無効です。
+
+**出包自己検査。** `pack_release.py` と `tools/apkpack/inspect_apk.py` は出包時に
+実産物を読み戻して照合します。レポート経路・古い erbc・欠落アセット・シャード
+ずれといった無音故障は、プレイヤーが気づく前にここで止まります。
 
 ## コーパスと著作権
 
@@ -131,4 +193,3 @@ python devtools/pack_release.py --skip-assets
 [NOTICE.md](https://github.com/Poboking/eraKcore/NOTICE.md) を。ゲーム本体の
 著作権は原作者に帰属し、本リポジトリもエンジンリポジトリもそれを含まず、代替でも
 ありません。
-
