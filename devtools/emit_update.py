@@ -138,9 +138,9 @@ import update_manifest_check  # 同目录：设备端清单语义的单源判式
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP_ROOT = os.path.dirname(HERE)
-# 公开分仓布局：core-vm / render 等引擎源码在姐妹仓 eraKcore；可用 ERATW_KCORE_ROOT 覆盖。
+# 公开分仓布局：core-vm / render 等引擎源码在姐妹仓 erak-engine；可用 ERATW_KCORE_ROOT 覆盖。
 KCORE_ROOT = (os.environ.get("ERATW_KCORE_ROOT") or
-              os.path.join(os.path.dirname(APP_ROOT), "eraKcore"))
+              os.path.join(os.path.dirname(APP_ROOT), "erak-engine"))
 ARTIFACT_DIR = os.path.join(APP_ROOT, "build", "release-artifacts")
 DEFAULT_OUT = os.path.join(APP_ROOT, "build", "update-dist")
 BUILD_GRADLE = os.path.join(APP_ROOT, "app", "build.gradle.kts")

@@ -1,7 +1,7 @@
 # docs 索引
 
 本目录只放壳层侧的公开文档与设计稿；游戏语义、编译器与引擎规格在姐妹仓
-[eraKcore](https://github.com/Poboking/eraKcore) 的 `specs/`。
+[erak-engine](https://github.com/Poboking/erak-engine) 的 `specs/`。
 
 | 文档 | 内容 |
 |---|---|
@@ -11,14 +11,14 @@
 
 ## 相关位置
 
-- 引擎 golden 夹具：`../eraKcore/fixtures/golden/`
-- 引擎语义规格：`../eraKcore/specs/`（入口见 `../eraKcore/specs/README.md`）
+- 引擎 golden 夹具：`../erak-engine/fixtures/golden/`
+- 引擎语义规格：`../erak-engine/specs/`（入口见 `../erak-engine/specs/README.md`）
 - 出包与更新工具：`../devtools/`、`../tools/apkpack/`
 - 随包语料内容补丁：`../devtools/corpus-patches/`
 
 ## 维护约定
 
-- 文档里的路径一律使用**仓库根相对路径**；跨仓引用写清 `../eraKcore/` 或仓库名。
+- 文档里的路径一律使用**仓库根相对路径**；跨仓引用写清 `../erak-engine/` 或仓库名。
 - 改动设计稿时同步检查原型与实现是否仍一致；原型只作交互参考，不是实现来源。
 - golden-runbook 里引用的内部覆盖率工具不随公开仓发布，遇到时以 `specs/` 与
   `fixtures/golden/` 的现有基线为准。

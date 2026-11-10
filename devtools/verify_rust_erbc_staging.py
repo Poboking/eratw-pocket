@@ -8,7 +8,7 @@
 是否**全认账**。
 
 本脚本只**编排 + 读数**：
-- 不碰任何 src 目录下的 rs、`app/build.gradle.kts`、`../eraKcore/tools/erbcc/build.gradle.kts`、Kotlin 侧；
+- 不碰任何 src 目录下的 rs、`app/build.gradle.kts`、`../erak-engine/tools/erbcc/build.gradle.kts`、Kotlin 侧；
 - 判据本体一律由 Gradle 自己去算（本脚本只读 `package.report` / 随包 `manifest.txt` 并与磁盘字节复核）；
 - 产腿复用已收口的双跑对拍驱动 `devtools/erbcc_rs_parity.py`（import，不重写）。
 
@@ -16,7 +16,7 @@
 
 ```text
 produce  Rust 腿（可选 --with-kotlin 顺带双跑对拍）产出 erbc.v1/ 到
-         ../eraKcore/tools/erbcc-rs/build/rust-staging/<ts>/rust/erbc.v1。
+         ../erak-engine/tools/erbcc-rs/build/rust-staging/<ts>/rust/erbc.v1。
 gate1    认账正例：pin 该目录跑 :app:stageGameAssets，要求
          A 档（不给游戏根，源 sha 走 manifest 的 corpus-root 兜底）与
          B 档（给游戏根，源 sha 走 -PeratwGameRoot/ERB 正路，并叠
@@ -85,9 +85,9 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP_ROOT = os.path.dirname(HERE)                      # <worktree>/eratw-pocket
-# 公开分仓布局：引擎侧工具/夹具在姐妹仓 eraKcore；可用 ERATW_KCORE_ROOT 覆盖。
+# 公开分仓布局：引擎侧工具/夹具在姐妹仓 erak-engine；可用 ERATW_KCORE_ROOT 覆盖。
 KCORE_ROOT = (os.environ.get("ERATW_KCORE_ROOT") or
-              os.path.join(os.path.dirname(APP_ROOT), "eraKcore"))
+              os.path.join(os.path.dirname(APP_ROOT), "erak-engine"))
 sys.path.insert(0, HERE)
 import erbcc_rs_parity as parity                      # noqa: E402  已落地的双跑驱动，复用不重写
 
@@ -1037,11 +1037,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     def common(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
         p.add_argument("--corpus", default=SMALL_CORPUS,
-                       help="语料根（缺省小档 ../eraKcore/tools/erbcc-rs/tests/data/rust-manifest/corpus）")
+                       help="语料根（缺省小档 ../erak-engine/tools/erbcc-rs/tests/data/rust-manifest/corpus）")
         p.add_argument("--classpath", help="ERBCC_CLASSPATH 的直接串或文件路径（缺省走 install 目录）")
         p.add_argument("--keep", action="store_true", help="保留临时产物与 staging（默认删除）")
         p.add_argument("--register", action="store_true",
-                       help="把读数写进 ../eraKcore/tools/erbcc-rs/tests/data/rust-staging/（小档登记物）")
+                       help="把读数写进 ../erak-engine/tools/erbcc-rs/tests/data/rust-staging/（小档登记物）")
         p.add_argument("--register-into", dest="register_into", metavar="TAG",
                        help="读数写进带 -<TAG> 后缀的**现状档**（历史快照档禁止覆盖，见 register_target）")
         return p

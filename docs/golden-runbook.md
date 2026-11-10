@@ -10,7 +10,7 @@
 ## 1. 涉及的交付文件
 
 ```
-../eraKcore/fixtures/golden/
+../erak-engine/fixtures/golden/
   GOLDEN_00_ROOT.ERB          入口 @GOLDEN_ROOT（根信息 + 依次 CALL 各节 + === END ===）+ 自动触发钩子 @EVENTFIRST/#PRI
   GOLDEN_01_BASIC.ERB         变量/赋值/数组/字符串/数学
   GOLDEN_02_PRINT.ERB         PRINT 全家族、按钮、颜色、字体、对齐、HTML、行控制
@@ -96,7 +96,7 @@
 
 备用路径（菜单导出）：主窗口「文件 → 保存日志 / 输出日志」→ 另存为（同一 `OutputSystemLog` 代码路径，仅文件名自选）。
 
-**确切操作**：§2 步骤 5 跑完（打印 `=== END ===` 且套件已自动写出 `GOLDEN_ROOT_LOG.txt`）→ 取 exe 目录 `GOLDEN_ROOT_LOG.txt`。日志会混入游戏自身流程的行（标题页、钩子后的开局输出），截取基准时以 `=== GOLDEN RUN START ===` 到 `=== END ===` 为界（§5 的按节定位同样适用）。重命名保存到 `../eraKcore/fixtures/golden/baseline/pc-golden-root.txt`。
+**确切操作**：§2 步骤 5 跑完（打印 `=== END ===` 且套件已自动写出 `GOLDEN_ROOT_LOG.txt`）→ 取 exe 目录 `GOLDEN_ROOT_LOG.txt`。日志会混入游戏自身流程的行（标题页、钩子后的开局输出），截取基准时以 `=== GOLDEN RUN START ===` 到 `=== END ===` 为界（§5 的按节定位同样适用）。重命名保存到 `../erak-engine/fixtures/golden/baseline/pc-golden-root.txt`。
 
 ## 4. 输入重放调研结论与操作单
 
@@ -227,15 +227,15 @@ EVENT-BUCKET-REMARK=collect one turn end to see markers
 
 本节断言已固化为单元测试，**不再依赖人工看 CLI 输出**：
 
-- 测试：`../eraKcore/tools/erbcc/src/test/kotlin/com/eratw/port/erbcc/SymbolsTest.kt`
-- 命令：`cd ../eraKcore && ./gradlew :tools:erbcc:test`（随 `:tools:erbcc:build` 一并执行）
+- 测试：`../erak-engine/tools/erbcc/src/test/kotlin/com/eratw/port/erbcc/SymbolsTest.kt`
+- 命令：`cd ../erak-engine && ./gradlew :tools:erbcc:test`（随 `:tools:erbcc:build` 一并执行）
 - 覆盖：`fixtures/golden` → 重名 4（非事件 2 / 事件 2）、`@G12_FUNC` 生效行 43、`@G12_PLAIN` 生效行 56、
   `@EVENTTURNEND` 执行序 65→61→70、标签名与系统语句零冲突；另有合成用例覆盖形参个数 / `#LOCALSIZE` /
   `#LOCALSSIZE` 的解析（含带默认值、字符串内含逗号、空括号、无括号）。
 - 全量语料冒烟：同一文件内的 `fullCorpusSmoke`，语料路径由环境变量 `ERATW_CORPUS`（或系统属性
   `-Deratw.corpus`）提供；缺失时自动 skip（CI 上没有语料）：
-  `(cd ../eraKcore && ERATW_CORPUS=<游戏>/ERB ./gradlew :tools:erbcc:test)`
+  `(cd ../erak-engine && ERATW_CORPUS=<游戏>/ERB ./gradlew :tools:erbcc:test)`
   断言 6 组事件重名的定义数与 3 个抽样函数的 `argCount/localSize/localsSize`。
 
-调试时仍可单跑 CLI：`erbcc symbols --corpus ../eraKcore/fixtures/golden`（期望同上），
+调试时仍可单跑 CLI：`erbcc symbols --corpus ../erak-engine/fixtures/golden`（期望同上），
 `--collator-check` 对该目录应报 `PASS`（无定义集合翻转）。

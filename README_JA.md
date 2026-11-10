@@ -17,8 +17,8 @@
 
 エミュレータを使わず、EraTW をスマホでネイティブに動かすためのプロジェクトです。
 このリポジトリが担うのはシェルだけ：Compose UI、アセット展開、セーブ、オーディオ、
-設定。ゲームの意味論はすべて [eraKcore](https://github.com/Poboking/eraKcore)
-エンジンが扱い、両リポジトリの間に意味論レベルの結合はありません。エンジンは
+設定。ゲームの意味論はすべて [erak-engine](https://github.com/Poboking/erak-engine)
+が扱い、両リポジトリの間に意味論レベルの結合はありません。エンジンは
 デスクトップ上で単独検証できます。
 
 </div>
@@ -31,7 +31,7 @@
 |---|---|
 | `app` | Compose シェル + アセンブリ + パッケージング。設定画面、入力バー、オーバーレイ、エラーレポート、更新 UI |
 | `platform` | プラットフォーム機能：アセット展開 / 素材インポート、セーブ入出力、オーディオフォーカス、フォント、設定ストレージ（Android library） |
-| `render-canvas` | Android カスタム View：当たり判定と描画。eraKcore のディスプレイリストを消費 |
+| `render-canvas` | Android カスタム View：当たり判定と描画。erak-engine のディスプレイリストを消費 |
 | `buildSrc` | パッケージ時のタスクと純関数：アセット staging、コーパスパッチ、erbc 鮮度、ART profile 変換 |
 | `devtools/` | リリース検査、更新マニフェスト / 差分、エラーレポート分診、性能・実機プローブ |
 | `tools/apkpack/` | APK 内容の自己検査：マニフェスト / シャード / STORED / 圧縮口径の照合 |
@@ -50,7 +50,7 @@ JDK 17 以上と Android SDK（AGP 8.8.2）が必要です。コマンドはす�
 
 ```
 parent/
-├── eraKcore/      ← エンジン（core-vm / render / tools/erbcc）
+├── erak-engine/   ← エンジン（core-vm / render / tools/erbcc）
 └── eratw-pocket/  ← 本リポジトリ
 ```
 
@@ -86,7 +86,7 @@ CI と同等のコマンド：
 | ソース | 役割 |
 |---|---|
 | `ERATW_GAMEDIR` / `-PeratwGameRoot` | ゲームルート（`ERB/`・`CSV/`・`resources/`・`sound/`・設定）。未指定なら erbc のみの小パッケージ |
-| `ERATW_ERBC_DIR` / `-PeratwErbcDir` | erbcc 産物ディレクトリ。既定では `../eraKcore/tools/erbcc/build/erbc-out/erbc.v1` を探索 |
+| `ERATW_ERBC_DIR` / `-PeratwErbcDir` | erbcc 産物ディレクトリ。既定では `../erak-engine/tools/erbcc/build/erbc-out/erbc.v1` を探索 |
 | `-PeratwSkipAssets` | アセット同梱を完全にスキップ（実機で展開済み / CI） |
 | `-PeratwRequireComplete` | 正式パッケージ用ゲート：同梱カテゴリの欠落や産物の鮮度切れで失敗 |
 | `-PeratwErbcChunkMb` | `program.erbc` を `program.partNNN.erbc` + `program.parts` マニフェストへ分割 |
@@ -94,7 +94,7 @@ CI と同等のコマンド：
 | `-PeratwAbi` | 対象 ABI 許可リスト（既定 `arm64-v8a,armeabi-v7a`） |
 | `ERATW_REPORT_ENDPOINT` / `ERATW_REPORT_TOKEN` / `-PeratwReportEndpoint` | エラーレポートのエンドポイントとトークン。出包スクリプトは環境変数、直接の Gradle ビルドは `-PeratwReportEndpoint` / `-PeratwReportToken`、`local.report.properties` でも可 |
 | `ERATW_UPDATE_MIRRORS` / `-PeratwUpdateMirrors` | 更新ミラー基址リスト。公開リポジトリの既定は空（自動更新は無効）なので明示設定が必要 |
-| `ERATW_KCORE_ROOT` | devtools が兄弟エンジンリポジトリを探す位置（既定 `../eraKcore`） |
+| `ERATW_KCORE_ROOT` | devtools が兄弟エンジンリポジトリを探す位置（既定 `../erak-engine`） |
 | `ERATW_T63_PROF_DIR` / `ERATW_T63_DIAG_DIR` | `t63_*` 実機 profile / 診断スクリプトの出力先 |
 
 `local.report.properties` は gitignore 済みです。テンプレートは
@@ -132,15 +132,15 @@ APK 内の実際の文字列と設定（レポートエンドポイント / ト�
 です。上流の意味論修正は本リポジトリへゼロコストで同期できます。追いかけるべき
 ゲームロジックが存在しないからです。エンジンに手を入れないと直せない問題に
 見えたら、本リポジトリで回避せず
-[eraKcore](https://github.com/Poboking/eraKcore) へ issue を。シェル側の回避策は、
+[erak-engine](https://github.com/Poboking/erak-engine) へ issue を。シェル側の回避策は、
 たいてい次のバグの種になります。
 
-**ディスプレイリスト描画の境界。** `render-canvas` は eraKcore のディスプレイ
+**ディスプレイリスト描画の境界。** `render-canvas` は erak-engine のディスプレイ
 リストを Android Canvas へ描画します。ヒット判定・スクロール・入力プレフィルは
 すべてエンジン側の純 JVM `render` モデル由来で、デスクトッププレビューと実機は
 同じレイアウト計算を走ります。UI の差異はアダプタ自身にしか発生しません。
 
-**composite build 接続 + ビルド時バージョン突合。** eraKcore は `includeBuild`
+**composite build 接続 + ビルド時バージョン突合。** erak-engine は `includeBuild`
 で接続され、依存置換後の APK 内エンジンは常に兄弟チェックアウトのソースから
 ビルドされます。erbcc のバージョンとコンパイラソースフィンガープリントは app の
 ビルド時に検証し、逸脱はビルド失敗。エンジンだけ更新してバイトコードを再ビルドし
@@ -175,7 +175,7 @@ APK 内の実際の文字列と設定（レポートエンドポイント / ト�
 
 ## 謝辞
 
-- **eraKcore の貢献者の皆さま**——ゲームの意味論に関する権威ある定義はそちらにあり、
+- **erak-engine の貢献者の皆さま**——ゲームの意味論に関する権威ある定義はそちらにあり、
   本リポジトリはそのフロントエンドの一つです。
 - **MinorShift** と **妊）|дﾟ)の中の人**——Emuera の著作者。ゲーム挙動の互換性は
   Emuera の動作を参考にしています。
@@ -188,8 +188,8 @@ APK 内の実際の文字列と設定（レポートエンドポイント / ト�
 
 ## ライセンス
 
-[GPL-3.0](LICENSE)。エンジンの eraKcore は MIT で公開しています（両者は互換、
+[GPL-3.0](LICENSE)。erak-engine は MIT で公開しています（両者は互換、
 組み合わせは合法）。Emuera の帰属表示はそちらの
-[NOTICE.md](https://github.com/Poboking/eraKcore/NOTICE.md) を。ゲーム本体の
+[NOTICE.md](https://github.com/Poboking/erak-engine/NOTICE.md) を。ゲーム本体の
 著作権は原作者に帰属し、本リポジトリもエンジンリポジトリもそれを含まず、代替でも
 ありません。

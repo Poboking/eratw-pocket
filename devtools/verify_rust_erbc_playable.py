@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """RUST1 `rust-playable` 车道：Rust 腿产物装进自研引擎之后，到底能不能跑一局。
 
-公开分仓布局：`core-vm` / `render` / `tools/*` / `fixtures` 都在姐妹仓 `../eraKcore`；
-本脚本的跨仓路径默认指向 `../eraKcore`，可用环境变量 `ERATW_KCORE_ROOT` 覆盖。
+公开分仓布局：`core-vm` / `render` / `tools/*` / `fixtures` 都在姐妹仓 `../erak-engine`；
+本脚本的跨仓路径默认指向 `../erak-engine`，可用环境变量 `ERATW_KCORE_ROOT` 覆盖。
 
 上一路 `rust-staging` 证的是「打包脚本认账」（`:app:stageGameAssets` 的 CMP-66/CMP-74）；
 本路证的是「**引擎认账**」：同一份语料由 Kotlin 腿与 Rust 腿各产一份 `erbc.v1/`，分别用
@@ -102,9 +102,9 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP_ROOT = os.path.dirname(HERE)
-# 公开分仓布局：引擎侧工具/夹具在姐妹仓 eraKcore；可用 ERATW_KCORE_ROOT 覆盖。
+# 公开分仓布局：引擎侧工具/夹具在姐妹仓 erak-engine；可用 ERATW_KCORE_ROOT 覆盖。
 KCORE_ROOT = (os.environ.get("ERATW_KCORE_ROOT") or
-              os.path.join(os.path.dirname(APP_ROOT), "eraKcore"))
+              os.path.join(os.path.dirname(APP_ROOT), "erak-engine"))
 sys.path.insert(0, HERE)
 import erbcc_rs_parity as parity  # noqa: E402  已收口的双腿驱动：产腿只用它，不重写
 
@@ -624,7 +624,7 @@ def golden_templates() -> tuple[list[str], list[str]]:
     """基准档的**前两列**（`文件:行 | 文案`）；第三列 `SRC:` 是采集脚本从夹具补的，不进判据。
 
     出处 = `ERATW_GOLDEN_WARNINGS` 指向的文件与消费它的
-    `../eraKcore/tools/erbcc/src/test/kotlin/com/eratw/port/erbcc/compile/LoadWarningsGoldenTest.kt`
+    `../erak-engine/tools/erbcc/src/test/kotlin/com/eratw/port/erbcc/compile/LoadWarningsGoldenTest.kt`
     （render 口径 = 「文件:行 | 文案」）。
     返回 (重复定义文案表, 参数过多文案表)。
     """
@@ -1410,7 +1410,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="复用 build/rust-playable/ 下已存在的两腿产物（省一趟 30s 编译）")
         p.add_argument("--keep", action="store_true", help="保留临时产物（默认删除）")
         p.add_argument("--register", action="store_true",
-                       help="把读数写进 ../eraKcore/tools/erbcc-rs/tests/data/rust-playable/（小档登记物）")
+                       help="把读数写进 ../erak-engine/tools/erbcc-rs/tests/data/rust-playable/（小档登记物）")
         return p
 
     g1 = common(sub.add_parser("gate1", help="双腿装载同读数（函数/语句/告警/#DIM）"))

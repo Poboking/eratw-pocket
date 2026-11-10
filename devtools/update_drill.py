@@ -73,9 +73,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ANDROID_ROOT = os.path.dirname(HERE)
-# 公开分仓布局：core-vm 在姐妹仓 eraKcore；可用 ERATW_KCORE_ROOT 覆盖。
+# 公开分仓布局：core-vm 在姐妹仓 erak-engine；可用 ERATW_KCORE_ROOT 覆盖。
 KCORE_ROOT = (os.environ.get("ERATW_KCORE_ROOT") or
-              os.path.join(os.path.dirname(ANDROID_ROOT), "eraKcore"))
+              os.path.join(os.path.dirname(ANDROID_ROOT), "erak-engine"))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 

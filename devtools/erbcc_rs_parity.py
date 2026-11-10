@@ -4,8 +4,8 @@
 
 RUST1-B `rust-gradle` 车道的入口脚本（内部契约文档未随公开仓发布）。
 
-公开分仓布局：`core-vm` / `render` / `tools/erbcc*` / `fixtures` 都在姐妹仓 `../eraKcore`。
-本脚本的跨仓路径默认指向 `../eraKcore`，可用环境变量 `ERATW_KCORE_ROOT` 覆盖。
+公开分仓布局：`core-vm` / `render` / `tools/erbcc*` / `fixtures` 都在姐妹仓 `../erak-engine`。
+本脚本的跨仓路径默认指向 `../erak-engine`，可用环境变量 `ERATW_KCORE_ROOT` 覆盖。
 Kotlin 侧/`src/*.rs` 一个字节都不碰：本脚本只是**编排 + 读数**，判据全部落在
 「两侧产物文件的 sha256 逐字节相等」上。
 
@@ -23,7 +23,7 @@ regen      在**当前机器**重跑并写回 tests/data/rust-manifest/ 、tests
            rust-roundtrip 档的产出方是 tests/roundtrip_parity.rs 里的 regen_roundtrip_baseline
            格（显式开关 ERBCC_RS_REGEN_ROUNDTRIP=1 才写盘、dry 只打印；未置位时该格自跳过，
            默认闸逐字节行为不变）—— 本脚本只调用 cargo 并校验落盘，基准字节全部出自真 Kotlin 腿。
-           --lane rust-full 另录**本机**全量基准（../eraKcore/tools/erbcc-rs/build/baseline/，不入库，
+           --lane rust-full 另录**本机**全量基准（../erak-engine/tools/erbcc-rs/build/baseline/，不入库，
            约 80 s）：全量 compileCorpus 腿 + Kotlin `check` 原始 stdout（自动剥结尾 \r\n，
            -Pout/-Pcorpus 一律绝对化）—— 改过 core-vm 之后不补这一档，
            freshness_parity 的全量第二读数就红在一个旧 digest 上。
@@ -75,9 +75,9 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP_ROOT = os.path.dirname(HERE)                       # <worktree>/eratw-pocket
-# 公开分仓布局：引擎侧工具/夹具在姐妹仓 eraKcore；可用 ERATW_KCORE_ROOT 覆盖。
+# 公开分仓布局：引擎侧工具/夹具在姐妹仓 erak-engine；可用 ERATW_KCORE_ROOT 覆盖。
 KCORE_ROOT = (os.environ.get("ERATW_KCORE_ROOT") or
-              os.path.join(os.path.dirname(APP_ROOT), "eraKcore"))
+              os.path.join(os.path.dirname(APP_ROOT), "erak-engine"))
 RS_DIR = os.path.join(KCORE_ROOT, "tools", "erbcc-rs")
 DATA_DIR = os.path.join(RS_DIR, "tests", "data")
 MANIFEST_DATA = os.path.join(DATA_DIR, "rust-manifest")
@@ -109,9 +109,9 @@ THREE = FOUR[:3]
 
 MAIN_CLASS = "com.eratw.port.erbcc.MainKt"
 JVM_OPTS = ["-Dsun.stdout.encoding=UTF-8", "-Dsun.stderr.encoding=UTF-8"]
-COMPILE_HEAP_OPT = "-Xmx6g"          # 与 ../eraKcore/tools/erbcc/build.gradle.kts:40 同尺
-INSTALL_DIST_HINT = "cd ../eraKcore && ./gradlew --configure-on-demand :tools:erbcc:installDist"
-CARGO_BUILD_HINT = "cd ../eraKcore/tools/erbcc-rs && cargo build --release --bin erbcc"
+COMPILE_HEAP_OPT = "-Xmx6g"          # 与 ../erak-engine/tools/erbcc/build.gradle.kts:40 同尺
+INSTALL_DIST_HINT = "cd ../erak-engine && ./gradlew --configure-on-demand :tools:erbcc:installDist"
+CARGO_BUILD_HINT = "cd ../erak-engine/tools/erbcc-rs && cargo build --release --bin erbcc"
 
 # 与 tests/compile_parity.rs:37-51 同一张表（改名规则 :72-75）
 GOLDEN_NAMES = [
@@ -806,7 +806,7 @@ def regen_rust_full(java: str, classpath: str, dry: bool) -> list[tuple[str, str
 
     两个实测坑在这里挡住（2026-11-01 收编 1101 挖虫波时各踩一次）：
     - `-Pout`/`-Pcorpus` 是**相对 `:tools:erbcc` 工程目录**解析的 —— 给相对 `-Pout` 会落成
-      `../eraKcore/tools/erbcc/tools/erbcc-rs/build/...`，得手动搬。这里一律先 `abspath` 再 `winpath`。
+      `../erak-engine/tools/erbcc/tools/erbcc-rs/build/...`，得手动搬。这里一律先 `abspath` 再 `winpath`。
     - Windows 上 Kotlin 的 stdout 结尾带 `\r\n`，而 `full_corpus_artifact_verdict_matches_kotlin`
       拿 `report.summary()`（无结尾换行）逐字节比 —— 不剥掉就差一个换行红。
     """
@@ -849,7 +849,7 @@ def regen_rust_full(java: str, classpath: str, dry: bool) -> list[tuple[str, str
 
 
 def display_rel(path: str) -> str:
-    """表格里显示成相对 eraKcore `tools/erbcc-rs` 的路径（全量基准不在 tests/data 下）。"""
+    """表格里显示成相对 erak-engine `tools/erbcc-rs` 的路径（全量基准不在 tests/data 下）。"""
     try:
         return os.path.relpath(path, RS_DIR).replace("\\", "/")
     except ValueError:
@@ -877,10 +877,10 @@ def cmd_regen(ns: argparse.Namespace) -> int:
         log(f"dry-run：{len(changed)} 个文件会与现状不同（未写盘）。")
     else:
         log(f"重生成完成：{len(all_rows)} 个基准文件写回，其中 {len(changed)} 个内容有变。")
-        log("下一步（闸 2 的实质自证）：cd ../eraKcore/tools/erbcc-rs && cargo test --test digest_parity "
+        log("下一步（闸 2 的实质自证）：cd ../erak-engine/tools/erbcc-rs && cargo test --test digest_parity "
             "--test manifest_parity --test freshness_parity   # 期望 17/0，且上表全部「不变」或「仅路径行」")
         if ns.lane in ("all", "rust-roundtrip"):
-            log("下一步（rust-roundtrip 自证）：cd ../eraKcore/tools/erbcc-rs && cargo test --test roundtrip_parity "
+            log("下一步（rust-roundtrip 自证）：cd ../erak-engine/tools/erbcc-rs && cargo test --test roundtrip_parity "
                 "  # 期望 17/0（16 格入库闸 + 开关格未置位自跳过），且上表 tamper 三件套**成套**「不变」")
         if ns.lane in ("all", "rust-manifest", "rust-kernel", "rust-roundtrip"):
             log("提醒：`compiler-digest` 变了 ⇒ 本机全量基准（gitignore 面）同样作废，"

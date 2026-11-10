@@ -47,8 +47,8 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ANDROID_ROOT = SCRIPT_DIR.parent            # eratw-pocket 检出根
-# 公开分仓布局：引擎侧 vmdbg 在姐妹仓 eraKcore；可用 ERATW_KCORE_ROOT 覆盖。
-KCORE_ROOT = Path(os.environ.get("ERATW_KCORE_ROOT") or (ANDROID_ROOT.parent / "eraKcore"))
+# 公开分仓布局：引擎侧 vmdbg 在姐妹仓 erak-engine；可用 ERATW_KCORE_ROOT 覆盖。
+KCORE_ROOT = Path(os.environ.get("ERATW_KCORE_ROOT") or (ANDROID_ROOT.parent / "erak-engine"))
 VMDBG_CP = str(KCORE_ROOT / "tools" / "vmdbg" / "build" / "install" / "vmdbg" / "lib" / "*")
 MAIN_KT = "com.eratw.port.vmdbg.MainKt"
 
@@ -136,7 +136,7 @@ def default_game() -> str:
 
 def java_argv(extra: list[str], xmx: str = DEFAULT_XMX) -> list[str]:
     if not Path(KCORE_ROOT / "tools" / "vmdbg" / "build" / "install" / "vmdbg" / "lib").is_dir():
-        sys.exit("vmdbg 未安装：先在 eraKcore 下跑 ./gradlew --configure-on-demand :tools:vmdbg:installDist")
+        sys.exit("vmdbg 未安装：先在 erak-engine 下跑 ./gradlew --configure-on-demand :tools:vmdbg:installDist")
     return [resolve_java(), "-Xmx" + xmx, "-cp", VMDBG_CP, MAIN_KT, *extra]
 
 
@@ -228,7 +228,7 @@ def do_sweep(rest: list[str]) -> int:
         sys.exit(
             "sweep 的 --shard 由本脚本按分片注入（0..<shards），请勿自带 --shard；"
             "要只跑某一片就请直接跑 vmdbg（例：./gradlew 装好的 installDist 里 "
-            "java -cp ../eraKcore/tools/vmdbg/build/install/vmdbg/lib/'*' com.eratw.port.vmdbg.MainKt "
+            "java -cp ../erak-engine/tools/vmdbg/build/install/vmdbg/lib/'*' com.eratw.port.vmdbg.MainKt "
             "sweep --shard 3/8 --out <目录>），或在这里用 --only/--skip-methods 收窄清单。"
         )
 

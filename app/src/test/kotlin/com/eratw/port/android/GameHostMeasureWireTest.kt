@@ -36,7 +36,7 @@ class GameHostMeasureWireTest {
     private fun coreSourceOf(relative: String): String {
         val candidates = listOf(
             File("src/main/kotlin/com/eratw/port/$relative"),
-            File("../../eraKcore/core-vm/src/main/kotlin/com/eratw/port/$relative"),
+            File("../../erak-engine/core-vm/src/main/kotlin/com/eratw/port/$relative"),
             File("../../core-vm/src/main/kotlin/com/eratw/port/$relative"),
         )
         val file = candidates.firstOrNull { it.isFile }

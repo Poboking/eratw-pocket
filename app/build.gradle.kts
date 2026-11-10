@@ -121,8 +121,8 @@ val bundledErbcDir: File? = when {
     // 而 erbcc 自己的 `--out` 帮助文案写的是 `tools/erbcc/erbc-out/`（Main.kt:60）—— 两处都试，
     // 免得「明明编了却没随包」这种问题要靠人肉猜路径。
     else -> listOf(
-        File(projectDir, "../eraKcore/tools/erbcc/build/erbc-out/erbc.v1"),
-        File(projectDir, "../eraKcore/tools/erbcc/erbc-out/erbc.v1"),
+        File(projectDir, "../erak-engine/tools/erbcc/build/erbc-out/erbc.v1"),
+        File(projectDir, "../erak-engine/tools/erbcc/erbc-out/erbc.v1"),
         File(projectDir, "../tools/erbcc/build/erbc-out/erbc.v1"),
         File(projectDir, "../tools/erbcc/erbc-out/erbc.v1"),
     ).firstOrNull { it.isDirectory }
@@ -150,22 +150,22 @@ val erbcDirIsFallback = bundledErbcDir != null && erbcDirProp == null &&
  */
 val allowStaleErbc = providers.gradleProperty("eratwAllowStaleErbc").isPresent
 
-/** eraKcore 姊妹仓（settings.gradle.kts 的 includeBuild 目标）：必须与本仓同级检出。 */
-val eraKcoreHome: File = File(rootProject.projectDir, "../eraKcore")
+/** erak-engine 姊妹仓（settings.gradle.kts 的 includeBuild 目标）：必须与本仓同级检出。 */
+val erakEngineHome: File = File(rootProject.projectDir, "../erak-engine")
 
-/** erbcc 版本单源（core-vm 的 Version.kt）：优先 eraKcore 姊妹仓。 */
+/** erbcc 版本单源（core-vm 的 Version.kt）：优先 erak-engine 姊妹仓。 */
 val erbccVersionSrc: File = listOf(
-    File(eraKcoreHome, "core-vm/src/main/kotlin/com/eratw/port/core/Version.kt"),
+    File(erakEngineHome, "core-vm/src/main/kotlin/com/eratw/port/core/Version.kt"),
     rootProject.file("core-vm/src/main/kotlin/com/eratw/port/core/Version.kt"),
 ).firstOrNull { it.isFile }
-    ?: throw GradleException("找不到 core-vm 的 Version.kt：请把 eraKcore 仓库检出在本仓同级目录（../eraKcore）")
+    ?: throw GradleException("找不到 core-vm 的 Version.kt：请把 erak-engine 仓库检出在本仓同级目录（../erak-engine）")
 
 /** core-vm Kotlin 源根（CMP-66 编译器指纹用）。 */
 val coreVmKotlinSrc: File = listOf(
-    File(eraKcoreHome, "core-vm/src/main/kotlin"),
+    File(erakEngineHome, "core-vm/src/main/kotlin"),
     rootProject.file("core-vm/src/main/kotlin"),
 ).firstOrNull { it.isDirectory }
-    ?: throw GradleException("找不到 core-vm 源码根：请把 eraKcore 仓库检出在本仓同级目录（../eraKcore）")
+    ?: throw GradleException("找不到 core-vm 源码根：请把 erak-engine 仓库检出在本仓同级目录（../erak-engine）")
 
 val bundlingEnabled = !skipBundledAssets && (bundledGameRoot != null || bundledErbcDir != null)
 
@@ -543,7 +543,7 @@ kotlin {
 }
 
 dependencies {
-    // eraKcore（composite build，见 settings.gradle.kts 的 includeBuild + dependencySubstitution）
+    // erak-engine（composite build，见 settings.gradle.kts 的 includeBuild + dependencySubstitution）
     implementation("com.eratw.port:core-vm")
     implementation(project(":render-canvas"))
     implementation(project(":platform"))
@@ -705,7 +705,7 @@ if (bundlingEnabled) {
         rootProject.file("devtools/corpus-patches").takeIf { it.isDirectory }?.let { corpusPatchesDir.set(it) }
         erbccVersionSource.set(erbccVersionSrc)
         compilerSources.from(fileTree(coreVmKotlinSrc) { include("**/*.kt") })
-        repoRoot.set(eraKcoreHome)
+        repoRoot.set(erakEngineHome)
     }
 
     android.sourceSets.getByName("main").assets.srcDir(gameAssetsRoot)

@@ -33,18 +33,18 @@ kotlin {
     }
 }
 
-// 字体随包：把 eraKcore :render 的成品与度量表拷进本模块 assets，避免 1.1 MB 二进制在仓内出现第二份。
+// 字体随包：把 erak-engine :render 的成品与度量表拷进本模块 assets，避免 1.1 MB 二进制在仓内出现第二份。
 // AGP 的 assets 合并任务挂在 preBuild 之后，所以这里只需让 preBuild 依赖同步任务。
 val renderFontAssets = layout.buildDirectory.dir("generated/renderFontAssets")
 val syncRenderFonts = tasks.register<Sync>("syncRenderFonts") {
-    from(rootProject.file("../eraKcore/render/src/main/resources/fonts"))
+    from(rootProject.file("../erak-engine/render/src/main/resources/fonts"))
     into(renderFontAssets.map { it.dir("fonts") })
 }
 android.sourceSets.getByName("main").assets.srcDir(renderFontAssets)
 tasks.named("preBuild").configure { dependsOn(syncRenderFonts) }
 
 dependencies {
-    // 对外暴露 ConsoleScreen / DisplayList 类型，app 不必再单独依赖 eraKcore 的 :render
+    // 对外暴露 ConsoleScreen / DisplayList 类型，app 不必再单独依赖 erak-engine 的 :render
     api("com.eratw.port:render")
     // `:render` 对 `:core-vm` 是 implementation，但它的**公共 API** 里出现了 core 类型
     // （`GraphicsLayer.cbgLayers: List<CbgLayerSnapshot>`、`ScreenScene.cbgLayers` —— CBG 图层的
