@@ -49,7 +49,7 @@ repository root.
 
 ```
 parent/
-├── erak-engine/   ← engine (core-vm / render / tools/erbcc)
+├── erak-engine/   ← engine (core-vm / render / sqlite-adapter / mod-* / tools/erbcc)
 └── eratw-pocket/  ← this repo
 ```
 
@@ -142,7 +142,10 @@ the adapter itself.
 
 **Composite-build wiring + build-time version reconciliation.** erak-engine is
 wired in via `includeBuild`, so after dependency substitution the engine inside
-the APK is always built from the sibling checkout. erbcc's version and compiler
+the APK is always built from the sibling checkout; the engine-side
+sqlite-adapter (platform wiring of the real SQLite engine) and the RT2 official
+Mods (mod-family / mod-memory / mod-livingworld) enter the APK through the same
+substitution. erbcc's version and compiler
 source fingerprint are verified during the app build; drift fails the build.
 There is no window where the engine is upgraded but the bytecode is not
 rebuilt.

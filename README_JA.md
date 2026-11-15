@@ -50,7 +50,7 @@ JDK 17 以上と Android SDK（AGP 8.8.2）が必要です。コマンドはす�
 
 ```
 parent/
-├── erak-engine/   ← エンジン（core-vm / render / tools/erbcc）
+├── erak-engine/   ← エンジン（core-vm / render / sqlite-adapter / mod-* / tools/erbcc）
 └── eratw-pocket/  ← 本リポジトリ
 ```
 
@@ -142,7 +142,9 @@ APK 内の実際の文字列と設定（レポートエンドポイント / ト�
 
 **composite build 接続 + ビルド時バージョン突合。** erak-engine は `includeBuild`
 で接続され、依存置換後の APK 内エンジンは常に兄弟チェックアウトのソースから
-ビルドされます。erbcc のバージョンとコンパイラソースフィンガープリントは app の
+ビルドされます。エンジン側の sqlite-adapter（SQLite 実エンジンのプラットフォーム
+接続）と RT2 公式 Mod（mod-family / mod-memory / mod-livingworld）も同じ依存置換で
+APK に入ります。erbcc のバージョンとコンパイラソースフィンガープリントは app の
 ビルド時に検証し、逸脱はビルド失敗。エンジンだけ更新してバイトコードを再ビルドし
 忘れる隙間はありません。
 
