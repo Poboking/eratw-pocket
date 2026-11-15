@@ -37,7 +37,7 @@ standalone on desktop.
 | `tools/apkpack/` | APK content self-check: manifest / shards / STORED / compression accounting |
 | `tools/report-endpoint/` | Cloudflare Worker template for the error-report endpoint (placeholder domain and KV id) |
 | `docs/` | Design docs, golden-runbook, and an interactive prototype; indexed in [docs/README.md](docs/README.md) |
-| `badges/` | Static player-count / active-today badge data used by the README |
+| `badges/` | Static player-count / active-today badge data used by the README (auto-scaled to k / M / G above 1,000) |
 | `gradle/libs.versions.toml` | Single source for dependency coordinates and Android / Kotlin versions |
 
 ## Build

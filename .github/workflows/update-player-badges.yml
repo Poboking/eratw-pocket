@@ -4,6 +4,8 @@ name: Update player badges
 # 把聚合数写成仓库内 badges/*.json，shields.io 再从 raw.githubusercontent.com 读。
 # 好处：shields.io 与 GitHub 图片代理的请求不打端点；端点暂时不可用或还没部署时，
 # 保留上一次的读数，徽章不会变坏图，也不会把 0 冒充真实玩家数。
+# 读数被标注截断时按「至少这么多」显示并带 +，避免一次列举分页上限把徽章永久冻在
+# 旧快照上（看起来像 999 的硬上限）；人数 >= 1000 自动按 1000 进制缩写（1.02k / 12.3k / 1.23M）。
 on:
   schedule:
     - cron: '*/30 * * * *'
@@ -26,6 +28,10 @@ jobs:
       PLAYER_STATS_RAW_URL: ${{ vars.PLAYER_STATS_RAW_URL || 'https://eratw-android.asia/players/raw' }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: 徽章数字格式化自检（离线，不依赖端点）
+        shell: bash
+        run: python3 .github/scripts/update_player_badges.py --selftest
 
       - name: 取一次玩家数原始读数
         id: fetch

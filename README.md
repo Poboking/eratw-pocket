@@ -36,7 +36,7 @@
 | `tools/apkpack/` | APK 内容自检：清单 / 分片 / STORED / 压缩口径逐类对账 |
 | `tools/report-endpoint/` | 错误上报 Cloudflare Worker 模板（端点与 KV id 均为占位） |
 | `docs/` | 设计稿、golden 采集手册与可交互原型；索引见 [docs/README.md](docs/README.md) |
-| `badges/` | README 玩家数 / 活跃数徽章的静态数据 |
+| `badges/` | README 玩家数 / 活跃数徽章的静态数据（≥ 1000 自动按 1000 进制缩写为 k / M / G） |
 | `gradle/libs.versions.toml` | 全仓依赖坐标与 Android / Kotlin 版本的单源 |
 
 ## 构建

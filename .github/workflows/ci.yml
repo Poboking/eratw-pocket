@@ -32,3 +32,11 @@ jobs:
       - name: 编译 debug 包 + 单测（-PeratwSkipAssets：CI 无语料）
         # 4 个语料 / 真 GAMEBASE 门控用例按 JUnit assumption 跳过；其余全部真跑。
         run: ./gradlew --no-daemon :app:assembleDebug -PeratwSkipAssets :app:testDebugUnitTest :platform:testDebugUnitTest
+
+  badge-script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 徽章数字格式化自检（离线，不依赖端点）
+        run: python3 .github/scripts/update_player_badges.py --selftest

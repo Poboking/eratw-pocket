@@ -37,7 +37,7 @@
 | `tools/apkpack/` | APK 内容の自己検査：マニフェスト / シャード / STORED / 圧縮口径の照合 |
 | `tools/report-endpoint/` | エラーレポート用 Cloudflare Worker テンプレート（ドメインと KV id はプレースホルダ） |
 | `docs/` | 設計ドキュメント、golden 取得手順、操作可能なプロトタイプ。索引は [docs/README.md](docs/README.md) |
-| `badges/` | README のプレイヤー数 / アクティブ数バッジ用静的データ |
+| `badges/` | README のプレイヤー数 / アクティブ数バッジ用静的データ（1000 以上は k / M / G に自動換算） |
 | `gradle/libs.versions.toml` | 依存座標と Android / Kotlin バージョンの単一ソース |
 
 ## ビルド
