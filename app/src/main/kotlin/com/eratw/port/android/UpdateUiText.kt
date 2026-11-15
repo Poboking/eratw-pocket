@@ -111,8 +111,6 @@ object UpdateUiText {
             lines.add(
                 copy.fill(
                     copy.offerAssetsLineFormat,
-                    assets.version,
-                    offer.installedDataVersion,
                     UpdatePolicy.sizeLabel(artifact.sizeBytes),
                     delta,
                 )
@@ -188,9 +186,9 @@ object UpdateUiText {
     fun skipCodeForReminder(offer: UpdateManager.UpdateOffer): Long =
         if (offer.forceUpdate) 0L else offer.info.apk?.versionCode ?: -1L
 
-    /** 点了「以后都不」之后 Toast 的一句：钉的是这一个版本，不是关掉整条通道。 */
-    fun skippedToast(copy: UpdateCopy, versionCode: Long): String =
-        copy.fill(copy.skippedToastFormat, versionCode, copy.reminderRestorePhrase)
+    /** 点了「以后都不」之后 Toast 的一句：钉的是这一个版本（内部读数），屏上不报号码。 */
+    fun skippedToast(copy: UpdateCopy): String =
+        copy.fill(copy.skippedToastFormat, copy.reminderRestorePhrase)
 
     /** 设置页「启动」卡里小字：跳过状态（供通道现状与单测钉文案）。 */
     fun skippedVersionNote(copy: UpdateCopy, skippedVersionCode: Long): String? =
@@ -226,16 +224,9 @@ object UpdateUiText {
     fun checkCrashedReport(copy: UpdateCopy, error: Throwable): String =
         copy.fill(copy.checkCrashedFormat, error.javaClass.simpleName)
 
-    /** 手动检查「已经是最新版」：当前版本两个读数都要报，玩家才信它真的查过了。 */
-    fun upToDateReport(
-        copy: UpdateCopy,
-        currentVersionCode: Long,
-        installedDataVersion: Long,
-        warningCount: Int = 0,
-    ): String {
-        val head = copy.fill(copy.upToDateFormat, currentVersionCode, installedDataVersion)
-        return withWarnings(copy, head, warningCount)
-    }
+    /** 手动检查「已是最新版」：只给结论与提醒条数 —— 整包/数据的内部版本号对玩家没有行动价值，不进 Toast。 */
+    fun upToDateReport(copy: UpdateCopy, warningCount: Int = 0): String =
+        withWarnings(copy, copy.upToDateFormat, warningCount)
 
     /** 检查成功但发布那边留了提醒：手动检查的结果一律上屏，所以这句话直接接在结果后面。 */
     fun withWarnings(copy: UpdateCopy, head: String, warningCount: Int): String {

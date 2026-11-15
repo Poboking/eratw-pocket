@@ -167,7 +167,7 @@ class LiveReflowPrefTest {
     private val otherKeys = listOf(
         "font_columns",
         "screen_fit",
-        "lean_options",
+        "busy_indicator",
         "option_rail",
         "disable_bad_apple",
         "auto_update",
@@ -183,7 +183,7 @@ class LiveReflowPrefTest {
         // 先按既有键各放一个值（类型也照真身：Int / Boolean / String）
         sp.map["font_columns"] = 90
         sp.map["screen_fit"] = false
-        sp.map["lean_options"] = true
+        sp.map["busy_indicator"] = true
         sp.map["option_rail"] = false
         sp.map["orientation"] = "portrait"
         sp.map["font_columns_portrait"] = 75
@@ -214,7 +214,7 @@ class LiveReflowPrefTest {
         sp.edit()
             .putInt("font_columns", 136)
             .putBoolean("screen_fit", true)
-            .putBoolean("lean_options", false)
+            .putBoolean("busy_indicator", false)
             .putBoolean("option_rail", true)
             .putString("orientation", "landscape")
             .putBoolean("command_tray_open", false)

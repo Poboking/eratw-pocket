@@ -258,9 +258,14 @@ class LiveReflowWiringTest {
             "摘回调与摘渲染桥同一发 UI 线程清场，且摘在换屏动作之前",
             graphics > disarm,
         )
+        // 钉「按线程分派」这条契约，不钉判线程的写法：内联 Looper 判与 isMainThread()
+        // 帮手函数等价，都收；清场本体必须 clear.run()（UI 线程）或 view.post(clear)（VM 线程）。
         assertTrue(
             "整发清场仍按线程分派（VM 线程走到这里时不许直接摸 View）",
-            host.contains("if (Looper.myLooper() == Looper.getMainLooper()) clear.run() else view.post(clear)"),
+            host.contains("clear.run()") &&
+                host.contains("view.post(clear)") &&
+                (host.contains("if (isMainThread()) clear.run()") ||
+                    host.contains("if (Looper.myLooper() == Looper.getMainLooper()) clear.run()")),
         )
     }
 

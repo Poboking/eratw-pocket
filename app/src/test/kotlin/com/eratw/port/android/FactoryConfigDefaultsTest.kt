@@ -46,7 +46,7 @@ class FactoryConfigDefaultsTest {
     }
 
     @Test
-    fun `出厂文件缺席的键回落引擎缺省而不是留在玩家改过的值上`() {
+    fun `出厂文件缺席的键回落出厂缺省链（平台缺省优先于引擎缺省）而不是留在玩家改过的值上`() {
         val model = SettingsModel()
         // 先模拟玩家把 PRINTC 改到 9，再拿空目标表恢复：必须回到引擎缺省 3。
         model.store.itemOf(ConfigKey.PrintCPerLine).assign(ConfigValue.IntValue(9))
@@ -54,9 +54,14 @@ class FactoryConfigDefaultsTest {
 
         for (spec in ConfigSpecTable.all) {
             if (spec.group != ConfigGroup.GAME) continue
+            // 回落链（CONFIG-OVERLAY，2026-11-09）：出厂文件缺席 ⇒ **平台出厂缺省**（若本平台
+            // 覆盖了这一项，例：安卓 `InfiniteLoopAlertTime` = 100000）⇒ 否则引擎缺省。
+            // 本条原期望是 `spec.defaultValue`，语义由「只认上游裸缺省」升级为「认平台标定」——
+            // 否则「恢复默认设置」会把玩家从 100 s 悄悄改回桌面的 5 s（那正是本路要修的东西）。
+            val expected = PortFactoryConfig.factoryDefaultOf(spec.key) ?: spec.defaultValue
             assertEquals(
-                "${spec.key} 没回落到引擎缺省",
-                spec.defaultValue,
+                "${spec.key} 没回落到出厂缺省链（平台缺省 → 引擎缺省）",
+                expected,
                 model.store.itemOf(spec.key).value,
             )
         }

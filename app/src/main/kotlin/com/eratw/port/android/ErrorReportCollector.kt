@@ -19,6 +19,7 @@ import android.provider.Settings
 import android.system.Os
 import android.system.OsConstants
 import android.util.Log
+import com.eratw.port.core.code.InfiniteLoopAlert
 import com.eratw.port.core.diag.ErrorReport
 import com.eratw.port.core.diag.ErrorReportUpload
 import com.eratw.port.core.diag.FileReadTrail
@@ -287,6 +288,9 @@ object ErrorReportCollector {
     /** 屏上尾部采集行数（截断由 [ErrorReport] 再兜一道）。 */
     private const val CONSOLE_TAIL_LINES = 60
 
+    /** VM 线程 Java 栈顶保留行数（沿用历史 take(8) 的口径，算进整节行预算）。 */
+    private const val JAVA_STACK_TOP_LINES = 8
+
     /**
      * 抛点镜像帧行的口径说明行（实时帧表已回卷、改用 VM 镜像时垫在帧链前面）。
      *
@@ -502,9 +506,9 @@ object ErrorReportCollector {
             // 存档留痕（[saveDiagLines]）排在心跳之前而不是最前：这条通道原来只打 `System.err`
             // （= logcat），而玩家读不到 logcat —— 2026-11-01「不能覆盖旧存档」那条反馈因此
             // 一直只有一句屏上文案。挂进报告的尾部保留段，玩家下一次发报告就自带现场。
-            extraSectionLines = extraLines + memoryLines(host) + datingLines(host) +
+            extraSectionLines = extraLines + arithmeticSceneLines(error) + memoryLines(host) + datingLines(host) +
                 saveDiagLines() + fileReadTrailLines(host) + heartbeatLines +
-                stallSceneLines() + drainDaemonDeathLines(),
+                lastBreathLines(context) + stallSceneLines() + drainDaemonDeathLines(),
         )
         val dir = reportDir(context)
         if (!dir.isDirectory) dir.mkdirs()
@@ -627,6 +631,28 @@ object ErrorReportCollector {
         }
     }
 
+/**
+ * 算术现场（2026-11-09 lane bug-divzero）：除零/取模时 CodeEE 携带的
+ * 被除数/除数/表达式重建，一行进「补充现场」；三字段全空时整行不出现。
+ *
+ * 为什么放补充现场：message 与位置是去重签名的输入，必须逐字不变；
+ * 现场只做归因辅助（同错不同变量的两份报告仍归一个签名）。
+ */
+private fun arithmeticSceneLines(error: Throwable?): List<String> = runCatching {
+    var e: Throwable? = error
+    var depth = 0
+    while (e != null && depth < 8) {
+        if (e is CodeEE && (e.exprText != null || e.operandA != null || e.operandB != null)) {
+            val a = e.operandA?.toString() ?: "?"
+            val b = e.operandB?.toString() ?: "?"
+            return@runCatching listOf("算术现场：${e.exprText ?: "（表达式原文不可得）"} | 被除数=$a 除数=$b")
+        }
+        e = e.cause
+        depth++
+    }
+    emptyList()
+}.getOrDefault(emptyList())
+
     /**
      * 内存现场行（进「[补充现场]」节头部）。
      *
@@ -648,6 +674,8 @@ object ErrorReportCollector {
             graphicsLines = listOfNotNull(
                 host?.graphicsPoolReportLine(),
                 host?.imageBookkeepingReportLine(),
+                // OOM-C 波：自救台账 + MemoryLimiter 读表诊断 + 堆外映射读数 + 堆转储台账。
+                host?.reclaimDiagnosticsLine(),
                 // Java 堆分项账面（EP1 波 L5 heap-census；组长接线）：`used/max` 那两列只说
                 // 「满了」，这一行说「装的是什么」—— 装载侧函数/语句/表达式/串池、运行侧格子与
                 // 角色表、显示侧行数、图形 Java 侧正号段像素。读数全是已驻留标量，不踩 .erbc
@@ -676,6 +704,33 @@ object ErrorReportCollector {
     private fun stallSceneLines(): List<String> = runCatching {
         MainActivity.currentStallSceneLines()
     }.getOrDefault(emptyList())
+    /**
+     * 上次运行死前现场（lane bug-silent）：`filesDir/eratw-lastbreath/` 里上一轮进程的周期心跳。
+     *
+     * ## 为什么必须走**文件**而不是进程内槽位
+     *
+     * 这一节服务的报告类型是「上次异常退出」——它是**下一次冷启动**落的（[RunWatch.beginProcess]，
+     * 见 [stallSceneLines] 的同一段说明）。进程内槽位（哨兵现场、心跳实例）在那一刻早已随进程
+     * 消失；能活过 `SIGKILL` / `CRASH_NATIVE` / ANR 被收的通道只有盘上那一份。端点 2026-11-08/09
+     * 那 10 份「无签名」报告的共同缺口正是这一条：`[主线程冻结现场]` 覆盖 0/69，而哨兵其实
+     * 抓到过栈（轨迹里 `stallstack all-stalled …` 那行就是它钉的）——只是没落盘。
+     *
+     * ## 口径
+     *
+     * 心跳本体在 [LastBreath]（纯 JVM，有定向单测）；本函数只做两件事：定位目录、把
+     * [LastBreath.reportLines] 的行交回采集侧。**有留痕 ⇒ 一节；无 ⇒ 一行说明**（绝不吞小节，
+     * 报告形状与既有 `[补充现场]` 里那几块一致）。整段 [runCatching]：取证读数永远不许把
+     * 报告路径拖崩（报告本身可能就是内存见底时生成的）。
+     *
+     * 认主位是 `Process.myPid()`：本进程自己写的那份不算「上次运行」（玩家在局中手动分享
+     * 报告时会出现这种形状），[LastBreath.readPrevious] 据此跳过它。
+     */
+    private fun lastBreathLines(context: Context): List<String> = runCatching {
+        LastBreath.reportLines(
+            dir = File(context.filesDir, LastBreath.DIR_NAME),
+            currentPid = Process.myPid(),
+        )
+    }.getOrDefault(listOf(LastBreath.NO_SNAPSHOT))
 
     /**
      * 约会现场行（diag-datingsync）：「一个人出门却被说在约会」与「路人子没问忘不忘」两条
@@ -859,31 +914,68 @@ object ErrorReportCollector {
      * VM 在回卷之前镜像过一次（[VirtualMachine.funcStackAtThrow]），这里在「实时帧空 +
      * 本报告确实带异常」时用它，并垫一行说明把两种读数的口径分开——「上次异常退出」那类
      * 没有 throwable 的报告**不许**回落，否则会把上一局某条链错标成这次的现场。
+     *
+     * ## 死循环告警块（loopreport，2026-11-12）
+     *
+     * 本节的**尾部**再挂一段 `--- 死循环告警 ---`（[LoopAlertReport]）：读数全部来自宿主那份
+     * 单槽快照 [GameHost.lastInfiniteLoopAlert]，这里只做接线，不重算任何字段。没有告警时
+     * 那段是空表 ⇒ 本节与改前逐字节一致（形状闸）。告警块占的行数要从帧预算里扣掉，否则
+     * 渲染层的 `takeLast(STACK_MAX_LINES)` 会把 `--- erb ---` 标题挤出头部。
      */
     private fun vmStackLines(host: GameHost?, error: Throwable?): List<String> {
-        if (host == null) return emptyList()
-        val session = host.debugSession() ?: return emptyList()
+        val loopAlert = LoopAlertReport.lines(host?.lastInfiniteLoopAlert)
+        if (host == null) return loopAlert
+        val session = host.debugSession() ?: return loopAlert
         val runtime = session.runtime
-        val frames = runCatching {
-            val vf = ProcessRuntime::class.java.getDeclaredField("vm")
-            vf.isAccessible = true
-            val vm = vf.get(runtime) ?: return@runCatching emptyList()
-            val fs = vm.javaClass.getDeclaredField("funcStack").apply { isAccessible = true }
-                .get(vm) as IntArray
-            val depth = vm.javaClass.getDeclaredField("depth").apply { isAccessible = true }
-                .getInt(vm)
-            val resolve = functionNameResolver(runtime)
-            VmStack.frameLines(fs, depth, ErrorReport.STACK_MAX_LINES, resolve)
-                .ifEmpty { if (error == null) emptyList() else throwPointFrames(vm, depth, resolve) }
-        }.getOrElse {
-            listOf("（ERB 调用栈读数不可用：${it.javaClass.simpleName}）")
-        }
         val javaTop = host.debugVmThread()?.stackTrace
-            ?.take(8)
+            ?.take(JAVA_STACK_TOP_LINES)
             ?.map { "  at ${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" }
             .orEmpty()
-        return frames + listOf("--- java ---") + javaTop
+        // 报告渲染层对整节做 takeLast(STACK_MAX_LINES)：先扣掉两个标题、Java 段与死循环
+        // 告警块，否则帧一多就会把 --- erb --- 标题从头部裁掉（形状闸要求标题常在）。
+        val frameBudget = vmSectionFrameBudget(javaTop.size, loopAlert.size)
+        // 抛点明细（函数名 + 0 基行 + pc + 调用点）：只在报告确实带 CodeEE 时取。
+        // 普通 RuntimeException（非 VM 线程）不碰「上一局留下的抛点镜像」——否则会把
+        // 一条与本异常无关的旧 ERB 链挂到报告上。没有异常离栈镜像时导出空表。
+        val erbFrames = if (ErbStack.hasCodeEE(error)) {
+            runCatching { runtime.erbFrameStack() }.getOrDefault(emptyList())
+        } else {
+            emptyList()
+        }
+        val frames = if (erbFrames.isNotEmpty()) {
+            ErbStack.frameLines(erbFrames, frameBudget)
+        } else {
+            // 旧口径兜底：实时帧表还活着（VM 线程未回卷）或只有抛点镜像的函数名时，
+            // 仍按原样出「#0 最内帧」；本路不碰惰性解码面（见本函数 KDoc）。
+            // 传 frameBudget - 1：VmStack 截断时会额外补一行省略说明，算进同一预算。
+            val fallbackBudget = maxOf(1, frameBudget - 1)
+            runCatching {
+                val vf = ProcessRuntime::class.java.getDeclaredField("vm")
+                vf.isAccessible = true
+                val vm = vf.get(runtime) ?: return@runCatching emptyList()
+                val fs = vm.javaClass.getDeclaredField("funcStack").apply { isAccessible = true }
+                    .get(vm) as IntArray
+                val depth = vm.javaClass.getDeclaredField("depth").apply { isAccessible = true }
+                    .getInt(vm)
+                val resolve = functionNameResolver(runtime)
+                VmStack.frameLines(fs, depth, fallbackBudget, resolve)
+                    .ifEmpty { if (error == null) emptyList() else throwPointFrames(vm, depth, resolve, fallbackBudget) }
+            }.getOrElse {
+                listOf("（ERB 调用栈读数不可用：${it.javaClass.simpleName}）")
+            }
+        }
+        return ErbStack.sectionLines(frames, javaTop) + loopAlert
     }
+
+    /**
+     * 「[ERB 调用栈与 VM 现场]」整节的帧预算：扣掉 `--- erb ---` / `--- java ---` 两个段标题、
+     * Java 栈顶与死循环告警块（[LoopAlertReport] 的行数）。
+     *
+     * 渲染层对整节做 `takeLast(ErrorReport.STACK_MAX_LINES)`（**尾部**保留），所以这三样
+     * 都要先从帧预算里让开，否则帧一多就会把 `--- erb ---` 标题从头部裁掉。
+     */
+    internal fun vmSectionFrameBudget(javaTopLines: Int, loopAlertLines: Int): Int =
+        maxOf(1, ErrorReport.STACK_MAX_LINES - 2 - javaTopLines - loopAlertLines)
 
     /**
      * 抛点镜像 → 报告帧行（带一行口径说明）；读不出就交回空表，与实时帧空表同样降级。
@@ -895,12 +987,13 @@ object ErrorReportCollector {
         vm: Any,
         liveDepth: Int,
         resolve: (Int) -> String?,
+        maxFrames: Int = ErrorReport.STACK_MAX_LINES,
     ): List<String> {
         if (liveDepth >= 0) return emptyList()
         val mirror = vm.javaClass.getMethod("funcStackAtThrow").invoke(vm) as? IntArray
         if (mirror == null || mirror.isEmpty()) return emptyList()
         return listOf(THROW_MIRROR_MARK) +
-            VmStack.frameLines(mirror, mirror.size - 1, ErrorReport.STACK_MAX_LINES, resolve)
+            VmStack.frameLines(mirror, mirror.size - 1, maxFrames, resolve)
     }
 
     /**
@@ -1156,6 +1249,207 @@ internal object VmStack {
         val name = runCatching { resolve(index) }.getOrNull()
         return if (name.isNullOrBlank()) "fn#$index（$NAME_UNREADABLE）" else name
     }
+}
+
+/**
+ * `[ERB 调用栈与 VM 现场]` 小节的**纯格式化层**（无 Android 依赖，`:app` JVM 单测直接锁）。
+ *
+ * 位置口径（2026-11-09 上报收口）：
+ * - `--- erb ---` 段每帧一行，行首 `#0` = 最内帧；
+ * - 每帧同时标注 **0 基行** 与 **物理行**（`行N（物理行N+1）`），因为
+ *   `CodeEE.line` / `Program.lineOf` 一路都是 0 基（见 `CodeEE` 类头），
+ *   只打 N 会让读者按物理行去数、偏一行；
+ * - 调用点在**调用方**函数里，同样双标注；
+ * - 无 ERB 帧（非 VM 线程 / 已回卷 / 没有抛点镜像）打一行
+ *   [NO_FRAMES]，绝不吞掉整个小节。
+ *
+ * 隐私口径与 `ErrorReport` 类头一致：只含函数名、行号、pc，不含变量取值。
+ */
+internal object ErbStack {
+
+    /** ERB 帧段固定标题（与 `--- java ---` 成对，报告形状闸按它定位）。 */
+    const val ERB_MARK = "--- erb ---"
+
+    /** VM 线程 Java 栈顶段固定标题。 */
+    const val JAVA_MARK = "--- java ---"
+
+    /** 没有任何 ERB 帧时的说明行（非 VM 线程或已回卷）。 */
+    const val NO_FRAMES = "（无：非 VM 线程或已回卷）"
+
+    /** 运行期函数表读不出名字时的降级文本（不谎报成问号）。 */
+    const val NAME_UNREADABLE = "名不可读"
+
+    /**
+     * 本异常（或其因果链）是否是 [CodeEE]。
+     *
+     * 报告采集走 `Thread.setDefaultUncaughtExceptionHandler`，普通 RuntimeException 也
+     * 会进来；只有 CodeEE 才允许去读 VM 的抛点镜像，否则「上一局某条链」可能被错标成
+     * 本次现场（同 `funcStackAtThrow` KDoc 的「没有 throwable 的报告不许回落」）。
+     */
+    fun hasCodeEE(error: Throwable?): Boolean {
+        var node = error
+        var depth = 0
+        while (node != null && depth < CAUSE_CHAIN_MAX_DEPTH) {
+            if (node is CodeEE) return true
+            val next = node.cause ?: return false
+            if (next === node) return false
+            node = next
+            depth++
+        }
+        return false
+    }
+
+    /** 按「`--- erb ---` → 帧行或空段说明 → `--- java ---` → Java 栈顶」拼小节。 */
+    fun sectionLines(frameLines: List<String>, javaTop: List<String>): List<String> {
+        val out = ArrayList<String>(frameLines.size + javaTop.size + 2)
+        out += ERB_MARK
+        if (frameLines.isEmpty()) out += NO_FRAMES else out += frameLines
+        out += JAVA_MARK
+        out += javaTop
+        return out
+    }
+
+    /**
+     * 帧明细 → 报告行（最内帧在 `#0`），最多 [maxFrames] 帧。
+     *
+     * 未超限时本表行数 = 帧数，报告形状闸按这个等式钉；超限时保最内帧并补一行
+     * 省略说明，**省略说明也算在 [maxFrames] 里**（整节还要过 ErrorReport 的
+     * takeLast 上限，不能把 --- erb --- 标题挤出头部）。
+     */
+    fun frameLines(frames: List<ProcessRuntime.ErbFrame>, maxFrames: Int = ErrorReport.STACK_MAX_LINES): List<String> {
+        if (frames.isEmpty() || maxFrames <= 0) return emptyList()
+        if (frames.size <= maxFrames) {
+            val out = ArrayList<String>(frames.size)
+            for (i in frames.indices) out += frameLine(frames[i], i)
+            return out
+        }
+        // 截断时把省略说明也算进 maxFrames：报告整节另有 takeLast 上限，
+        // 多出来的一行会把 --- erb --- 标题从头部挤掉（形状闸要求标题常在）。
+        val shown = maxFrames - 1
+        val out = ArrayList<String>(maxFrames)
+        for (i in 0 until shown) out += frameLine(frames[i], i)
+        out += "…（共 ${frames.size} 帧，余下省略）"
+        return out
+    }
+
+    /** 单帧一行：`#d 函数名 行N（物理行N+1） pc=… 调用点 调用方 行M（物理行M+1） pc=…`。 */
+    private fun frameLine(frame: ProcessRuntime.ErbFrame, depth: Int): String {
+        val name = frame.function?.takeIf { it.isNotBlank() }
+            ?: "fn#${frame.functionIndex}（$NAME_UNREADABLE）"
+        val sb = StringBuilder(96)
+        sb.append('#').append(depth).append(' ').append(name)
+        sb.append(' ').append(lineText(frame.line))
+        if (frame.pc >= 0) sb.append(" pc=").append(frame.pc)
+        if (frame.callSitePc >= 0) {
+            sb.append(" 调用点 ")
+            sb.append(frame.callSiteFunction?.takeIf { it.isNotBlank() } ?: "?")
+            sb.append(' ').append(lineText(frame.callSiteLine))
+            sb.append(" pc=").append(frame.callSitePc)
+        } else {
+            sb.append(" 调用点 根帧")
+        }
+        return sb.toString()
+    }
+
+    /** 0 基行 + 物理行双标注；-1 = 未知（如实留问号，不猜）。 */
+    fun lineText(line0: Int): String =
+        if (line0 >= 0) "行$line0（物理行${line0 + 1}）" else "行?（物理行?）"
+
+    /** 因果链深度上限（与 `ErrorReport.scriptLocationOf` 同值同理由：防自引用死循环）。 */
+    private const val CAUSE_CHAIN_MAX_DEPTH = 16
+}
+
+/**
+ * `--- 死循环告警 ---` 小节的纯格式化层（loopreport，2026-11-12；无 Android 依赖，
+ * `:app` JVM 单测直接锁）。
+ *
+ * ## 为什么要有这一节
+ *
+ * loopguard3 已经把死循环告警的现场钉进了 RunWatch 轨迹（`loopalert src=… line=… elapsed=…
+ * lines=… thr=… nth=… bg=…`），但轨迹是顺时间轴看的一长串：玩家上报一份「可能发生了无限
+ * 循环」的崩溃之后，开发者还得在几十行轨迹里找出那一行。本小节把**同一份快照**摊成报告里的
+ * 结构化字段，字段名与轨迹行逐项同名（`src`/`line`/`elapsed`/`lines`/`thr`/`nth`/`bg`），
+ * 两处读数可以直接对账。
+ *
+ * ## 字段口径（一律来自快照，不重算、不猜）
+ *
+ * * `src` —— 告警的文件位显示名（[InfiniteLoopAlert.displaySource]：有源文件名用它，否则
+ *   回落函数书写名）。空 ⇒ **该行不写**，不拿占位符顶。
+ * * `line` —— 行号。快照里的 `lineNo` 是**原版正文口径的 1 基显示行**（`Vm.kt` 组告警时
+ *   唯一走 `erbDisplayLine` 出口），而报告其余各处是 0 基（[CodeEE.line]、`--- erb ---`
+ *   的帧行）；本块只做这一次 −1 换算，并用 [ErbStack.lineText] 把两种读数同打
+ *   （`行N（物理行N+1）`），不做第三次换算。
+ * * `elapsed` / `lines` / `thr` / `nth` / `bg` —— 快照原值直出：`thr` 是**本次生效**阈值
+ *   （不是会话配置原值），`nth` 是本 run 内第几问，`bg` 是宿主累计后台毫秒（已从段落
+ *   墙钟里扣掉的那个量）。
+ * * `退避` —— 「继续」之后本 run 的生效阈值是否已被推高。快照里没有独立的「已翻倍」位，
+ *   但 core 在**同一处**做这两件事：答「继续」的分支里 `loopAlertNth++` 与
+ *   `loopAlertMs = escalatedLoopAlertMs(loopAlertMs)` 成对发生（`core/code/Vm.kt` 的死循环
+ *   告警块），所以 `nth > 1` 与「本 run 已至少翻倍过一次」在快照上是同一件事。这里只读
+ *   `attempt`，不引入会话配置的 base 值、不推算倍数。
+ *
+ * ## 形状闸
+ *
+ * 一次告警都没有 ⇒ **整节不出现**（连标题也不留），报告与改前逐字节一致。
+ */
+internal object LoopAlertReport {
+
+    /** 小节固定标题（与 `--- erb ---` / `--- java ---` 同族；无告警时整节不出现）。 */
+    const val MARK = "--- 死循环告警 ---"
+
+    /** 正文最多几行：src / line / elapsed / lines / thr / nth / bg / 退避。 */
+    const val FIELD_LINES = 8
+
+    /** 「继续」之后本 run 的生效阈值已被推高过（与快照的 `nth > 1` 同义，见类头）。 */
+    const val ESCALATED = "已翻倍"
+
+    /** 本 run 的首问：生效阈值还是会话配置给的原值。 */
+    const val NOT_ESCALATED = "未翻倍"
+
+    /**
+     * 快照 → 报告行；`null`（一次告警都没有）⇒ 空表。
+     *
+     * 标题先入表、最后由「有没有正文行」收口：这条闸既是形状判据，也让单测能把
+     * 「无告警不写节」直接反向证明（删掉收口 ⇒ 报告里会剩一条孤零零的标题）。
+     */
+    fun lines(alert: InfiniteLoopAlert?): List<String> {
+        val out = ArrayList<String>(FIELD_LINES + 1)
+        out += MARK
+        if (alert != null) appendFields(out, alert)
+        return if (out.size > 1) out else emptyList()
+    }
+
+    /**
+     * 单行轨迹（RunWatch 回合轨迹采样面；与 [lines] 的报告小节是两份不同输出）。
+     *
+     * 字节面契约（loopguard3 反向证明钉住）：字段名与次序一个字都不许动 ——
+     * `elapsed` 大而 `bg` 大 ⇒ 慢机 + 后台抢占；`bg=0` 且 `nth` 一路涨 ⇒ 真死循环，
+     * 真机取证按这一行对读。宿主侧快照赋值点必须与这一行采样同一次告警（同现场）。
+     */
+    fun trailLine(alert: InfiniteLoopAlert): String =
+        "loopalert src=${alert.displaySource} line=${alert.lineNo} elapsed=${alert.elapsedMs}ms " +
+            "lines=${alert.linesExecuted} thr=${alert.alertTimeMs} nth=${alert.attempt} bg=${alert.backgroundMs}ms"
+
+    /** 逐字段追加；取不到的字段**整行不写**（不拿占位符谎报读数）。 */
+    private fun appendFields(out: MutableList<String>, alert: InfiniteLoopAlert) {
+        alert.displaySource.trim().takeIf { it.isNotEmpty() }?.let { out.add("src=" + it) }
+        out += "line=" + ErbStack.lineText(line0Of(alert.lineNo))
+        out += "elapsed=" + alert.elapsedMs + "ms"
+        out += "lines=" + alert.linesExecuted
+        out += "thr=" + alert.alertTimeMs + "ms"
+        out += "nth=" + alert.attempt
+        out += "bg=" + alert.backgroundMs + "ms"
+        out += "退避=" + if (alert.attempt > 1) ESCALATED else NOT_ESCALATED
+    }
+
+    /**
+     * 快照的 1 基显示行 → 报告 0 基行（本块唯一的换算）。
+     *
+     * 负数（未知）原样交回 [ErbStack.lineText] 打问号，**不夹到 0** ——「不知道」不许被渲染
+     * 成「第 0 行」。只有脏读数才可能超大，按 `Int` 上限饱和。
+     */
+    fun line0Of(displayLine: Long): Int =
+        if (displayLine < 0L) -1 else (displayLine - 1L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
 }
 
 /**

@@ -262,10 +262,11 @@ class PlayerStatsWiringTest {
 
     @Test
     fun `冷启接线点设置页开关与身份保留都在册`() {
-        val host = sourceOf("GameHost.kt")
-        assertTrue("冷启没挂上玩家心跳", host.contains("PlayerStatsWiring.reportAsync(view.context)"))
-        assertTrue("心跳必须排在漏斗冲刷之后", host.indexOf("UpdateTelemetryWiring.flushPendingAsync") <
-            host.indexOf("PlayerStatsWiring.reportAsync"))
+        // W3 后解包域迁 [LoadPipeline]，冷启接线随迁（次序契约不变）：
+        val pipeline = sourceOf("LoadPipeline.kt")
+        assertTrue("冷启没挂上玩家心跳", pipeline.contains("PlayerStatsWiring.reportAsync(context)"))
+        assertTrue("心跳必须排在漏斗冲刷之后", pipeline.indexOf("UpdateTelemetryWiring.flushPendingAsync") <
+            pipeline.indexOf("PlayerStatsWiring.reportAsync"))
 
         val activity = sourceOf("SettingsActivity.kt")
         assertTrue("设置页没有三语统计文案", activity.contains("PlayerStatsCopy.of(text.lang)"))

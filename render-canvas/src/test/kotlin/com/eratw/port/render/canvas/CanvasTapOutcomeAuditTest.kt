@@ -94,8 +94,10 @@ class CanvasTapOutcomeAuditTest {
     @Test
     fun `贴底状态位来自 snapToBottomForTap 的返回值`() {
         assertTrue(
-            tapBody.contains("val snapped = console.viewport.snapToBottomForTap()"),
-            "贴底结果要落到一个具名状态位（吞掉返回值的写法就是 C4 的老账）",
+            Regex("""val snapped = if \(noFocus\) false else console\.viewport\.snapToBottomForTap\(\)""")
+                .containsMatchIn(tapBody),
+            "贴底结果要落到具名状态位；NF 等待必须整段跳过贴底" +
+                "（MainWindow.cs:949，否则上翻看历史会被一下拽回底部）",
         )
         val refreshed = tapBody.substringAfter("if (snapped)")
         assertTrue(
@@ -120,6 +122,36 @@ class CanvasTapOutcomeAuditTest {
         assertTrue(
             early.contains("TapOutcome(hit = null, snappedToBottom = false)"),
             "无屏 early return 必须是 hit=null / snappedToBottom=false",
+        )
+    }
+
+    /**
+     * 4.981 NF 族（`TINPUTNF` / `TINPUTSNF`）在两处强制贴底入口都要被放过。
+     *
+     * C# 侧 `WaitInputNoFocus` 置 `ConsoleState.WaitInputNoFocus`
+     * （`EmueraConsole.cs:818`），宿主用 `IsWaitInputNoFocusState`（`:357`）在
+     * 点击（`MainWindow.cs:949`）与按键（`:1591`）两处跳过 `Value = Maximum`。
+     * 本夹具是源码面闸（本模块无法实例化 Android View），只钉「两条入口都认
+     * 这个位、缺省仍是基线行为」，真机观测属 TODO(verify)。
+     */
+    @Test
+    fun `NF 等待跳过点击与提交两处强制贴底`() {
+        assertTrue(
+            Regex("""fun tap\([^)]*noFocus: Boolean = false[^)]*\)""").containsMatchIn(src),
+            "tap 必须接受 noFocus，缺省 false = 1.824 基线路径逐字不变",
+        )
+        assertTrue(
+            tapBody.contains("if (noFocus) false else"),
+            "点击半边必须由 noFocus 抑制贴底（MainWindow.cs:949）",
+        )
+        val submit = bodyOf("fun snapToBottomForSubmit(")
+        assertTrue(
+            submit.contains("!noFocus && console.viewport.snapToBottomForTap()"),
+            "键入/选项提交半边同样由 noFocus 短路掉贴底动作（MainWindow.cs:1591）",
+        )
+        assertTrue(
+            Regex("""fun snapToBottomForSubmit\(noFocus: Boolean = false\)""").containsMatchIn(src),
+            "提交入口的 noFocus 也必须缺省 false，既有调用方零行为变化",
         )
     }
 }

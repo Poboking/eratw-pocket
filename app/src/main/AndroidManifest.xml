@@ -135,6 +135,25 @@
             手机上竖着改设置更自然。configChanges 仍保留：旋转时 Activity 不重建，未保存的
             123 项内存模型与列表滚动位置都不丢。
         -->
+        <!--
+            设置页是**不透明的全屏 Activity**（不覆写主题，继承 application 的 Theme.Eratw）。
+            它自己的方向域由 `screenOrientation="unspecified"` 决定：跟随系统/设备转动，
+            竖屏单列、横屏或平板按可用宽度加到两列或三列（SettingsLayoutPolicy）。
+            不许给它挂半透明/浮动/对话框主题：这类窗口**没有自己的方向域** —— 框架按它
+            下面那只 Activity 的方向定屏（即 MainActivity 在 onCreate 按 UiPrefs.portraitMode
+            写下的 SENSOR_LANDSCAPE / SENSOR_PORTRAIT），本行的 unspecified 会被整个跳过。
+            2026-11-13 为「设置页盖住 MainActivity 时被系统销毁即丢进度」挂上的
+            `Theme.Eratw.Settings`（windowIsTranslucent=true）就是这么把设置页钉死在游戏
+            横屏锁里的：2026-11-14 玩家反馈「设置页似乎被锁死为横屏，竖着拿手机也转不过来」。
+            那笔半透明改造的前提**已经作废**：同日 f92a53de8 把 VM 会话升到进程级
+            （SessionVault）—— onDestroy 只在 isFinishing 时拆会话，系统销毁（不保留活动 /
+            OEM 清理）只冻结，下一实例首帧 reattachView 接回同一局。进度不再依赖「MainActivity
+            在设置页盖着期间保持 visible」，所以这里恢复不透明窗口是撤掉那条多余的工作区，
+            而不是在它上面再加一层补丁；MainActivity 的 onStop 30 秒后台冻结、
+            RunWatch 的 background 落盘也按「真的不可见」回到既有语义。
+            已知边界不变：从设置页再进全屏系统界面（SAF 文件选择器等）仍会走 stopped/销毁，
+            那条路由 SessionVault 兜住（见 SessionVault.kt 类头与 SessionHandoverWireTest）。
+        -->
         <activity
             android:name=".SettingsActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"

@@ -11,6 +11,7 @@ import com.eratw.port.core.host.ResourceFileHost
 import com.eratw.port.core.image.PngImage
 import com.eratw.port.render.memory.PixelPreflight
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * [ResourceFileHost] 的 Android 实现：扫 `resources` 下的 CSV、按路径读字节、读图片头、解码。
@@ -70,8 +71,13 @@ class ResourceCsvHost(
      * `runCatching` 原本就吞 Throwable（含 OOM），
      * 所以这里只补**预检**，不改动失败折成 null 的既有形状。
      */
+    /**
+     * 「CSV 原样相对路径」→「设备上真实文件」的解析入口，见 [ResourceCaseFold]。
+     * 身份键不变：`regionCache` / `wholeSheets` / `wholeSheetRefused` 仍以 CSV 原路径为键，
+     * `obtainDecoder` 以解析后的真实 `file.path` 为键，两条链各自自洽。
+     */
     override fun readBytes(path: String): ByteArray? = runCatching {
-        val file = File(gameRoot, path)
+        val file = ResourceCaseFold.resolve(gameRoot, path)
         val length = file.length()
         if (!bytesReadable(length)) {
             Log.i(TAG, "整文件读字节预检不足 $path（$length B）—— 按读不到降级，${PixelPreflight.readout(length)}")
@@ -85,7 +91,7 @@ class ResourceCsvHost(
         if (bytes != null) {
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
         } else {
-            BitmapFactory.decodeFile(File(gameRoot, path).path, options)
+            BitmapFactory.decodeFile(ResourceCaseFold.resolve(gameRoot, path).path, options)
         }
         if (options.outWidth <= 0 || options.outHeight <= 0) return null
         return intArrayOf(options.outWidth, options.outHeight)
@@ -120,7 +126,7 @@ class ResourceCsvHost(
         val startedNs = System.nanoTime()
         val key = "$path#$x,$y,$w,$h"
         synchronized(regionLock) { regionCache.get(key) }?.let { return it }
-        val file = File(gameRoot, path)
+        val file = ResourceCaseFold.resolve(gameRoot, path)
         if (!file.isFile) {
             Log.w(TAG, "区域解码：文件不在 $path")
             return null
@@ -260,7 +266,7 @@ class ResourceCsvHost(
     private fun wholeSheetBitmap(path: String): Bitmap? {
         synchronized(regionLock) { wholeSheets.get(path) }?.let { if (!it.isRecycled) return it }
         if (wholeSheetRefused.contains(path)) return null
-        val file = File(gameRoot, path)
+        val file = ResourceCaseFold.resolve(gameRoot, path)
         if (!file.isFile) return null
         val size = imageSize(path, null) ?: run {
             wholeSheetRefused.add(path)
@@ -382,5 +388,67 @@ class ResourceCsvHost(
             val rest = if (fullAbs.startsWith(base)) fullAbs.substring(base.length) else fullAbs
             return rest.trimStart('/', '\\').replace('\\', '/')
         }
+    }
+}
+
+/**
+ * 「CSV 原样相对路径」→「设备上真实文件」的唯一解析口（大小写不敏感回退）。
+ *
+ * 官方 `AppContents.cs:118` / `:135` / `:191` 都靠 `File.Exists(r.FilePath)` 放行，
+ * Windows NTFS 大小写不敏感 ⇒ CSV 写 `102_COM.webp`、盘上是 `102_com.webp` 也照样
+ * 能开。Android 的 ext4/f2fs 大小写敏感，原样拼接就是 11-11 Haruki 模拟器首启
+ * logcat 里那 72 条 `BitmapFactory ... ENOENT`（13 个唯一路径，零真缺资源）。
+ *
+ * 三条口径：
+ * - **精确优先**：`direct` 存在就直接返回，绝大多数 CSV 路径零额外开销、行为逐位不变；
+ * - **只缓存回退成功的结果**：真缺文件的路径每次仍返回 `direct`，失败形状不变，
+ *   也不会把「资源尚未解包完」的瞬时缺席冻成永久负缓存（同 `GameImageFiles.sizeCache`
+ *   只缓存正值的取舍）；缓存键用 `direct` 绝对路径，跨 [ResourceCsvHost] 实例不串；
+ * - **回退实现独立成对象**：纯逻辑（[fold]）与缓存（[resolve]）分离，纯 JVM 可测，
+ *   且不占宿主类的函数数（detekt `TooManyFunctions` 阈值 11）。
+ */
+internal object ResourceCaseFold {
+    /** 只缓存回退成功的结果；键 = direct 绝对路径。 */
+    private val resolvedPaths = ConcurrentHashMap<String, File>()
+
+    /** 解析入口：精确命中直返；miss 才走 [fold] 回退并缓存正值；真缺文件返回 `direct`。 */
+    fun resolve(gameRoot: File, path: String): File {
+        val direct = File(gameRoot, path)
+        if (direct.isFile) return direct
+        val key = direct.absolutePath
+        return resolvedPaths[key]
+            ?: fold(gameRoot, path)?.also { resolvedPaths.putIfAbsent(key, it) }
+                ?.let { resolvedPaths[key] ?: it }
+            ?: direct
+    }
+
+    /**
+     * 逐段大小写不敏感路径解析（纯逻辑，无缓存）。
+     *
+     * **刻意不用 `File(root, path).exists()` 判精确命中**：Windows NTFS 本身大小写不敏感，
+     * `exists()` 会让「请求 `9_COM.webp`」在 Windows 上假命中并返回一个带大写的 File，
+     * 单测就证不出 Android 的失败形状。这里改为枚举目录里**真实存在的文件名**：先逐字符
+     * 精确匹配，miss 才按 `ignoreCase` 取字典序最小的那个（歧义时结果确定）。于是返回的
+     * File 名字恒等于磁盘真实名，两个平台给出同一份语义。
+     *
+     * 路径段按 `/` 与 `\` 两种分隔符切分（与 [ResourceCsvHost.relativeOf] 同口径），
+     * 含 `.` / `..` 段或空路径一律拒绝 —— 回退不得变成新的路径穿越面。末段必须是文件。
+     */
+    internal fun fold(root: File, path: String): File? {
+        val segments = path.split('/', '\\').filter { it.isNotEmpty() }
+        val start: File? = root
+        val resolved = if (segments.isEmpty() || segments.any { it == "." || it == ".." }) {
+            null
+        } else {
+            segments.fold(start) { current, seg ->
+                current?.listFiles()?.toList()?.let { entries ->
+                    entries.firstOrNull { it.name == seg }
+                        ?: entries
+                            .filter { it.name.equals(seg, ignoreCase = true) }
+                            .minByOrNull { it.name }
+                }
+            }
+        }
+        return resolved?.takeIf { it.isFile }
     }
 }

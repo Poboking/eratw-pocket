@@ -6,6 +6,8 @@ import com.eratw.port.core.fn.SaveDataCheck
 import com.eratw.port.core.fn.SaveFileKind
 import com.eratw.port.core.save.SaveConfig
 import com.eratw.port.core.save.SaveDataProbe
+import com.eratw.port.core.save.SidecarSaveBundle
+import com.eratw.port.core.save.SidecarSaveInventory
 import com.eratw.port.core.vars.GameBaseData
 import java.io.File
 import java.io.FileOutputStream
@@ -24,7 +26,8 @@ import java.util.Locale
  *
  * ## 一个槽到底需要哪几个文件
  *
- * 只有 `saveNN.sav` 本体。`dat/` 下的 `chara_*.dat` / `var_*.dat` 是 `SAVECHARA` 族的
+ * 只有 `saveNN.sav` 本体与它的 `.rt2` 侧车（RT2 C 车：.sav + .rt2 = 一个逻辑存档单元，
+ * 侧车落位路径 = 槽本体路径 + `.rt2`）。`dat/` 下的 `chara_*.dat` / `var_*.dat` 是 `SAVECHARA` 族的
  * **角色/变量转储**（spec: `save-format.md` §2.1 表 + `VariableEvaluator.cs:2039-2047`，
  * 本作只用在 fromEN 的模块化立绘更新流程上，出货语料的 `dat/` 是空目录），不是存档槽的零件，
  * 导入流程一律不碰。
@@ -33,6 +36,14 @@ import java.util.Locale
  * `SaveConfig.globalPath()` 同源），里面装 `IsGlobal` 变量与 `RANDDATA`
  * （`save-format.md` §2.2 第 7 条与 §2.2 末条：槽本体写侧就排除了 `IsGlobal`）。
  * 它按文件名识别后同样能导 —— 但它是**另一格**，与某个槽不是一次导入的两个必需件。
+ *
+ * ## 配对判据（MODGC2 裁定 1：复制入相位）
+ *
+ * `.rt2` 侧车能不能落位，取决于**同槽本体是否可配**：真盘上已有同槽 `.sav`，或同一次多选里
+ * 本体也判了可落位（[planBatch] 两趟判定，与选择顺序无关）。都不成立 ⇒ [Reject]，理由
+ * [REASON_SIDECAR_WITHOUT_BODY] —— 不替玩家造一个空本体，也不单落半套（半套侧车读档时
+ * 会配到别的本体上，比不收更坏）。导出面（`SaveExport`）用同一条判据的另一半：本体不在包
+ * 里就不收侧车。落盘时同一单元的成员**本体先、侧车随后**，本体写失败则整单元不写。
  *
  * ## 校验口径与游戏内保持一致
  *
@@ -66,8 +77,27 @@ object SaveImport {
     /** 存档位名的识别（`SaveDataProbe.saveName` 的 `save%02d.sav` 反解，大小写不敏感）。 */
     private val SLOT_NAME = Regex("(?i)save(\\d+)\\.sav")
 
+    /** 存档槽 .rt2 侧车名的识别（RT2 C 车：同名加后缀；槽号同法反解）。 */
+    private val SLOT_SIDECAR_NAME = Regex("(?i)save(\\d+)\\.sav\\.rt2")
+
     /** 全局档的固定文件名（`getSaveDataPathG`，`VariableEvaluator.cs:2018-2021`）。 */
     private const val GLOBAL_NAME = "global.sav"
+
+    /** 全局档 .rt2 侧车的固定文件名。 */
+    private const val GLOBAL_SIDECAR_NAME = "global.sav.rt2"
+
+    /**
+     * 侧车文件名的尾巴（本体名 + `.rt2`，后缀常量单源在 [SidecarSaveInventory.CONTAINER_SUFFIX]）。
+     */
+    private const val SIDECAR_TAIL = ".sav" + SidecarSaveInventory.CONTAINER_SUFFIX
+
+    /**
+     * 「侧车没有同槽本体」的判读原话（MODGC2 裁定 4：导出跳过与导入拒收**共用同一句**）。
+     *
+     * 中文原文上屏；设置页的 `SettingsStrings.saveReason` 按**这个常量**出三语译文
+     * （禁止两处各写一份字面量，否则一边改了另一边静默漂移）。
+     */
+    const val REASON_SIDECAR_WITHOUT_BODY = "缺少同槽的 .sav 本体"
 
     /** [plan] 的结果。 */
     sealed interface Plan
@@ -95,29 +125,44 @@ object SaveImport {
     /** 不收。[reason] 就是上屏的原话，设置页不再改写。 */
     data class Reject(val reason: String) : Plan
 
+    /** [planBatch] 的一项：一次多选里的一个文件（显示名 + 字节）。 */
+    class Item(val fileName: String, val bytes: ByteArray)
+
+    /**
+     * 一次判定的**公共口径**（[plan] / [planBatch] 的入参包；七件散参数凑一包，调用方一处构造）。
+     *
+     * @property config 存档层口径，只消费它的**路径规则**（`UseSaveFolder` 决定落 `sav/` 还是根、
+     *   `datDir` 不参与本流程）
+     * @property gameBase 本游戏 GAMEBASE 常量；读不到时传 null，见类 KDoc 的「校验口径」段
+     * @property slotCount `SAVENOS` 的生效值（`Config.SaveDataNos`，夹在 20..80）—— 只在
+     *   「文件名不含槽号」时用来找空位
+     * @property occupied 读目标格现有字节（null = 空格）；由调用方接真盘
+     * @property bodyPresent 同槽本体是否**可配**（`.rt2` 侧车专用，MODGC2 裁定 1）：缺省 = 真盘上有；
+     *   [planBatch] 传「在盘 **或** 本批本体已判可落位」。只看本体落位路径，不读本体字节 ——
+     *   本体能不能读由它自己那一条判，与侧车无关。
+     */
+    class Context(
+        val config: SaveConfig,
+        val gameBase: GameBaseData?,
+        val slotCount: Int,
+        val occupied: (String) -> ByteArray?,
+        val bodyPresent: (String) -> Boolean = { rel -> occupied(rel) != null },
+    )
+
     /**
      * 判定一个被选中的文件。
      *
-     * @param fileName  选中文件的显示名（只认扩展名与槽号，路径一律不参与拼路径 —— 防越界）
-     * @param bytes     文件字节
-     * @param config    存档层口径，只消费它的**路径规则**（`UseSaveFolder` 决定落 `sav/` 还是根、
-     *                  `datDir` 不参与本流程）。字节是原样拷贝的：容器是二进制还是文本、压没压缩，
-     *                  都由文件自己说了算，本类不改写也不重编码。
-     * @param gameBase  本游戏 GAMEBASE 常量；读不到时传 null，见类 KDoc 的「校验口径」段
-     * @param slotCount `SAVENOS` 的生效值（`Config.SaveDataNos`，夹在 20..80）—— 只在
-     *                  「文件名不含槽号」时用来找空位
-     * @param occupied  读目标格现有字节（null = 空格）；由调用方接真盘
+     * @param fileName 选中文件的显示名（只认扩展名与槽号，路径一律不参与拼路径 —— 防越界）
+     * @param bytes    文件字节（原样拷贝：容器是二进制还是文本、压没压缩，都由文件自己说了算，
+     *                 本类不改写也不重编码）
+     * @param context  落位口径（见 [Context]）
      */
-    fun plan(
-        fileName: String,
-        bytes: ByteArray,
-        config: SaveConfig,
-        gameBase: GameBaseData?,
-        slotCount: Int,
-        occupied: (String) -> ByteArray?,
-    ): Plan {
+    fun plan(fileName: String, bytes: ByteArray, context: Context): Plan {
         val name = fileName.trim()
-        if (!name.lowercase(Locale.ROOT).endsWith(".sav")) {
+        val lower = name.lowercase(Locale.ROOT)
+        // RT2 C 车：.sav 与它的 .rt2 侧车一并认（后者是同一个逻辑存档单元的另一半）。
+        val sidecar = lower.endsWith(SIDECAR_TAIL)
+        if (!lower.endsWith(".sav") && !sidecar) {
             return Reject("只能导入 .sav 存档文件")
         }
         if (bytes.isEmpty()) return Reject(SaveDataProbe.MES_CORRUPTED)
@@ -125,21 +170,22 @@ object SaveImport {
             return Reject("文件超过 ${MAX_SAVE_BYTES / (1024 * 1024)} MB，不像存档")
         }
 
-        val global = name.lowercase(Locale.ROOT) == GLOBAL_NAME
+        val global = lower == GLOBAL_NAME || lower == GLOBAL_SIDECAR_NAME
         val kind = if (global) SaveFileKind.GLOBAL else SaveFileKind.NORMAL
-        val check = probe(bytes, kind, gameBase)
+        val check = if (sidecar) probeSidecar(bytes) else probe(bytes, kind, context.gameBase)
         if (check.state != EraDataState.OK) return Reject(check.mes)
 
         val targetRel: String
         val slotLabel: String
         if (global) {
-            targetRel = config.globalPath()
+            targetRel = if (sidecar) context.config.globalPath() + ".rt2" else context.config.globalPath()
             slotLabel = "全局存档"
         } else {
             // 槽号优先按文件名认（PC 上就是把 sav 目录里的这一格搬过去），认不出来才找空位。
             // 位数超过 Long 的槽号同样是「编号太大」，不能掉进「找空位」分支：那会把一个
             // 明确指定了槽位的文件静默塞进别的格（玩家以为覆盖了 save12，实际写进了 save0）。
             val named = SLOT_NAME.matchEntire(name)?.groupValues?.get(1)
+                ?: SLOT_SIDECAR_NAME.matchEntire(name)?.groupValues?.get(1)
             val no = when {
                 named != null -> {
                     // 与函数 CHKDATA 的 ArgIsTooLarge 同一道界（FunctionMethodCreator.cs:3531-3534）。
@@ -147,22 +193,108 @@ object SaveImport {
                     if (value > Int.MAX_VALUE) return Reject("存档位编号太大")
                     value.toInt()
                 }
-                else -> (0 until slotCount.coerceAtLeast(1)).firstOrNull {
-                    occupied(config.normalPath(it)) == null
+                else -> (0 until context.slotCount.coerceAtLeast(1)).firstOrNull {
+                    context.occupied(context.config.normalPath(it)) == null
                 } ?: return Reject("存档位已经满了，没有空位")
             }
-            targetRel = config.normalPath(no)
+            targetRel = context.config.normalPath(no) + if (sidecar) ".rt2" else ""
             slotLabel = "存档位 $no"
         }
 
-        val existing = occupied(targetRel)
+        // MODGC2 裁定 1：侧车不单独落位 —— 同槽本体必须已在盘，或本批本体已判可落位。
+        // 半套配对（只有 .rt2、没有 .sav）读档时配到的是别的本体甚至空槽，比不收更坏。
+        if (sidecar && !context.bodyPresent(bodyTargetOf(targetRel))) {
+            return Reject(REASON_SIDECAR_WITHOUT_BODY)
+        }
+
+        val existing = context.occupied(targetRel)
         return Place(
             targetRel = targetRel,
             slotLabel = slotLabel,
             mes = check.mes,
             occupied = existing != null,
-            occupiedMes = existing?.let { probe(it, kind, gameBase).takeIf { c -> c.state == EraDataState.OK }?.mes },
+            occupiedMes = existing?.let {
+                (if (sidecar) probeSidecar(it) else probe(it, kind, context.gameBase))
+                    .takeIf { c -> c.state == EraDataState.OK }?.mes
+            },
         )
+    }
+
+    /**
+     * 整批判定（MODGC2 裁定 1）：**先判本体、再判侧车**，结果与玩家选文件的顺序无关。
+     *
+     * 为什么不能逐个 [plan] 就完事：要不要收一个 `.rt2` 取决于**同槽本体在这一批里是否也判了
+     * 可落位**。多选时 SAF 给的顺序由选择/厂商实现决定（解压出来的文件按名字排也可能先给
+     * `save03.sav.rt2` 再给 `save03.sav`），逐条判会把先到的侧车判成孤儿。
+     *
+     * 两趟判的边界很清楚：
+     * - 第一趟只判**本体**（名字不以 `.rt2` 结尾），判成 [Place] 的落位路径进批内集合；
+     * - 第二趟只判**侧车**，`bodyPresent` = 真盘上有 **或** 批内本体已判可落位。
+     *
+     * 批内本体被拒（坏档、体积超限、编号太大）⇒ 它不进批内集合 ⇒ 其侧车同批被拒：**不会**
+     * 出现「本体没进来、侧车进来了」的半套落位。
+     *
+     * 单条判读抛异常不许拖死整批（设置页既有纪律）：逐条 `catch (Exception)` 收成
+     * [Reject]（`Error` 照旧上抛给宿主崩溃处理，不伪装成判读失败）。
+     *
+     * @param items 一次多选的全部文件（顺序 = 上屏顺序）
+     * @param context 落位口径（见 [Context]）；[Context.bodyPresent] 在第二趟会被替换成
+     *   「在盘 or 批内已判可落位」
+     * @return 与 [items] 一一对应的判定
+     */
+    fun planBatch(items: List<Item>, context: Context): List<Plan> {
+        val results = arrayOfNulls<Plan>(items.size)
+        val batchBodies = HashSet<String>()
+        val onDisk = Context(context.config, context.gameBase, context.slotCount, context.occupied)
+
+        // 第一趟：本体。侧车一律跳过（它们不参与「批内本体」集合）。
+        items.forEachIndexed { index, item ->
+            if (isSidecarName(item.fileName)) return@forEachIndexed
+            val judged = judge(item, onDisk)
+            results[index] = judged
+            if (judged is Place) batchBodies += judged.targetRel
+        }
+
+        // 第二趟：侧车。配对判据 = 在盘 or 本批已判可落位。
+        val withBatch = Context(context.config, context.gameBase, context.slotCount, context.occupied) { rel ->
+            context.occupied(rel) != null || rel in batchBodies
+        }
+        items.forEachIndexed { index, item ->
+            if (!isSidecarName(item.fileName)) return@forEachIndexed
+            results[index] = judge(item, withBatch)
+        }
+
+        return items.indices.map { index ->
+            checkNotNull(results[index]) { "planBatch 漏判第 $index 项（本体/侧车两趟必须覆盖全部项）" }
+        }
+    }
+
+    /** 选中的文件是不是 `.rt2` 侧车（`saveNN.sav.rt2` / `global.sav.rt2`）。 */
+    fun isSidecarName(fileName: String): Boolean =
+        fileName.trim().lowercase(Locale.ROOT).endsWith(SIDECAR_TAIL)
+
+    /**
+     * 落位路径 → 它所属逻辑单元的本体落位路径（`sav/save00.sav.rt2` → `sav/save00.sav`）。
+     * 设置页按这个 key 把本体与侧车归成一个单元（一起确认、一起落盘/取消）。
+     */
+    fun bodyTargetOf(targetRel: String): String =
+        if (targetRel.lowercase(Locale.ROOT).endsWith(SidecarSaveInventory.CONTAINER_SUFFIX)) {
+            targetRel.dropLast(SidecarSaveInventory.CONTAINER_SUFFIX.length)
+        } else {
+            targetRel
+        }
+
+    /**
+     * [plan] 的单条判定 + 异常收口（一个文件的未预期异常不许拖死整批）。
+     *
+     * 形参名 `expected` 是 detekt 的口径（`TooGenericExceptionCaught` 的
+     * `allowedExceptionNameRegex` 放行 `expected*`）：这里的语义确实是「单个文件的判读异常是
+     * 预期内的，收成一条拒收」，不是漏抓 —— `Error` 不在 `Exception` 之内，照旧上抛给宿主。
+     */
+    private fun judge(item: Item, context: Context): Plan = try {
+        plan(item.fileName, item.bytes, context)
+    } catch (expected: Exception) {
+        Reject(expected.message?.takeIf { it.isNotBlank() } ?: SaveDataProbe.MES_CORRUPTED)
     }
 
     /**
@@ -205,6 +337,17 @@ object SaveImport {
         }
     } catch (_: Exception) {
         false
+    }
+
+    /**
+     * .rt2 侧车的头探测：容器能解码即 OK（CRC / 魔数 / 版本闸都在 decode 里）。
+     * 绑定三元组的校验在读档那一刻的 restoreBundle —— 导入侧不装，也不伪造。
+     */
+    private fun probeSidecar(bytes: ByteArray): SaveDataCheck = try {
+        SidecarSaveBundle.decode(bytes)
+        SaveDataCheck(EraDataState.OK, "Mod 扩展存档（.rt2 侧车）")
+    } catch (_: Exception) {
+        SaveDataCheck(EraDataState.ETC_ERROR, SaveDataProbe.MES_CORRUPTED)
     }
 
     /**

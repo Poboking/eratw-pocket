@@ -35,6 +35,7 @@ class ShellFailureCopyTest {
         "heapOomFormat" to ShellFailureCopy::heapOomFormat,
         "consoleNotLaidOut" to ShellFailureCopy::consoleNotLaidOut,
         "unpackFailedFormat" to ShellFailureCopy::unpackFailedFormat,
+        "engineStampInvalidFormat" to ShellFailureCopy::engineStampInvalidFormat,
         "scriptAbortFormat" to ShellFailureCopy::scriptAbortFormat,
         "stateMachineHaltFormat" to ShellFailureCopy::stateMachineHaltFormat,
         "stateMachineUnknownBlocker" to ShellFailureCopy::stateMachineUnknownBlocker,
@@ -59,6 +60,10 @@ class ShellFailureCopyTest {
         "progressUnpackedFormat" to ShellFailureCopy::progressUnpackedFormat,
         "progressLandedFormat" to ShellFailureCopy::progressLandedFormat,
         "progressCounting" to ShellFailureCopy::progressCounting,
+        "loadPhaseProgramLine" to ShellFailureCopy::loadPhaseProgramLine,
+        "loadPhaseMetaLine" to ShellFailureCopy::loadPhaseMetaLine,
+        "loadPhaseSessionLine" to ShellFailureCopy::loadPhaseSessionLine,
+        "loadPhaseStartingLine" to ShellFailureCopy::loadPhaseStartingLine,
         "inventoryNone" to ShellFailureCopy::inventoryNone,
         "inventorySummaryFormat" to ShellFailureCopy::inventorySummaryFormat,
         "finalTitleLagFormat" to ShellFailureCopy::finalTitleLagFormat,
@@ -95,8 +100,8 @@ class ShellFailureCopyTest {
 
     @Test
     fun `三档条目数相等且与显式键清单对账`() {
-        assertEquals(68, keys.size)
-        CopyShapeGate.assertKeyCount("ShellFailureCopy", copies, keys, expectedPerCopy = 69)
+        assertEquals(73, keys.size)
+        CopyShapeGate.assertKeyCount("ShellFailureCopy", copies, keys, expectedPerCopy = 74)
     }
 
     @Test

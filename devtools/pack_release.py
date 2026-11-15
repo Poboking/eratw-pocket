@@ -7,7 +7,7 @@
 
 ```text
 -PeratwReportEndpoint=https://<worker>/report
--PeratwReportToken=<令牌>
+-PeratwReportToken=<wrangler secret 同值>
 ```
 
 **漏带 = APK 静默回到「不上报」**：gradle 不报错、编译全绿、包照样出，只是玩家崩了
@@ -17,12 +17,13 @@
 ## 用法
 
 ```bash
-python devtools/pack_release.py                  # 全量包（带资源），上报开，更新源需显式配置（公开仓缺省为空）
+python devtools/pack_release.py                  # 全量包（带资源），上报开，更新源取缺省 R2 地址
 python devtools/pack_release.py --skip-assets    # 小包（复用设备上已解包的数据）
 python devtools/pack_release.py --offline        # 明确出「不上报」的包（会大声警告）
 python devtools/pack_release.py --no-update      # 不内置更新源（开发/内测包）
 python devtools/pack_release.py --verify-only    # 只体检已有 APK，不构建
 python devtools/pack_release.py --dry-run        # 只打印 gradle 命令（不配令牌也放行）
+python devtools/pack_release.py --print-corpus-root-name  # 只打印现行语料根名（pack_one 取名单源，不构建）
 ```
 
 退出码：`0` 全绿（包已归档）· `1` 构建失败 · `2` 配置不合格（没端点/没令牌，拒出包）·
@@ -81,6 +82,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from pathlib import Path
 
 # ---------------------------------------------------------------- 路径与环境
 
@@ -90,6 +92,8 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import update_manifest_check  # noqa: E402 同目录：设备端清单/镜像判式的单源（L2 起）
+import engine_compat  # noqa: E402 同目录：引擎配置/印章单源（ENGC-6 / B6-PACK）
+import engine_compat_report  # noqa: E402 同目录：引擎兼容报告渲染（ENGC-6 / B6-PACK）
 
 APK_PATH = os.path.join(APP_ROOT, "app", "build", "outputs", "apk", "release", "app-release.apk")
 RES_VALUES = os.path.join(
@@ -109,7 +113,7 @@ ENV_ENDPOINT = "ERATW_REPORT_ENDPOINT"
 ENV_TOKEN = "ERATW_REPORT_TOKEN"
 # 国内镜像仓的更新源（一条或多条，`|` 分隔；写进 resValue 供 UpdateManager 读）。
 ENV_MIRRORS = "ERATW_UPDATE_MIRRORS"
-# 透传给 gradle 的额外参数（按 shlex.split 解析；调用方可追加 --profile 生成 task 级耗时报告）。
+# 透传给 gradle 的额外参数（按 shlex.split 解析；让主人能追加 --profile 生成 task 级耗时报告）。
 ENV_GRADLE_EXTRA_ARGS = "ERATW_GRADLE_EXTRA_ARGS"
 
 # 发布章的四个键（与 app/build.gradle.kts 的 signingConfigs.releaseLocal 同名）。
@@ -130,11 +134,15 @@ PINNED_DEBUG_SHA256 = (
     "3c0c863f6190f0078fab4085"
 )
 
+# 部署好的端点（tools/report-endpoint/ 的 worker，2026-10-27 上线）。
+# 只作缺省值：换端点改这里或 local.report.properties 或环境变量。
 # 上报端点缺省值：**不在代码里写死**，从 local.report.properties 或环境变量取
 # （ERATW_REPORT_ENDPOINT / ERATW_REPORT_TOKEN，或 local.report.properties 的
 # endpoint / token 两键）。两者都缺时出包照常、上报链关闭并大声警告。
 DEFAULT_ENDPOINT = ""
 
+# 国内镜像仓更新源的缺省基址（R2 + 自定义域，2026-10 波）。
+# 命令行 > 环境变量 > local.report.properties > 此处缺省。
 # 更新源缺省值：公开仓不内置任何真实更新域。需要内置更新源的出包请用
 # --mirror / ERATW_UPDATE_MIRRORS / local.report.properties 显式提供。
 DEFAULT_MIRRORS = ""
@@ -144,7 +152,7 @@ DEFAULT_MIRRORS = ""
 # `corpus-patch <id> <target> <bad-sha> <fixed-sha>` 留痕行；产物侧要能**不翻构建日志**
 # 直接回答「这个包套了哪几个语料补丁」，故在 package.report 自述面另立一个独立列，
 # 不把信息塞回留痕行的文本里。列值由脚本回读 manifest.txt 的真实留痕行逐项生成，
-# 出包期与产物声明值逐项对齐（缺列或值不符非零退出，照回读核对纪律）。
+# 出包期与产物声明值逐项对齐（缺列或值不符非零退出，照 AGENTS §8 的回读核对纪律）。
 APPLIED_CORPUS_PATCHES_KEY = "applied_corpus_patches"
 # manifest.txt 里一条编译期留痕行的前缀（与 buildSrc CorpusPatches.kt 同字面前缀）。
 CORPUS_PATCH_MARKER = "corpus-patch "
@@ -165,17 +173,73 @@ APPLIED_CORPUS_PATCHES_STRICT = True
 
 # ---------------------------------------------------------------- 语料根（4.981 换代）
 
-# 随包语料的**现行**根（merge 76659754 起随包语料 4.980 → 4.981）与**已退役**的旧根。
+# 随包语料的**现行**根与**已退役**的旧根都**不写在这份脚本里**（CONTRACT-ENGCPL E7）：
+# 唯一出处是手写的 `specs/engine-profiles.input.yaml`，由 `devtools/gen_engine_profiles.py`
+# 投影成机器可读的 `specs/engine-profiles.yaml`，本脚本用 PyYAML 直读它的 `corpora:` 段。
 # `ERATW_GAMEDIR` 缺省回落时现行根优先；`.tooling/env.sh` 的缺省导出仍指旧根（共享基建，
-# 不随本次换代改），所以「显式设了但指旧根」也要大声点出来 —— 否则出的是内部自洽的
+# 不随换代改），所以「显式设了但指旧根」也要大声点出来 —— 否则出的是内部自洽的
 # 4.980 数据包，却按 4.981 的版本号发出去（体检全绿，无一处拦得住）。
-CURRENT_CORPUS_DIR = "eraTW4.981-261017-EAGLOV3"
-RETIRED_CORPUS_DIR = "eratw-画蛇添足版eratw4.980"
+SPEC_CORPORA_YAML = Path(__file__).resolve().parent.parent / "specs" / "engine-profiles.yaml"
+
+
+def load_corpora(path: str = "") -> dict:
+    """读生成物语料身份表的 `corpora:` 段 → `{id: {"root_dir", "marker_file", "retired"}}`。
+
+    缺 PyYAML / 表缺失 / 段缺失一律硬失败（`SystemExit`）：本脚本不再内联语料根名字面量，
+    静默回落等于又造一份事实。顺序 = 表内书写顺序。
+    """
+    try:
+        import yaml  # type: ignore
+    except ImportError as exc:  # pragma: no cover - 环境缺依赖
+        raise SystemExit(
+            "读语料身份表需要 PyYAML：先 pip install pyyaml"
+            "（devtools/pack_release.py 不再内联语料根名字面量）") from exc
+    spec = path or str(SPEC_CORPORA_YAML)
+    if not os.path.isfile(spec):
+        raise SystemExit(
+            f"语料身份表不存在：{spec}（它是 devtools/gen_engine_profiles.py 的生成物，"
+            "源 = specs/engine-profiles.input.yaml；先重生成再出包）")
+    with open(spec, "r", encoding="utf-8") as fh:
+        try:
+            doc = yaml.safe_load(fh)
+        except yaml.YAMLError as exc:
+            raise SystemExit(f"语料身份表 {spec} 不是合法 YAML：{exc}") from exc
+    corpora = doc.get("corpora") if isinstance(doc, dict) else None
+    if not isinstance(corpora, dict) or not corpora:
+        raise SystemExit(f"语料身份表 {spec} 缺 corpora 段或为空")
+    rows = {}
+    for cid, entry in corpora.items():
+        if not isinstance(entry, dict):
+            raise SystemExit(f"语料身份表 {spec} 的 corpora.{cid} 不是映射")
+        root_dir, retired = entry.get("root_dir"), entry.get("retired")
+        if not isinstance(root_dir, str) or not root_dir.strip():
+            raise SystemExit(f"语料身份表 {spec} 的 corpora.{cid} 缺 root_dir")
+        if not isinstance(retired, bool):
+            raise SystemExit(f"语料身份表 {spec} 的 corpora.{cid} 的 retired 必须是 true/false")
+        rows[cid] = {"root_dir": root_dir.strip(), "marker_file": entry.get("marker_file"),
+                     "retired": retired}
+    return rows
+
+
+CORPORA = load_corpora()
+
+# 现行语料 = 唯一 `retired: false` 的那条（0 条或多条 = 表坏了，出包期先炸，不许挑一个）。
+_ACTIVE_CORPORA = [row for row in CORPORA.values() if not row["retired"]]
+if len(_ACTIVE_CORPORA) != 1:
+    raise SystemExit(
+        f"{SPEC_CORPORA_YAML} 的 corpora 段必须恰有一条 retired=false 的语料，"
+        f"实际 {len(_ACTIVE_CORPORA)} 条（{sorted(k for k, v in CORPORA.items() if not v['retired'])}）")
+CURRENT_CORPUS_DIR = _ACTIVE_CORPORA[0]["root_dir"]
+
+# 退役语料根（全部 `retired: true`；顺序 = 表内书写顺序）。出包闸按**集合**判，不再只认一个名字。
+RETIRED_CORPUS_DIRS = tuple(row["root_dir"] for row in CORPORA.values() if row["retired"])
+# 兼容既有单名读点（`emit_update.py` / `test_source_gates.py` 按模块属性取）；新代码用集合。
+RETIRED_CORPUS_DIR = RETIRED_CORPUS_DIRS[0] if RETIRED_CORPUS_DIRS else ""
 
 
 def fallback_game_root(root: str) -> str:
-    """`ERATW_GAMEDIR` 未设时的回落语料根：现行 4.981 优先，旧 4.980 只作机器缺新根时的兜底。"""
-    for name in (CURRENT_CORPUS_DIR, RETIRED_CORPUS_DIR):
+    """`ERATW_GAMEDIR` 未设时的回落语料根：现行语料优先，退役语料只作机器缺新根时的兜底。"""
+    for name in (CURRENT_CORPUS_DIR, *RETIRED_CORPUS_DIRS):
         cand = os.path.join(root, name)
         if os.path.isdir(cand):
             return cand
@@ -210,34 +274,36 @@ def same_dir(a: str, b: str) -> bool:
 
 
 def retired_corpus_problem(game_root: str) -> list:
-    """游戏根指向**已退役**的 4.980 语料且本机有 4.981 新根 ⇒ 拒出包（可显式放行）。
+    """游戏根指向**任一已退役**语料且本机有现行语料根 ⇒ 拒出包（可显式放行）。
 
-    4.981 起（merge 76659754）随包语料已换代；`.tooling/env.sh` 的缺省 `ERATW_GAMEDIR`
-    仍指 4.980 —— source 过它再出包，得到的是「4.980 语料 + 当前版本号」的包：erbc 按同一
-    语料编出、freshness 自洽、章也对，**没有任何一道既有体检拦得住**。这属于「漏了不报错」
-    家族，所以做成硬闸；确要 4.980 数据的包（回归对拍之类）走 `--allow-retired-corpus`。
+    4.981 起随包语料已换代；`.tooling/env.sh` 的缺省 `ERATW_GAMEDIR` 仍指退役根 ——
+    source 过它再出包，得到的是「旧语料 + 当前版本号」的包：erbc 按同一语料编出、
+    freshness 自洽、章也对，**没有任何一道既有体检拦得住**。这属于「漏了不报错」
+    家族，所以做成硬闸；确要旧语料数据的包（回归对拍之类）走 `--allow-retired-corpus`。
+
+    退役名单来自生成物 `specs/engine-profiles.yaml` 的 `corpora.*.retired: true`（集合判，
+    不是单名硬判）：多一份旧语料登记进表就自动多一条拦法。
     """
     if not game_root or not os.path.isdir(game_root):
         return []
     root = eratw_root()
     if not root or not os.path.isdir(os.path.join(root, CURRENT_CORPUS_DIR)):
-        return []                      # 本机没有新语料根：无从换代，按老规矩出
-    if not same_dir(game_root, os.path.join(root, RETIRED_CORPUS_DIR)):
+        return []                      # 本机没有现行语料根：无从换代，按老规矩出
+    hit = [name for name in RETIRED_CORPUS_DIRS
+           if same_dir(game_root, os.path.join(root, name))]
+    if not hit:
         return []
     return [
-        f"游戏根指向已退役的 4.980 语料：{game_root}。随包语料自 4.981（merge 76659754）起"
+        f"游戏根指向已退役的语料（{hit[0]}）：{game_root}。随包语料自 4.981（merge 76659754）起"
         f"应为 {CURRENT_CORPUS_DIR} —— env.sh 的缺省 ERATW_GAMEDIR 还是旧根，source 过它会"
         "静默出「旧语料 + 新版本号」的包。修法：--game-root 或导出 ERATW_GAMEDIR 指向新根；"
-        "确要 4.980 数据的包（回归对拍）加 --allow-retired-corpus。",
+        "确要旧语料数据的包（回归对拍）加 --allow-retired-corpus。",
     ]
 
 
 def eratw_root() -> str:
-    """解析本地工具链/语料的共享根。
-
-    优先读 `ERATW_ROOT` 环境变量；未设置时返回空串，由调用方判断是否需要该根。
-    公开仓不内置任何个人机器路径。
-    """
+    """按主机名解析共享根（AGENTS.md §1）；两机之外的输出直接判错，不猜路径。"""
+    # 公开仓不内置任何个人机器路径：只认 ERATW_ROOT；未设置返回空串，由调用方判断。
     root = (os.environ.get("ERATW_ROOT") or "").strip()
     return root if root and os.path.isdir(root) else ""
 
@@ -363,7 +429,7 @@ def check_report_config(endpoint: str, token: str) -> list:
 def resolve_update_mirrors(args) -> tuple:
     """返回 (镜像串, 来源说明)。命令行 `--mirror`（可重复）> 环境变量 > local.report.properties > 缺省。
 
-    缺省取 `DEFAULT_MIRRORS`（公开仓为空）。如果用户配了 `--no-update` 则强制清空。
+    缺省取 `DEFAULT_MIRRORS`（R2 基址）。如果用户配了 `--no-update` 则强制清空。
     """
     props = read_local_props()
     cli = list(getattr(args, "mirrors", None) or [])
@@ -481,7 +547,7 @@ def data_source_alignment(skip_assets: bool, game_root: str) -> list:
 
 
 def gradle_cmd(tasks: list) -> list:
-    """Windows 下 .bat 必须经 cmd 拉起；其余平台直接跑 wrapper（统一 ./gradlew）。"""
+    """Windows 下 .bat 必须经 cmd 拉起；其余平台直接跑 wrapper（AGENTS §5：统一 ./gradlew）。"""
     wrapper = os.path.join(APP_ROOT, "gradlew.bat" if os.name == "nt" else "gradlew")
     if os.name == "nt":
         return ["cmd", "/c", wrapper] + tasks
@@ -523,17 +589,55 @@ def parse_gradle_extra_args() -> list:
     return tokens
 
 
+def gradle_worker_count() -> int:
+    """Gradle 并行 worker 数：优先 ERATW_GRADLE_MAX_WORKERS，否则按物理核口径（本机 44）。
+
+    **2026-11-11 的 44 vs 12 三轮 A/B 证伪了「降 worker 能提速」，别再改小。**
+    同一独立 Gradle home、每轮强制清 I/O 链输出重跑、都带 --profile：
+      A 44 冷 213s / B 12 热 161s / C 44 热 188s；
+      Task Execution 167 / 151 / **147s**（热态 44 反而快 4s），
+      compressReleaseAssets 112 / 124 / **106s**（12 workers 慢 12~18s）。
+    B 轮总时长看着最短，只是它复用了 A 的 daemon（Startup 3s / 配置 5s，
+    且省掉 74s Artifact Transforms）；C 轮换了 worker 数重新起 daemon 就回到
+    17s / 13s —— 全是冷启动噪声，不是 worker 效应。日志在 pack-20261111/16~18。
+    Gradle 缺省取逻辑核（本机 88）会让 JVM/GC 线程互相踩，按「逻辑核/2」最稳；
+    保留 ERATW_GRADLE_MAX_WORKERS 给主人按机器或按场景手调。
+    """
+    raw = os.environ.get("ERATW_GRADLE_MAX_WORKERS", "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    logical = os.cpu_count() or 4
+    return max(4, min(64, logical // 2 if logical > 8 else logical))
+
+
 def run_build(endpoint: str, token: str, skip_assets: bool, dry_run: bool = False,
-              game_root: str = "", mirrors: str = "") -> int:
+              game_root: str = "", mirrors: str = "", erbc_stored: bool = False,
+              engine_config=None, foreign_corpus: bool = False) -> int:
     tasks = ["--configure-on-demand", ":app:assembleRelease"]
     # 优化开关再给一次命令行写法：GRADLE_OPTS 里的 -Dorg.gradle.parallel/caching 取决于
     # 调用方是否 source 过优化环境，出包入口自带这两个开关谁调都一样；8.10.2 下实测与
     # --configure-on-demand 可共存。
     tasks += ["--parallel", "--build-cache"]
+    # 并行度固化：出包缺省按物理核口径钉 worker 数（本机 44；44 vs 12 的 A/B 证伪了
+    # 「降并行」，取证见 gradle_worker_count 注释），不靠调用方记得透传
+    # ERATW_GRADLE_EXTRA_ARGS。显式给了 --max-workers 的以显式为准。
+    # 出包期间同机并行跑别的 Gradle 构建会让 1 GiB 资源链与全量编译抢磁盘
+    # （实测 8m → 20m41s）；这里只提醒、绝不自动 --stop —— 项目里被别的 lane 的
+    # gradlew --stop 打断过三次，停共享 daemon 是会伤到别人构建的破坏性动作。
+    print("[pack] 提示：出包期间请勿同机并行 Gradle 构建；"
+          "1 GiB 资源链与全量编译争抢会把 8 分钟拖到 20 分钟。", file=sys.stderr)
+    extra_args = parse_gradle_extra_args()
+    if not any(a.startswith("--max-workers") for a in extra_args):
+        tasks.append(f"--max-workers={gradle_worker_count()}")
     # 构建标识：把「这个 APK 出自哪个提交」编进 BuildConfig，错误报告头部会带出来。
     # 2026-10-28 的教训：一小时内三个 0.2.0 包（缺权限的 / 缺重启修复的 / 都带上的）
     # versionName 完全一样，玩家报来的错根本分不清是哪个包 —— 只能靠人回忆。
     tasks.append(f"-PeratwBuildStamp={git_head()}")
+    # 程序条目压缩口径（STORAGE-1）：缺省带 -PeratwErbcCompress（erbc/meta 走 DEFLATE，
+    # APK 瘦 ~366 MiB；解包产物逐字节不变——判重拷回落与版本漂移重拷见 GameAssetInstaller）。
+    # --erbc-stored 回到旧口径（STORED；给真机 A/B 与事故回退留的路）。
+    if not erbc_stored and not skip_assets:
+        tasks.append("-PeratwErbcCompress")
     if skip_assets:
         tasks.append("-PeratwSkipAssets=1")
     elif game_root:
@@ -542,9 +646,19 @@ def run_build(endpoint: str, token: str, skip_assets: bool, dry_run: bool = Fals
         tasks.append(f"-PeratwReportEndpoint={endpoint}")
     if token:
         tasks.append(f"-PeratwReportToken={token}")
+    # 引擎配置模式（ENGC-6 / B6-PACK）：零干扰早退收拢在 engine_gradle_args 内——
+    # engine_config 为 None（无 --engine-config）时它返回 []，gradle 参数序列与改动前
+    # 逐字一致（I7 零干扰，基线对拍见 devtools/test_engine_compat.py）；
+    # 删掉那道早退守卫 ⇒ 无配置路径当场崩（反向证明①钉住此行为）。
+    # 第三方语料根（ENGC-6 构建期通道）：显式声明这批随包语料不是 devtools/corpus-patches 的
+    # eraTW 根 ⇒ 编译面与 staging 面整表不适用（不套补丁，也不因「游戏根缺 CSV/_Rename.csv」
+    # 这类 eraTW 专属目标缺席而判红）。缺省 False ⇒ 不追加，参数序列与引入本开关前逐字一致（I7）。
+    if foreign_corpus:
+        tasks.append("-PeratwForeignCorpus=1")
+    tasks += engine_gradle_args(engine_config)
     # 透传 ERATW_GRADLE_EXTRA_ARGS：放在任务名之后（Gradle 允许全局选项在任务名后），
-    # 让调用方能追加 --profile 生成 task 级耗时报告；空值/未设置完全不追加。
-    tasks += parse_gradle_extra_args()
+    # 让主人能追加 --profile 生成 task 级耗时报告；空值/未设置完全不追加。
+    tasks += extra_args
     # 更新源**不走 -P 参数**：分隔符 `|` 在 cmd 里是管道符，而 Windows 下 gradlew 必须经
     # `cmd /c` 拉起（实测同一个参数被拆成「管道交给 https:」，退出码 255）。
     # 所以这条走环境变量，gradle 侧读 ERATW_UPDATE_MIRRORS（-P 仍可用，只是不该由脚本在 cmd 下带）。
@@ -563,6 +677,41 @@ def run_build(endpoint: str, token: str, skip_assets: bool, dry_run: bool = Fals
     proc = subprocess.run(cmd, cwd=APP_ROOT, env=env)
     print(f"[pack] 构建耗时 {time.time() - started:.0f}s，退出码 {proc.returncode}")
     return proc.returncode
+
+
+def preflight_erbc_digest() -> list[str]:
+    """构建前 CMP-66 预检：把「编译器变了但 erbc 没重编」在半秒内挡下来。
+
+    旧流程只有 Gradle 跑到 `stageGameAssets` 才会把 compiler-digest 与随包清单对账，
+    撞上就是一整轮构建白跑、重编 `:tools:erbcc:compileCorpus`、再出一次包。
+    探针与 `ErbcFreshness.kt` / `ErbcCompilerDigest.kt` 同口径，算法单源在
+    `devtools/erbc_freshness_probe.py`；读不出判据时 fail-closed，不静默放行。
+    """
+    try:
+        import erbc_freshness_probe
+    except Exception as exc:  # 探针缺失/导入失败：宁可挡下来，也不出一个可能被硬闸拒的包
+        return [f"erbc 新鲜度探针不可用：{exc}"]
+
+    erbc_dir = os.environ.get("ERATW_ERBC_DIR", "").strip()
+    manifest = (Path(erbc_dir) / "manifest.txt" if erbc_dir
+                else Path(APP_ROOT) / erbc_freshness_probe.MANIFEST_REL)
+    if erbc_dir and not manifest.is_file():
+        manifest = Path(APP_ROOT) / erbc_freshness_probe.MANIFEST_REL
+
+    r = erbc_freshness_probe.probe(Path(APP_ROOT), manifest)
+    if not r["ok"]:
+        return [f"读不出 compiler-digest 判据：{r['error']}"]
+    if not r["match"]:
+        return [
+            "随包 erbc 不是当前编译器源码的产物（compiler-digest 不符）："
+            f"当前 {r['current'][:16]}… / 清单 {r['manifest_digest'][:16]}…",
+            "先跑 ./gradlew --configure-on-demand :tools:erbcc:compileCorpus "
+            "-PcompileMode=compat -PallowParseFailures=devtools/erbc-degraded-allowlist.tsv "
+            "再出包；或直接用 devtools/pack_one/eratw-pack.exe（自动判重编）。",
+        ]
+    print(f"[pack] 构建前 erbc 新鲜度预检通过：compiler-digest {r['current'][:16]}… "
+          f"（{r['sources']} 个 .kt / {r['elapsed_ms']} ms）")
+    return []
 
 
 # ---------------------------------------------------------------- 体检
@@ -975,7 +1124,7 @@ def apply_corpus_patches_column(rep: dict, manifest_text: str) -> dict:
 
 
 def applied_corpus_patches_problems(rep: dict, manifest_text: str) -> list:
-    """回读核对：package.report 的 `applied_corpus_patches` 独立列必须与
+    """回读核对（AGENTS §8）：package.report 的 `applied_corpus_patches` 独立列必须与
     APK 内 manifest.txt 的真实 `corpus-patch` 留痕行逐项对齐。
 
     逐项回读真实字符串算出期望记录，再解析列值得声明记录，按 id 逐项比对病灶/修后 sha
@@ -1017,7 +1166,7 @@ def report_degraded_corpus(allow: bool = False) -> list:
     这些函数在兼容档里被编成入口 `THROW` 桩：真机上被调用时立刻抛「函数装载出错」
     （可被 TRYC 捕获），不会静默返回默认值。但正常玩法路径上仍是「死函数」，屏上只在
     错误屏/日志里可见。所以清单跟着 APK 走，出包最后一步把数量喊出来；默认**拒绝出包**，
-    只有确知降级来自「不许改源的第三方口上」时才加 `--allow-degraded-corpus`。
+    只有降级清单在册、且确系「上游无法修」的第三方口上失败时才加 `--allow-degraded-corpus`（2026-11-14 起在册 0 条，正常出包不带此开关）。
     """
     text = read_apk_asset("assets/erbc.v1/manifest.txt")
     if text is None:
@@ -1101,6 +1250,375 @@ def erd_bundling_problems(rep: dict) -> list:
         print(f"[pack] 提示：游戏根 {erb_dir} 下一张 .ERD 都没有（4.981 语料实形为 3 张）——"
               "确认这不是换代后的空壳根。")
     return []
+
+
+# ---------------------------------------------------------------- RT2 内置 mod manifest 出包体检
+# RT2-B③：内置 Kotlin 载体的 manifest 是 app 模块 assets 下的静态资产，解包器把它投递到
+# 游戏根的 mods/rt2 后，ModRuntimeAssembly 才装得上。缺档 / 装了旧字节 / 包名对不上注册表
+# 都是「开闸也装 0 个 mod」的同一种静默失败，出包期必须当场判红，不能等真机日志。
+RT2_BUILTIN_ASSET_PREFIX = "assets/mods/rt2/"
+RT2_MANIFEST_MAGIC = "RT2MANIFEST/3"
+RT2_MANIFEST_SUFFIX = ".manifest"
+# RT2-ERBM：ERB 模块容器（.erbm）体检面。头部布局 = ErbModuleContainer.encode：
+# magic 5B `ERTM1` + version u16 + flags u16（DataOutputStream 口径，全部 big-endian）
+# + 记录区；尾 32B = SHA-256(body)。档位位 0x1 = allowSuperCalls（Mod 包编译档）。
+RT2_ERBM_SUFFIX = ".erbm"
+RT2_ERBM_MAGIC = b"ERTM1"
+RT2_ERBM_VERSION = 1
+RT2_ERBM_HEADER_FIXED_BYTES = 9
+RT2_ERBM_DIGEST_BYTES = 32
+RT2_ERBM_KNOWN_FLAGS = (0, 1)
+DEMO_MODULE_BUILD_FILE = os.path.join(
+    APP_ROOT, "tools", "modgen", "src", "main", "kotlin", "com", "eratw", "port",
+    "modgen", "DemoModuleBuild.kt",
+)
+FAMILY_DECLARATIONS_FILE = os.path.join(
+    APP_ROOT, "mod-family", "src", "main", "kotlin", "com", "eratw", "port",
+    "modfamily", "FamilyDeclarations.kt",
+)
+MEMORY_DECLARATIONS_FILE = os.path.join(
+    APP_ROOT, "mod-memory", "src", "main", "kotlin", "com", "eratw", "port",
+    "modmemory", "MemoryDeclarations.kt",
+)
+# M10-1：Living World Demo 四包声明真源（eratw.lw.*，全部在 :mod-livingworld 一个模块里）。
+LW_DECLARATIONS_DIR = os.path.join(
+    APP_ROOT, "mod-livingworld", "src", "main", "kotlin", "com", "eratw", "port",
+    "modlivingworld",
+)
+LW_CHARACTER_DECLARATIONS_FILE = os.path.join(LW_DECLARATIONS_DIR, "CharacterDeclarations.kt")
+LW_RELATIONSHIP_DECLARATIONS_FILE = os.path.join(LW_DECLARATIONS_DIR, "RelationshipDeclarations.kt")
+LW_MEMORY_DECLARATIONS_FILE = os.path.join(LW_DECLARATIONS_DIR, "MemoryDeclarations.kt")
+LW_EVENT_DECLARATIONS_FILE = os.path.join(LW_DECLARATIONS_DIR, "EventDeclarations.kt")
+# 载体注册表引用对账表：声明真源文件 → ModCarrierRegistry 里必须出现的引用符号。
+CARRIER_DECLARATION_SOURCES = (
+    (FAMILY_DECLARATIONS_FILE, "FamilyDeclarations.PACKAGE_ID"),
+    (MEMORY_DECLARATIONS_FILE, "MemoryDeclarations.PACKAGE_ID"),
+    (LW_CHARACTER_DECLARATIONS_FILE, "CharacterDeclarations.PACKAGE_ID"),
+    (LW_RELATIONSHIP_DECLARATIONS_FILE, "RelationshipDeclarations.PACKAGE_ID"),
+    (LW_MEMORY_DECLARATIONS_FILE, "LwMemoryDeclarations.PACKAGE_ID"),
+    (LW_EVENT_DECLARATIONS_FILE, "EventDeclarations.PACKAGE_ID"),
+)
+MOD_CARRIER_REGISTRY_FILE = os.path.join(
+    APP_ROOT, "app", "src", "main", "kotlin", "com", "eratw", "port", "android",
+    "ModCarrierRegistry.kt",
+)
+BUILTIN_ASSET_DIR = os.path.join(APP_ROOT, "app", "src", "main", "assets", "mods", "rt2")
+
+
+def declared_rt2_package_ids() -> tuple:
+    """读声明真源的 PACKAGE_ID，并确认载体注册表仍引用它；返回 (包名表, 问题表)。
+
+    对账链分四段：注册表（源码引用）→ 声明真源（常量值）→ 仓库静态资产（modgen 资产闸
+    保证与声明逐字节一致）→ APK 内资产（本函数之外的逐字节核对）。装了旧字节也躲不过。
+
+    RT2-ERBM 起随包三件：family 载体（eratw.family）、memory 载体（eratw.memory，
+    M9-1 起第二只 Kotlin 载体）+ demo 模块（eratw.demo，包 id 从 DemoModuleBuild.kt 的
+    同名常量 marker 解析——真源常量改名会当场在体检暴露）。
+    M10-1 起再压 eratw.lw 四载体（character / relationship / memory / event，
+    全部在 :mod-livingworld 一个 Gradle 模块里，各自独立 packageId）。
+    注册表核对压全部载体（CARRIER_DECLARATION_SOURCES）：demo 不是载体（无
+    ModCarrierRegistry 声明事务），它走 .erbm 容器链，对账面是 rt2_erbm_problems。
+    """
+    problems = []
+    try:
+        with open(FAMILY_DECLARATIONS_FILE, encoding="utf-8") as fh:
+            source = fh.read()
+    except OSError as exc:
+        return [], [f"读不到 RT2 载体声明真源 {FAMILY_DECLARATIONS_FILE}：{exc}"]
+    marker = 'const val PACKAGE_ID: String = "'
+    at = source.find(marker)
+    if at < 0:
+        return [], ["RT2 载体声明真源里找不到 PACKAGE_ID 常量 —— 出包体检无法对账包名"]
+    package_id = source[at + len(marker):].split('"', 1)[0]
+    if not package_id:
+        return [], ["RT2 载体声明真源的 PACKAGE_ID 是空串"]
+    try:
+        with open(DEMO_MODULE_BUILD_FILE, encoding="utf-8") as fh:
+            demo_source = fh.read()
+    except OSError as exc:
+        return [package_id], [f"读不到 demo 模块真源 {DEMO_MODULE_BUILD_FILE}：{exc}"]
+    at = demo_source.find(marker)
+    if at < 0:
+        return [package_id], ["demo 模块真源里找不到 PACKAGE_ID 常量 —— 出包体检无法对账包名"]
+    demo_id = demo_source[at + len(marker):].split('"', 1)[0]
+    if not demo_id:
+        return [package_id], ["demo 模块真源的 PACKAGE_ID 是空串"]
+    if demo_id == package_id:
+        return [package_id], ["demo 模块包名与载体包名撞车（两件套会互相顶替）"]
+    # 其余载体（memory + M10-1 的 eratw.lw 四包）照 family 同一对账面逐只走一遍；
+    # 任意一只读不到/解析不出即带已收齐的包名表提前返回（fail-closed，不猜）。
+    carrier_ids = []
+    for source_path, registry_symbol in CARRIER_DECLARATION_SOURCES[1:]:
+        try:
+            with open(source_path, encoding="utf-8") as fh:
+                carrier_source = fh.read()
+        except OSError as exc:
+            return [package_id, demo_id] + carrier_ids, [f"读不到 RT2 载体声明真源 {source_path}：{exc}"]
+        at = carrier_source.find(marker)
+        if at < 0:
+            return (
+                [package_id, demo_id] + carrier_ids,
+                [f"载体声明真源里找不到 PACKAGE_ID 常量：{source_path}"],
+            )
+        carrier_id = carrier_source[at + len(marker):].split('"', 1)[0]
+        if not carrier_id:
+            return [package_id, demo_id] + carrier_ids, [f"载体声明真源的 PACKAGE_ID 是空串：{source_path}"]
+        if carrier_id in (package_id, demo_id) or carrier_id in carrier_ids:
+            return (
+                [package_id, demo_id] + carrier_ids,
+                [f"载体包名 {carrier_id} 与既有包撞车（注册/体检面会互相顶替）：{source_path}"],
+            )
+        carrier_ids.append(carrier_id)
+    try:
+        with open(MOD_CARRIER_REGISTRY_FILE, encoding="utf-8") as fh:
+            registry = fh.read()
+    except OSError as exc:
+        return [package_id, demo_id] + carrier_ids, [f"读不到载体注册表 {MOD_CARRIER_REGISTRY_FILE}：{exc}"]
+    for _, registry_symbol in CARRIER_DECLARATION_SOURCES:
+        if registry_symbol not in registry:
+            problems.append(
+                f"ModCarrierRegistry 不再引用 {registry_symbol} —— "
+                "注册表与声明真源可能已经分叉，包里的 manifest 会逐 mod fail-closed"
+            )
+    return [package_id] + carrier_ids + [demo_id], problems
+
+
+def parse_rt2_manifest_package_id(data: bytes) -> tuple:
+    """解 RT2MANIFEST/3 的 @meta 包名；返回 (包名, 错误文本)，二选一非空。
+
+    只认固定形状：首行 MAGIC、@meta 后紧跟一行 S 加 UTF-8 的十六进制。坏档不猜、不兼容旧版。
+    """
+    try:
+        lines = data.decode("utf-8").split("\n")
+    except UnicodeDecodeError as exc:
+        return None, f"manifest 不是合法 UTF-8：{exc}"
+    if not lines or lines[0] != RT2_MANIFEST_MAGIC:
+        return None, f"首行不是 {RT2_MANIFEST_MAGIC}（实际「{lines[0] if lines else ''}」）"
+    for i, line in enumerate(lines):
+        if line.strip() != "@meta":
+            continue
+        if i + 1 >= len(lines):
+            return None, "@meta 段没有包名行"
+        token = lines[i + 1].strip()
+        if not token.startswith("S") or len(token) < 2:
+            return None, f"@meta 包名行不是 S 加十六进制：「{token}」"
+        raw = token[1:]
+        if len(raw) % 2 != 0:
+            return None, f"@meta 包名十六进制长度不成对：「{raw}」"
+        try:
+            return bytes.fromhex(raw).decode("utf-8"), None
+        except (ValueError, UnicodeDecodeError) as exc:
+            return None, f"@meta 包名解不出 UTF-8：{exc}"
+    return None, "manifest 里没有 @meta 段"
+
+
+def rt2_manifest_problems() -> list:
+    """APK 内 assets/mods/rt2 的点 manifest 与仓库静态资产、声明真源逐项对账。"""
+    declared, problems = declared_rt2_package_ids()
+    try:
+        names = read_apk_namelist()
+    except (OSError, zipfile.BadZipFile) as exc:
+        return problems + [f"读不出 APK 条目清单，RT2 内置 manifest 无法对账：{exc}"]
+    entries = sorted(
+        n for n in names
+        if n.startswith(RT2_BUILTIN_ASSET_PREFIX) and n.endswith(RT2_MANIFEST_SUFFIX)
+    )
+    if not entries:
+        return problems + [
+            "APK 里没有 assets/mods/rt2 下的点 manifest —— 开闸也装 0 个 mod"
+            "（RT2-B③ 资产未投递；app 模块 assets 静态资产没进包？）"
+        ]
+    apk_names = {n[len(RT2_BUILTIN_ASSET_PREFIX):] for n in entries}
+    disk_names = set()
+    if os.path.isdir(BUILTIN_ASSET_DIR):
+        disk_names = {n for n in os.listdir(BUILTIN_ASSET_DIR) if n.endswith(RT2_MANIFEST_SUFFIX)}
+    else:
+        problems.append(f"仓库内置资产目录不存在：{BUILTIN_ASSET_DIR}")
+    for name in sorted(disk_names - apk_names):
+        problems.append(f"APK 缺内置 RT2 manifest：{name}（包不完整）")
+    for name in sorted(apk_names - disk_names):
+        problems.append(f"APK 多出来源不明的内置 RT2 manifest：{name}")
+    seen = set()
+    for entry in entries:
+        short = entry[len(RT2_BUILTIN_ASSET_PREFIX):]
+        try:
+            data = read_apk_entry(entry)
+        except (KeyError, zipfile.BadZipFile) as exc:
+            problems.append(f"读不出 APK 内 {entry}：{exc}")
+            continue
+        disk = os.path.join(BUILTIN_ASSET_DIR, short)
+        if os.path.isfile(disk):
+            with open(disk, "rb") as fh:
+                if fh.read() != data:
+                    problems.append(f"APK 内 {short} 与仓库静态资产字节不符（装了旧声明？重跑 generateBuiltinRt2Manifest）")
+        package_id, err = parse_rt2_manifest_package_id(data)
+        if err is not None:
+            problems.append(f"APK 内 {short} 是坏档：{err}")
+            continue
+        if short != package_id + RT2_MANIFEST_SUFFIX:
+            problems.append(f"APK 内 {short} 的文件名与 @meta 包名 {package_id} 不符")
+        if package_id in seen:
+            problems.append(f"APK 内内置 RT2 manifest 包名重复：{package_id}")
+        seen.add(package_id)
+    if declared and seen != set(declared):
+        problems.append(
+            f"APK 内内置 manifest 包名 {sorted(seen)} 与声明真源 {declared} 不一致"
+            "（载体注册表会逐 mod fail-closed）"
+        )
+    return problems
+
+
+def parse_rt2_manifest_artifact_sha256(data: bytes) -> tuple:
+    """解 RT2MANIFEST/3 的 @artifact-sha256 段；返回 (摘要串, 错误文本)，二选一非空。
+
+    空串 = 未钉（family 载体如此）；demo manifest 必钉 .erbm 摘要（裁定②）。
+    段缺失按未钉处理：段格式本该由运行期 ManifestCodec.decode 严格拒载，
+    体检面只对账「钉了的值必须与实物相等」这一个方向。
+    """
+    try:
+        lines = data.decode("utf-8").split("\n")
+    except UnicodeDecodeError as exc:
+        return "", f"manifest 不是合法 UTF-8：{exc}"
+    for i, line in enumerate(lines):
+        if line.strip() != "@artifact-sha256":
+            continue
+        if i + 1 >= len(lines):
+            return None, "@artifact-sha256 段没有摘要行"
+        token = lines[i + 1].strip()
+        if not token.startswith("S"):
+            return None, f"@artifact-sha256 摘要行不是 S 加十六进制：「{token}」"
+        raw = token[1:]
+        if not raw:
+            return "", None
+        try:
+            return bytes.fromhex(raw).decode("utf-8"), None
+        except (ValueError, UnicodeDecodeError) as exc:
+            return None, f"@artifact-sha256 摘要解不出 UTF-8：{exc}"
+    return "", None
+
+
+def parse_rt2_erbm(data: bytes) -> tuple:
+    """解 .erbm 容器头；返回 (package_id, 错误文本)，二选一非空。
+
+    只核出包体检需要的字段（ErbModuleContainer.encode 布局，见 RT2_ERBM_* 常量）：
+    尾 32B 摘要复算 / magic / version / 档位位 / packageId。其余记录区字段交给
+    运行期 decode 的 fail-closed 全套校验，这里不重造。
+    """
+    if len(data) < RT2_ERBM_HEADER_FIXED_BYTES + RT2_ERBM_DIGEST_BYTES:
+        return None, f".erbm 容器长度不足（{len(data)} 字节）"
+    if data[: len(RT2_ERBM_MAGIC)] != RT2_ERBM_MAGIC:
+        return None, ".erbm magic 不符（期望 ERTM1；注意 legacy `ERBM` 属 M2-4 转码面）"
+    body = data[:-RT2_ERBM_DIGEST_BYTES]
+    digest = data[-RT2_ERBM_DIGEST_BYTES:]
+    if hashlib.sha256(body).digest() != digest:
+        return None, ".erbm 尾部 SHA-256 摘要与正文复算不符（传输损坏 / 被单独替换过）"
+    version = struct.unpack(">H", data[5:7])[0]
+    if version != RT2_ERBM_VERSION:
+        return None, f".erbm 版本不符（期望 {RT2_ERBM_VERSION}，实为 {version}）"
+    flags = struct.unpack(">H", data[7:9])[0]
+    if flags not in RT2_ERBM_KNOWN_FLAGS:
+        return None, f".erbm 含未知档位位 0x{flags:x}（合法集 {RT2_ERBM_KNOWN_FLAGS}）"
+    pkg_len = struct.unpack(">i", data[9:13])[0]
+    if pkg_len < 0 or 13 + pkg_len > len(body):
+        return None, f".erbm packageId 长度越界（{pkg_len}）"
+    try:
+        package_id = data[13:13 + pkg_len].decode("utf-8")
+    except UnicodeDecodeError as exc:
+        return None, f".erbm packageId 解不出 UTF-8：{exc}"
+    return package_id, None
+
+
+def rt2_erbm_problems() -> list:
+    """APK 内 assets/mods/rt2 的 .erbm 容器与仓库静态资产、点 manifest 逐项对账。
+
+    判据（CONTRACT-RT2-ERBM §1 第 7 条）：ERTM1 前缀 / 尾 32B=SHA-256(body) 复算 /
+    version u16=1 / 档位位属于 {0,1} / packageId 与文件名及 manifest 包名集互洽
+    （每容器恰配一 manifest，孤儿容器判红——装配侧「每容器必有同包名 manifest」
+    的 fail-closed 会在真机整包拒，出包期先挡）/ manifest 钉了 artifact-sha256
+    则必须与 APK 内 .erbm 实际摘要相等。
+    """
+    problems = []
+    try:
+        names = read_apk_namelist()
+    except (OSError, zipfile.BadZipFile) as exc:
+        return [f"读不出 APK 条目清单，RT2 .erbm 容器无法对账：{exc}"]
+    prefix = RT2_BUILTIN_ASSET_PREFIX
+    entries = sorted(n for n in names if n.startswith(prefix) and n.endswith(RT2_ERBM_SUFFIX))
+    apk_names = {n[len(prefix):] for n in entries}
+    disk_names = set()
+    if os.path.isdir(BUILTIN_ASSET_DIR):
+        disk_names = {n for n in os.listdir(BUILTIN_ASSET_DIR) if n.endswith(RT2_ERBM_SUFFIX)}
+    else:
+        problems.append(f"仓库内置资产目录不存在：{BUILTIN_ASSET_DIR}")
+    for name in sorted(disk_names - apk_names):
+        problems.append(f"APK 缺内置 RT2 容器：{name}（两件套不齐，开闸装配整包拒）")
+    for name in sorted(apk_names - disk_names):
+        problems.append(f"APK 多出来源不明的内置 RT2 容器：{name}")
+    # 配对的另一侧 = 同目录点 manifest 的包名表（复用 manifest 体检的既有解析，不重造）。
+    manifest_pkg_by_name = {}
+    manifest_data_by_name = {}
+    for name in sorted(
+        n for n in names if n.startswith(prefix) and n.endswith(RT2_MANIFEST_SUFFIX)
+    ):
+        try:
+            data = read_apk_entry(name)
+        except (KeyError, zipfile.BadZipFile) as exc:
+            problems.append(f"读不出 APK 内 {name}：{exc}")
+            continue
+        package_id, err = parse_rt2_manifest_package_id(data)
+        if err is not None:
+            continue  # 坏档由 rt2_manifest_problems 点名，这里不重复报
+        manifest_pkg_by_name[name[len(prefix):]] = package_id
+        manifest_data_by_name[name[len(prefix):]] = data
+    seen_containers = set()
+    for entry in entries:
+        short = entry[len(prefix):]
+        try:
+            data = read_apk_entry(entry)
+        except (KeyError, zipfile.BadZipFile) as exc:
+            problems.append(f"读不出 APK 内 {entry}：{exc}")
+            continue
+        disk = os.path.join(BUILTIN_ASSET_DIR, short)
+        if os.path.isfile(disk):
+            with open(disk, "rb") as fh:
+                if fh.read() != data:
+                    problems.append(
+                        f"APK 内 {short} 与仓库静态资产字节不符"
+                        "（装了旧模块？重跑 generateDemoErbModule 后两件一起提交）"
+                    )
+        package_id, err = parse_rt2_erbm(data)
+        if err is not None:
+            problems.append(f"APK 内 {short} 是坏档：{err}")
+            continue
+        if package_id in seen_containers:
+            problems.append(f"APK 内内置 RT2 容器包名重复：{package_id}")
+        seen_containers.add(package_id)
+        if short != package_id + RT2_ERBM_SUFFIX:
+            problems.append(f"APK 内 {short} 的文件名与容器 packageId {package_id} 不符")
+        manifest_name = package_id + RT2_MANIFEST_SUFFIX
+        if manifest_name not in manifest_pkg_by_name:
+            problems.append(
+                f"APK 内 {short} 是孤儿容器：找不到同包名 manifest {manifest_name}"
+                "（装配侧 fail-closed 整包拒）"
+            )
+            continue
+        declared_pkg = manifest_pkg_by_name[manifest_name]
+        if declared_pkg != package_id:
+            problems.append(
+                f"APK 内 {short} 与 {manifest_name} 包名分叉："
+                f"容器 {package_id} / manifest {declared_pkg}"
+            )
+            continue
+        pinned, perr = parse_rt2_manifest_artifact_sha256(manifest_data_by_name[manifest_name])
+        if perr is not None:
+            problems.append(f"APK 内 {manifest_name} 的 artifact-sha256 段解不出：{perr}")
+            continue
+        if pinned and pinned.lower() != hashlib.sha256(data).hexdigest():
+            problems.append(
+                f"APK 内 {manifest_name} 钉的 artifact-sha256 与 {short} 实际摘要不符"
+                "（容器被单独替换过？重跑 generateDemoErbModule）"
+            )
+    return problems
 
 
 def report_package_kind(skip_assets: bool, allow_stale_erbc: bool = False) -> list:
@@ -1291,7 +1809,7 @@ def verify_signing(allow_debug_sign: bool) -> list:
             f"     包上：{apk_fp}\n"
             f"     钉值：{PINNED_RELEASE_SHA256}\n"
             "     意味着用了不同的 keystore 签名，老包将无法覆盖升级。"
-            "     如果确实需要换章（极罕见的泄露场景），须同步更新此处常量并在团队内公告。"
+            "     如果确实需要换章（极罕见的泄露场景），须同步更新此处常量并在 BOARD 公告。"
         ]
     print(f"[pack]      与钉值一致（PINNED_RELEASE_SHA256 前 16 位匹配）")
 
@@ -1352,12 +1870,12 @@ def probe_endpoint(endpoint: str, token: str) -> list:
         except Exception:                                          # noqa: BLE001 读不出就算了
             pass
         if exc.code in (401, 403) and "token" in detail.lower():
-            return [f"端点回 {exc.code}（token 不符）—— 包里的令牌与服务端配置不配对，"
-                    "装上去上报会全部 403。核对 local.report.properties 与服务端配置"]
+            return [f"端点回 {exc.code}（token 不符）—— 包里的令牌与 Worker 的 REPORT_TOKEN 不配对，"
+                    "装上去上报会全部 403。核对 local.report.properties 与部署时 secret 同值"]
         if exc.code == 500:
-            return ["端点回 500（服务端未配置好）—— 先检查上报服务端的部署与配置"]
+            return ["端点回 500（REPORT_TOKEN 未配置或 KV 未绑定）—— Worker 没部署好，先 wrangler 侧修"]
         print(f"[pack] 端点活体没验成：HTTP {exc.code} {detail[:80]!r} —— "
-              "端点异常或请求被前置网关拦截，令牌配对状态未知；"
+              "被 Cloudflare 挡在 Worker 之前（1010）或端点异常，令牌配对状态未知；"
               f"要人工确认就 curl '{base}/reports?token=<令牌>'")
         return []
     except Exception as exc:                                   # noqa: BLE001 网络面异常一律不阻断出包
@@ -1418,7 +1936,7 @@ def archive_apk(kind: str, out_dir: str = "") -> str:
     """把 APK 复制成带版本/提交/包型/指纹的名字，落 `build/release-artifacts/`。
 
     gradle 的 `app-release.apk` 每次构建原地覆盖 —— 只留那儿等于「上周那个包」找不回来。
-    名字里带 git7 与产物 sha8：需要确认「这个包是哪个提交出的」时不用回来翻日志。
+    名字里带 git7 与产物 sha8：主人问「这个包是哪个提交出的」时不用回来翻日志。
     """
     name_v, code_v = version_from_gradle()
     dst_dir = out_dir or ARTIFACT_DIR
@@ -1444,6 +1962,119 @@ def archive_apk(kind: str, out_dir: str = "") -> str:
 
 
 
+# ---------------------------------------------------------------- 引擎配置模式（ENGC-6 / B6-PACK）
+# 第三方引擎出包通道（契约 CONTRACT-ENGCOMPAT §8.0.5）：`--engine-config <file>` 声明
+# 目标引擎档（engine + version），据此生成印章文件、注入两个 gradle 属性
+# （`-PeratwEngineProfile` / `-PeratwEngineStampFile`，由 Lane C 的 gradle 侧透传给
+# erbcc / staging）、跳过 eraTW 语料根闸（保留「语料与游戏根同源」判据）、编译后渲染
+# 兼容性报告。所有新分支都以「无 --engine-config」早退：无配置时出包路径与今天逐字一致
+# （I7 零干扰，对拍见 devtools/test_engine_compat.py）。配置文件本身不进 APK。
+ENGINE_STAMP_ASSET = engine_compat.STAMP_ASSET_PATH      # APK 内印章条目名
+ENGINE_COMPAT_DIR = os.path.join(APP_ROOT, "build", "engine-compat")
+# 印章文件（pack 侧生成，经 -PeratwEngineStampFile 交给 staging 任务按字节拷进 assets）。
+ENGINE_REPORT_JSON_CANDIDATES = (
+    # 报告 JSON 落点由 erbcc/gradle 侧（Lane A/C）决定，这里按候选路径发现；
+    # 接口对齐记录在「需组长接线」。
+    os.path.join(ENGINE_COMPAT_DIR, "engine-report.json"),
+    os.path.join(APP_ROOT, "tools", "erbcc", "build", "engine-report.json"),
+)
+
+
+def engine_stamp_path() -> str:
+    """印章文件落点（配置模式生成；-PeratwEngineStampFile 的值就是这个绝对路径）。"""
+    return os.path.join(ENGINE_COMPAT_DIR, "engine-profile.json")
+
+
+def engine_config_gate(config_path: str, game_root: str, skip_assets: bool = False) -> list:
+    """配置模式的门槛判据：第三方游戏根必须**显式**给，不许回落缺省 eraTW 语料根。
+
+    eraTW 的 4.980/4.981 语料根不是目标游戏的数据；回落 = 「第三方脚本 + eraTW 数据」
+    的静默错包，与 [retired_corpus_problem] 拦的是同一类失败，所以这里前置硬拦。
+    """
+    problems = []
+    if not config_path:
+        problems.append("--engine-config 需要配置文件路径")
+    if not game_root:
+        problems.append(
+            "配置模式要求显式 --game-root：第三方游戏不许回落缺省 eraTW 语料根"
+            f"（{' / '.join((CURRENT_CORPUS_DIR, *RETIRED_CORPUS_DIRS))} 都不是目标游戏的数据）"
+        )
+    if skip_assets:
+        # 组长裁定（B6 验收期，2026-11-12）：印章 assets/engine-profile.json 只能经
+        # StageGameAssetsTask 落进包（D10 印章是唯一档位载体）；--skip-assets 的包
+        # 没有可烙章面 = 运行期恒回落缺省档的假兼容包，静默比报错危险，前置硬拦。
+        problems.append(
+            "配置模式不支持 --skip-assets：印章只能经随包资产落进包（D10 印章是唯一"
+            "档位载体），跳过随包资产的包无法烙章，请去掉 --skip-assets 出完整包"
+        )
+    return problems
+
+
+def prepare_engine_stamp(engine_cfg: dict, path: str = "") -> str:
+    """配置模式：把印章写到 build/engine-compat/engine-profile.json，返回 abs path。
+
+    印章三串（profile/engine/version）逐字取自 engine_compat.TARGETS 同步表；
+    写死成固定档会让 --verify-only 回读判红（反向证明②钉住）。
+    """
+    return os.path.abspath(engine_compat.write_stamp_file(engine_cfg, path or engine_stamp_path()))
+
+
+def engine_gradle_args(engine_cfg) -> list:
+    """引擎配置模式注入的两个 gradle 参数（契约 §8.0.4）。
+
+    `engine_cfg` 为 None（无 --engine-config）时返回 [] —— 这就是零干扰早退本体；
+    删掉它，无配置路径就会带上引擎参数（反向证明①用例钉住此行为）。
+    """
+    if engine_cfg is None:
+        return []
+    return [
+        f"-PeratwEngineProfile={engine_cfg['profile']}",
+        f"-PeratwEngineStampFile={engine_stamp_path()}",
+    ]
+
+
+def engine_stamp_problems(engine_cfg: dict) -> list:
+    """配置模式回读（--verify-only 与出包后共用）：APK 内印章与配置逐字段比对。
+
+    缺印章 = 配置模式却没烙章（-PeratwEngineStampFile 没生效 / staging 没写进包）⇒ 判红；
+    字段不符（schema/profile/engine/version 任一）⇒ 判红并给出期望 vs 实际。
+    无 --engine-config 时本函数不会被调用（I7）。
+    """
+    raw = read_apk_asset(ENGINE_STAMP_ASSET)
+    if raw is None:
+        return [f"配置模式的包里缺印章 {ENGINE_STAMP_ASSET}"
+                "（-PeratwEngineStampFile 没生效或 staging 没把印章写进包）"]
+    return [f"APK 内印章 {ENGINE_STAMP_ASSET} 与配置不符：{p}"
+            for p in engine_compat.verify_stamp_text(raw, engine_cfg)]
+
+
+def engine_report_problems(engine_cfg: dict, candidates=None, out_dir: str = "") -> list:
+    """配置模式：erbcc `--engine-report` 的 JSON → 渲染 `build/engine-compat/report.md`。
+
+    报告是出包前产物且**必填**（D11）：找不到 JSON / 形状不符（契约 §8.0.3）/
+    目标档与配置不符都判红；渲染结果落在 `out_dir`（缺省 ENGINE_COMPAT_DIR）。
+    无 --engine-config 时本函数不会被调用（I7）。
+    """
+    paths = list(candidates) if candidates is not None else list(ENGINE_REPORT_JSON_CANDIDATES)
+    found = next((p for p in paths if os.path.isfile(p)), None)
+    if not found:
+        return [
+            "配置模式编译后找不到 --engine-report 的 JSON，兼容性报告缺产物（D11 必填）；"
+            f"候选路径：{paths}。检查 erbcc/gradle 侧 --engine-report 接线。"
+        ]
+    try:
+        report = engine_compat_report.load_report(found)
+    except engine_compat_report.EngineReportError as exc:
+        return [f"引擎报告 JSON 不合格：{exc}"]
+    if report.get("profile") != engine_cfg["profile"]:
+        return [f"引擎报告的目标档与配置不符：报告 profile={report.get('profile')!r} "
+                f"vs 配置 profile={engine_cfg['profile']!r}（{found}）"]
+    out_path = engine_compat_report.render_file(
+        report, os.path.join(out_dir or ENGINE_COMPAT_DIR, "report.md"))
+    print(f"[pack] 引擎兼容性报告：{out_path}")
+    return []
+
+
 # ---------------------------------------------------------------- 主流程
 
 def main(argv=None) -> int:
@@ -1456,8 +2087,22 @@ def main(argv=None) -> int:
                         help="出「不上报」的包（内测/离线场景；会大声警告）")
     parser.add_argument("--skip-assets", action="store_true",
                         help="带 -PeratwSkipAssets=1（小包，复用设备上已解包的数据）")
+    parser.add_argument("--erbc-stored", dest="erbc_stored", action="store_true",
+                        help="随包 erbc/meta 保持 STORED 不压缩（缺省带 -PeratwErbcCompress 走 DEFLATE："
+                             "APK 瘦 ~366 MiB，解包产物逐字节不变；STORAGE-1）")
     parser.add_argument("--game-root", default="",
                         help="覆盖游戏根（缺省取 ERATW_GAMEDIR；缺了它包会静默退化成不随资源）")
+    parser.add_argument("--engine-config", dest="engine_config", default="",
+                        help="第三方引擎构建模式：engine.config.json 路径（schema v1 = "
+                             "{schema,engine,version}；生成印章 build/engine-compat/engine-profile.json，"
+                             "注入 -PeratwEngineProfile/-PeratwEngineStampFile，跳过 eraTW 语料根闸，"
+                             "要求显式 --game-root，编译后渲染兼容性报告）。"
+                             "不带此参数 = eraTW 出包路径与今天逐字一致")
+    parser.add_argument("--foreign-corpus", dest="foreign_corpus", action="store_true",
+                        help="声明本次随包的语料/游戏根不是 devtools/corpus-patches 的 eraTW 根："
+                             "编译面与 staging 面整表跳过语料内容补丁（否则第三方游戏根会因为"
+                             "缺 CSV/_Rename.csv 这类 eraTW 专属目标被判红）。必须配显式 --game-root；"
+                             "不带此参数 = 补丁表照常严格适用（缺省，护栏原样保留）")
     parser.add_argument("--endpoint", default="", help="覆盖端点（缺省取 local.report.properties）")
     parser.add_argument("--token", default="", help="覆盖令牌（不建议：会留在 shell 历史里）")
     parser.add_argument("--mirror", action="append", default=[], dest="mirrors",
@@ -1473,12 +2118,49 @@ def main(argv=None) -> int:
     parser.add_argument("--allow-degraded-corpus", action="store_true",
                         help="放行「随包 erbc 含降级切片（死函数）」的包（仅限不许改源的第三方口上）")
     parser.add_argument("--allow-retired-corpus", action="store_true",
-                        help=f"放行「游戏根指向已退役 4.980 语料」的包（回归对拍内测专用；"
-                             f"正式包语料必须是 {CURRENT_CORPUS_DIR}）")
+                        help=f"放行「游戏根指向已退役语料（{' / '.join(RETIRED_CORPUS_DIRS)}）」的包"
+                             f"（回归对拍内测专用；正式包语料必须是 {CURRENT_CORPUS_DIR}）")
     parser.add_argument("--no-archive", action="store_true",
                         help="不把 APK 复制进 build/release-artifacts/（省一份 743 MiB 磁盘）")
     parser.add_argument("--out", default="", help="覆盖归档目录（缺省 build/release-artifacts）")
+    parser.add_argument("--print-corpus-root-name", dest="print_corpus_root_name",
+                        action="store_true",
+                        help=f"只打印现行语料的 root_dir（{CURRENT_CORPUS_DIR}）后退出 0："
+                             "devtools/pack_one 取语料根名的单源通道（不构建、不写盘）")
     args = parser.parse_args(argv)
+
+    # 语料根名单源读口（devtools/pack_one 的唯一用例）：**在任何构建/写盘之前**早退，
+    # 只吐一行 root_dir，使「工具与出包脚本各记一份 4.981 目录名」这条暗通道没有存在余地。
+    if args.print_corpus_root_name:
+        print(CURRENT_CORPUS_DIR)
+        return 0
+
+    # 引擎配置模式（ENGC-6 / B6-PACK）：无 --engine-config 时 engine_cfg 恒 None，
+    # 后续所有新分支都以它早退，出包路径与今天逐字一致（I7 零干扰）。
+    engine_cfg = None
+    # --foreign-corpus 撤的是「eraTW 语料补丁严格适用」这道护栏，所以只认显式给定的游戏根：
+    # 从 ERATW_GAMEDIR 继承一个根再来撤护栏，等于对着真 eraTW 根关掉补丁而不自知（CB-001/005/006
+    # 会静默回归成玩家可见崩溃）。要关就把根写在脸上。
+    if args.foreign_corpus and not args.game_root:
+        print("[pack] --foreign-corpus 必须配显式 --game-root（缺了就等于对着 ERATW_GAMEDIR 的 "
+              "eraTW 根关掉语料补丁）", file=sys.stderr)
+        return 2
+    if args.engine_config:
+        gate = engine_config_gate(args.engine_config, args.game_root, args.skip_assets)
+        if gate:
+            print("[pack] 引擎配置不合格，拒绝出包：", file=sys.stderr)
+            for item in gate:
+                print(f"  - {item}", file=sys.stderr)
+            return 2
+        try:
+            engine_cfg = engine_compat.load_engine_config(args.engine_config)
+        except engine_compat.EngineConfigError as exc:
+            print(f"[pack] 引擎配置不合格，拒绝出包：\n{exc}", file=sys.stderr)
+            return 2
+        print(f"[pack] 引擎配置模式：profile={engine_cfg['profile']} "
+              f"(engine={engine_cfg['engine']} version={engine_cfg['version']})")
+        if not args.verify_only:
+            print(f"[pack] 印章文件：{prepare_engine_stamp(engine_cfg)}")
 
     endpoint, token, origin = resolve_report_config(args)
     mirrors, mirrors_origin = resolve_update_mirrors(args)
@@ -1489,7 +2171,10 @@ def main(argv=None) -> int:
     # 仍是旧根，source 过它再出包会得到内部自洽、体检全绿的「旧语料 + 新版本号」包，无一处
     # 拦得住（见 [retired_corpus_problem]）。判读在这一拍做完；--verify-only 不构建不拦，
     # --dry-run 不拦但大声提示（两种模式的调用方要的是读数与命令形状，不是一次真出包）。
-    era_problems = [] if args.allow_retired_corpus else retired_corpus_problem(effective_game_root(args.game_root))
+    # 引擎配置模式（契约 §8.0.5）跳过这道 eraTW 专属闸（第三方游戏根没有 eraTW 语料目录），
+    # 保留下面「语料与游戏根同源」判据；无 --engine-config 时本表达式取值与改动前逐字相同。
+    era_problems = ([] if args.allow_retired_corpus or engine_cfg is not None
+                    else retired_corpus_problem(effective_game_root(args.game_root)))
     # 同一条洞的另一半：erbc 由 `ERATW_CORPUS` 编译、CSV/resources 由游戏根随包，两条指到
     # **不同**游戏根时同样内部自洽、体检全绿（见 [data_source_alignment] 的现网实证）。
     # `--verify-only` 只体检现成 APK、不产出新包，数据源怎么配都不影响这次判定。
@@ -1499,7 +2184,9 @@ def main(argv=None) -> int:
         # dry-run 不出包，所以不逼它配齐令牌：配不齐也要能看见命令长什么样。
         for item in era_problems + source_problems:
             print(f"[pack] 注意（dry-run）：{item}", file=sys.stderr)
-        run_build(endpoint, token, args.skip_assets, True, args.game_root, mirrors)
+        run_build(endpoint, token, args.skip_assets, True, args.game_root, mirrors,
+                  erbc_stored=args.erbc_stored, engine_config=engine_cfg,
+                  foreign_corpus=args.foreign_corpus)
         if not token and not args.offline:
             print(f"[pack] 注：令牌来源={origin.split(' / ')[-1]}，真出包会在这一步 exit 2（dry-run 放行）")
         return 0
@@ -1540,14 +2227,41 @@ def main(argv=None) -> int:
                   file=sys.stderr)
         return 2
 
+    # CMP-66 前置闸（2026-11-14）：启动 Gradle 之前先用 0.5 秒的内容指纹对账，
+    # 挡掉「编译器源码变了却拿旧 erbc 出包」——这类包必然在 6 分钟后被
+    # stageGameAssets 判红，旧流程等于白跑一整轮 + 重编 + 重出。
+    # 只对真正要构建的完整包生效：verify-only / dry-run / 小包 / 第三方引擎模式
+    # 与显式 --allow-stale-erbc 内测放行，行为与改动前逐字一致。
+    if not (args.verify_only or args.dry_run or args.allow_stale_erbc
+            or args.skip_assets or engine_cfg is not None):
+        pre = preflight_erbc_digest()
+        if pre:
+            print("[pack] 随包 erbc 新鲜度预检不通过，拒绝启动 Gradle（否则整轮构建必白跑）：",
+                  file=sys.stderr)
+            for item in pre:
+                print(f"  - {item}", file=sys.stderr)
+            return 2
+
     if not args.verify_only:
-        code = run_build(endpoint, token, args.skip_assets, False, args.game_root, mirrors)
+        code = run_build(endpoint, token, args.skip_assets, False, args.game_root, mirrors,
+                         erbc_stored=args.erbc_stored, engine_config=engine_cfg,
+                         foreign_corpus=args.foreign_corpus)
         if code != 0:
             print("[pack] 构建失败，没有可发的包。", file=sys.stderr)
             return 1
 
     kind_problems = report_package_kind(args.skip_assets, args.allow_stale_erbc)
     kind_problems += report_degraded_corpus(args.allow_degraded_corpus)
+    # RT2-B③：内置 manifest 是 app 模块 assets 的静态资产，任何包型（含 --skip-assets 小包）
+    # 都该带着它；缺档 / 旧字节 / 包名分叉一律挡在出包期，不留到真机日志里才看出来。
+    kind_problems += rt2_manifest_problems()
+    # RT2-ERBM：.erbm 容器同面体检（magic/摘要/档位/包名互洽/孤儿容器/artifact-sha256 对账）。
+    kind_problems += rt2_erbm_problems()
+    # 引擎配置模式（ENGC-6 / B6-PACK）：APK 内印章回读比对 + 兼容性报告渲染（D11）；
+    # 无 --engine-config 时整段跳过，--verify-only 行为与今天逐字一致（I7）。
+    if engine_cfg is not None:
+        kind_problems += engine_stamp_problems(engine_cfg)
+        kind_problems += engine_report_problems(engine_cfg)
     report_apk(not args.no_archive)
 
     # 包本身有没有「被 Android 解析」的资格：与上报/更新通道无关，--offline 也要查；

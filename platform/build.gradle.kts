@@ -46,6 +46,11 @@ dependencies {
     // M5-B 起平台侧接 core 的音频接口（SoundSourceResolver / ChannelDecoder）与设置条目表；
     // core-vm 是纯 JVM 库，不反向依赖 platform，无环。
     implementation("com.eratw.port:core-vm")
+    // SQLite 迁移 W1：Android 侧真实 bundled 驱动。低版本 Android 的 system SQLite 不支持
+    // ON CONFLICT DO UPDATE 等语料用法，故只认 bundled（SQLite 3.46.0），不做 framework 回退；
+    // 连接串/沙箱路径的解析与 core 端口转换在 :sqlite-adapter。
+    implementation("com.eratw.port:sqlite-adapter")
+    implementation(libs.androidx.sqlite.bundled)
     // 纯 JVM 单测（M5-A：手势/宏控制器不碰 Android API）；Android 单测默认跑 JUnit4
     testImplementation(libs.junit4)
     // 素材包解包：官方 BGM 资源包以 .7z（LZMA2 solid）分发，JDK 的 ZipFile 读不了；

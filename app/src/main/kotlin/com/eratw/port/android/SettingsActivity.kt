@@ -14,9 +14,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -24,6 +26,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -40,6 +43,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -51,6 +55,7 @@ import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
 import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -79,11 +84,13 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -124,10 +131,12 @@ import com.eratw.port.core.vars.GameBaseData
 import com.eratw.port.platform.config.SettingsStore
 import com.eratw.port.platform.save.SaveExport
 import com.eratw.port.platform.save.SaveImport
+import com.eratw.port.platform.storage.AndroidAssetTree
 import com.eratw.port.platform.storage.GameStorage
 import com.eratw.port.platform.storage.MaterialSource
 import com.eratw.port.platform.storage.MaterialTarget
 import com.eratw.port.platform.storage.ModStore
+import com.eratw.port.platform.storage.ResourcePackCleanup
 import com.eratw.port.platform.storage.ResourcePackReport
 import com.eratw.port.platform.storage.ResourcePackStatus
 import com.eratw.port.platform.storage.ResourcePackStore
@@ -389,6 +398,9 @@ class SettingsActivity : ComponentActivity() {
                 // 在内容作用域里读这几个状态：模型写入 / 语言切换后整页重组。
                 val rev = revision
                 val lang = language
+                // 素材清理的确认框与素材卡共用同一份三语表：语言只从这条 lang 取一次，
+                // 确认框与卡片都按这个 copy 出词（不在对话框里再判一次语言）。
+                val materialCopy = ResourcePackCopy.of(lang)
                 val strings = SettingsStrings.of(lang)
                 // 更新面三语表（EP4 U3a）：语言只在这里取一次（与设置页自己的 `language` 同源，
                 // 就是 UiPrefs 那条读数），通道读数初值、进度条与按钮只做「按这个 copy 出词」。
@@ -470,12 +482,16 @@ class SettingsActivity : ComponentActivity() {
                     onBgmLocationChange = { bgmLocationInput = it },
                     // 素材导入域三语表（Lane B）：与补丁导入同口径，语言只从上面那条
                     // `language` 读数取一次，卡片只做「按这个 copy 出词」。
-                    resourcePackCopy = ResourcePackCopy.of(lang),
+                    resourcePackCopy = materialCopy,
                     onPickBackgroundFiles = { pickBackgroundImages.launch(Unit) },
                     onPickBackgroundFolder = { pickBackgroundFolder.launch(null) },
                     onPickBgmFiles = { pickBgmTracks.launch(Unit) },
                     onPickBgmFolder = { pickBgmFolder.launch(null) },
                     onPickResourcePacks = { pickResourcePacks.launch(Unit) },
+                    // 清理入口：卡片按钮只置确认目标，真正的删除在确认框点「清除」之后才跑
+                    // （见 clearImportedMaterials；单飞闸与导入共用 resourcePackBusy）。
+                    onClearBackground = { clearTarget = MaterialTarget.BACKGROUND },
+                    onClearBgm = { clearTarget = MaterialTarget.BGM },
                     onRestartForResources = ::finishForPatchRestart,
                     exporting = exporting,
                     exportLines = exportLines,
@@ -514,6 +530,42 @@ class SettingsActivity : ComponentActivity() {
                         intro = strings.modImportIntro,
                         pickButton = strings.modImportPickButton,
                         copy = ModImportCopy.of(lang),
+                    )
+                }
+                // 「清除已导入素材」的二次确认：卡片上的按钮只置 clearTarget，这里才真正动手。
+                // 形态与「恢复默认设置」那张确认框一致（AlertDialog + 警示色确认键），句子
+                // 全部来自 ResourcePackCopy，壳层不拼字。
+                val pendingClear = clearTarget
+                if (pendingClear != null) {
+                    AlertDialog(
+                        onDismissRequest = { clearTarget = null },
+                        title = { Text(materialCopy.clearConfirmTitle) },
+                        text = {
+                            Text(
+                                text = clearConfirmBody(materialCopy, pendingClear),
+                                color = UiColors.Text,
+                                fontSize = 13.sp,
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    clearTarget = null
+                                    clearImportedMaterials(pendingClear)
+                                },
+                            ) {
+                                Text(
+                                    text = materialCopy.clearConfirmOk,
+                                    color = UiColors.Warn,
+                                    fontSize = 13.sp,
+                                )
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { clearTarget = null }) {
+                                Text(text = materialCopy.clearConfirmCancel)
+                            }
+                        },
                     )
                 }
             }
@@ -777,29 +829,20 @@ class SettingsActivity : ComponentActivity() {
             val lines = mutableListOf<ImportLine>()
             val pending = mutableListOf<PendingImport>()
             try {
-                for (uri in uris) {
-                    val name = displayNameOf(uri, t.selectedFileFallback)
-                    try {
-                        val bytes = readBounded(uri)
-                        if (bytes == null) {
-                            lines += ImportLine(t.importUnread(name), false)
-                            continue
-                        }
-                        when (val plan = SaveImport.plan(name, bytes, config, base, slotCount, ::occupiedAt)) {
-                            is SaveImport.Reject ->
-                                lines += ImportLine(t.importRejected(name, t.saveReason(plan.reason)), false)
-                            is SaveImport.Place -> if (plan.occupied) {
-                                pending += PendingImport(plan, bytes, name)
-                            } else {
-                                lines += placeLine(plan, bytes, t)
-                            }
-                        }
-                    } catch (error: Throwable) {
-                        // 一个文件判读时抛了未预期的异常，不许拖死整批，也不许让按钮永久卡在「正在导入」
-                        val detail = error.message?.takeIf { it.isNotBlank() } ?: t.unexpectedFailure
-                        lines += ImportLine(t.importRejected(name, detail), false)
-                    }
-                }
+                // 先读齐（单文件体积已由 readBounded 卡住）：配对判据要看**整批**，
+                // 侧车能否落位取决于同批本体是否也判可落位，与玩家选文件的顺序无关。
+                val (items, unread) = readImportItems(uris, t)
+                lines += unread
+                val context = SaveImport.Context(config, base, slotCount, ::occupiedAt)
+                val (judgeLines, judgePending) = planImportUnits(items, SaveImport.planBatch(items, context), t)
+                lines += judgeLines
+                pending += judgePending
+            } catch (error: Throwable) {
+                // 整批判读抛了未预期的异常（逐条的 Exception 已在 planBatch 内收成拒收；
+                // 到这里多半是 OOM 一类的 Error 或编程错误）：不许拖死整批，也不许让按钮
+                // 永久卡在「正在导入」。批级失败只有一句，名字用「选中的文件」兜底。
+                val detail = error.message?.takeIf { it.isNotBlank() } ?: t.unexpectedFailure
+                lines += ImportLine(t.importRejected(t.selectedFileFallback, detail), false)
             } finally {
                 runOnUiThread {
                     importing = false
@@ -808,6 +851,59 @@ class SettingsActivity : ComponentActivity() {
                 }
             }
         }.start()
+    }
+
+    /**
+     * 读齐一次多选：名字 + 字节（单文件体积闸在 [readBounded] 里）。
+     * 读不动的项当场出一条「未导入」行，不进返回的 [SaveImport.Item] 列表。
+     */
+    private fun readImportItems(
+        uris: List<Uri>,
+        t: SettingsStrings,
+    ): Pair<List<SaveImport.Item>, List<ImportLine>> {
+        val items = ArrayList<SaveImport.Item>(uris.size)
+        val lines = mutableListOf<ImportLine>()
+        for (uri in uris) {
+            val name = displayNameOf(uri, t.selectedFileFallback)
+            val bytes = readBounded(uri)
+            if (bytes == null) {
+                lines += ImportLine(t.importUnread(name), false)
+                continue
+            }
+            items += SaveImport.Item(name, bytes)
+        }
+        return items to lines
+    }
+
+    /**
+     * 判定结果 → （提示行, 待确认单元）。
+     *
+     * 按**逻辑存档单元**归组（key = 本体落位路径，[SaveImport.bodyTargetOf]）：本体与它的
+     * `.rt2` 侧车一起进覆盖确认、一起落盘/一起取消（MODGC2 裁定 1）。单元内任一成员占用
+     * ⇒ 整单元等玩家确认；不许「侧车先写进去、本体等确认」。
+     */
+    private fun planImportUnits(
+        items: List<SaveImport.Item>,
+        plans: List<SaveImport.Plan>,
+        t: SettingsStrings,
+    ): Pair<List<ImportLine>, List<PendingImport>> {
+        val lines = mutableListOf<ImportLine>()
+        val pending = mutableListOf<PendingImport>()
+        val units = LinkedHashMap<String, MutableList<PendingImport.Member>>()
+        items.forEachIndexed { index, item ->
+            when (val plan = plans[index]) {
+                is SaveImport.Reject ->
+                    lines += ImportLine(t.importRejected(item.fileName, t.saveReason(plan.reason)), false)
+
+                is SaveImport.Place ->
+                    units.getOrPut(SaveImport.bodyTargetOf(plan.targetRel)) { mutableListOf() } +=
+                        PendingImport.Member(plan, item.bytes, item.fileName)
+            }
+        }
+        for (members in units.values) {
+            if (members.any { it.place.occupied }) pending += PendingImport(members) else lines += placeUnit(members, t)
+        }
+        return lines to pending
     }
 
     /** 一条落位的结果行：成功报「哪一格 + 存档自己的备注」，失败照实说没写进去（不掩错、不重试）。 */
@@ -821,6 +917,24 @@ class SettingsActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 一个逻辑存档单元的落盘（MODGC2 裁定 1）：**本体先、侧车随后**。
+     *
+     * 本体写失败 ⇒ 整单元不写（只报本体那一条）：半套配对比少一件扩展状态更坏 ——
+     * 留下的侧车会在下次读档时配到旧的/别的本体上。本体写成、侧车写失败则两行都照实报
+     * （读档时引擎会按「绑定失配/缺失」给警告，era-arch §8 `:225-231`）。
+     */
+    private fun placeUnit(
+        members: List<PendingImport.Member>,
+        t: SettingsStrings,
+    ): List<ImportLine> {
+        val ordered = members.sortedBy { if (SaveImport.isSidecarName(it.fileName)) 1 else 0 }
+        val body = ordered.first()
+        val bodyLine = placeLine(body.place, body.bytes, t)
+        if (!bodyLine.ok) return listOf(bodyLine)
+        return listOf(bodyLine) + ordered.drop(1).map { placeLine(it.place, it.bytes, t) }
+    }
+
     /** 对话框选「覆盖」：把攒下的项后台落盘，结果并进同一叠提示行。 */
     private fun commitOverwrite() {
         val items = overwritePending
@@ -829,7 +943,8 @@ class SettingsActivity : ComponentActivity() {
         val t = text
         importing = true
         Thread {
-            val lines = items.map { placeLine(it.place, it.bytes, t) }
+            // 逐单元落盘：本体先、侧车随后（[placeUnit]），单元内不会只写进去一半。
+            val lines = items.flatMap { placeUnit(it.members, t) }
             runOnUiThread {
                 importing = false
                 importLines = (lines + importLines).take(IMPORT_LINES_MAX)
@@ -931,6 +1046,15 @@ class SettingsActivity : ComponentActivity() {
 
     /** BGM 卡的地点名：只用于「直接选音频」时给根级文件定地点（选文件夹时用文件夹名）。 */
     private var bgmLocationInput by mutableStateOf("")
+
+    /**
+     * 「清除已导入素材」的二次确认目标（null = 不弹框）。
+     *
+     * 破坏性动作（删文件）一律先确认：卡片上的按钮只置这一格，真正的清理要等确认框点「清除」
+     * 才落到 [clearImportedMaterials]。与「恢复默认设置」的 `confirmRestore` 同一模式，
+     * 区别只是这里的范围只有两个互斥值（[MaterialTarget.BACKGROUND] / [MaterialTarget.BGM]）。
+     */
+    private var clearTarget by mutableStateOf<MaterialTarget?>(null)
 
     /** 三张卡各自的结果槽位；写入只经 [setPackState] / [postPackEvent]，别的线程不碰。 */
     private enum class PackSlot { BACKGROUND, BGM, ARCHIVE }
@@ -1062,8 +1186,9 @@ class SettingsActivity : ComponentActivity() {
             Log.w(TAG, "补丁导入请求被忽略：上一次导入还在进行")
             return
         }
-        // 语言一次取好随调用进线程（照 UpdateCopy 的口径：纯层与后台线程不碰 prefs）。
+        // 语言与总闸状态一次取好随调用进线程（照 UpdateCopy 的口径：纯层与后台线程不碰 prefs）。
         val copy = ModImportCopy.of(language)
+        val modRuntimeOn = UiPrefs.modRuntime(this)
         modImportState = ModImportUiReducer.reduce(modImportState, ModImportEvent.ImportStarted(uris.size), copy)
         Thread({
             try {
@@ -1088,7 +1213,7 @@ class SettingsActivity : ComponentActivity() {
                         copy.fill(copy.allReadsFailedFormat, readErrors.joinToString("\n")),
                     )
                 } else {
-                    modImportController().import(picked, copy)
+                    modImportController().import(picked, copy, modRuntimeEnabled = modRuntimeOn)
                 }
                 val report = modImportReportSnapshot(copy)
                 val event = when (outcome) {
@@ -1306,6 +1431,54 @@ class SettingsActivity : ComponentActivity() {
                 resourcePackBusy.set(false)
             }
         }, "eratw-respack-direct").start()
+    }
+
+    /**
+     * 「清除已导入的素材」：确认框点「清除」之后才走到这里。
+     *
+     * 与素材导入共用同一把单飞闸 `resourcePackBusy` —— 两条都是几百 MB 量级的文件系统写入，
+     * 互相踩只会留下半套素材。真正的删除全在存储层 [ResourcePackCleanup]（逐文件判「玩家导入
+     * vs 随包基准」，随包素材一个字节都不动），这里只做线程、状态机与读数刷新。
+     *
+     * `base` 必须给 APK assets 树：平台侧「基准源存活闸」在盘上摘要读不到时靠它证明基准清单
+     * 可用；缺了它，老盘上只会得到一句「基准清单读不到」。assets 在 UI 线程取好再进后台线程
+     * （与 liveReflow / failureCopy 同口径：后台线程不读宿主与偏好）。
+     *
+     * 结果落 [ResourcePackEvent.ClearSucceeded] / `ClearFailed`（后者复用既有失败态），
+     * 上屏句子由 [cleanupEvent] 按 [ResourcePackCopy] 拼好；现状读数一律重扫一次再带回，
+     * 免得清理完卡上还挂着清理前的数字。
+     */
+    private fun clearImportedMaterials(target: MaterialTarget) {
+        val slot = if (target == MaterialTarget.BGM) PackSlot.BGM else PackSlot.BACKGROUND
+        if (!resourcePackBusy.compareAndSet(false, true)) {
+            Log.w(TAG, "清理请求被忽略：上一次导入或清理还在进行")
+            return
+        }
+        val copy = ResourcePackCopy.of(language)
+        val base = AndroidAssetTree(assets)
+        setPackState(slot, ResourcePackUiReducer.reduce(packStateOf(slot), ResourcePackEvent.ClearStarted))
+        Thread({
+            try {
+                val report = ResourcePackCleanup.clear(gameRootFile, target, base)
+                val status = runCatching { ResourcePackStore.scanStatus(gameRootFile) }.getOrNull()
+                postPackEvent(slot, cleanupEvent(copy, report, status))
+            } catch (t: Throwable) {
+                Log.e(TAG, "素材清理未预期异常", t)
+                val status = runCatching { ResourcePackStore.scanStatus(gameRootFile) }.getOrNull()
+                postPackEvent(
+                    slot,
+                    ResourcePackEvent.ClearFailed(
+                        message = copy.fill(
+                            copy.clearFailedFormat,
+                            t::class.simpleName ?: copy.unknownStorageError,
+                        ),
+                        status = status,
+                    ),
+                )
+            } finally {
+                resourcePackBusy.set(false)
+            }
+        }, "eratw-respack-clear").start()
     }
 
     /**
@@ -1731,33 +1904,6 @@ private fun SettingsTheme(content: @Composable () -> Unit) {
 }
 
 /**
- * 设置页用到的固定色 —— 全部转引 [EratwInk]（壳层唯一墨色源）。
- *
- * 这层名字留着是因为页面里几十处按语义取色（`UiColors.TextMuted` 这一类），
- * 而值只许有一处：将来调色只动 [EratwInk]，设置页与游戏外壳的弹窗不会因此分叉。
- */
-private object UiColors {
-    val Background: Color = EratwInk.background()
-    val Card: Color = EratwInk.panel()
-    val CardAlt: Color = EratwInk.panelAlt()
-    val Border: Color = EratwInk.border()
-    val Text: Color = EratwInk.text()
-    val TextDim: Color = EratwInk.textDim()
-    val TextMuted: Color = EratwInk.textMuted()
-    val Accent: Color = EratwInk.accent()
-    val Warn: Color = EratwInk.warn()
-    val PrimaryButton: Color = EratwInk.primaryButton()
-
-    // 四个分区各自一色：卡片左侧细条、卡片标题、分区带都用它，扫一眼就知道自己在哪一档。
-    // 移植版沿用原来的浅蓝（不动老玩家的既视感）；原版引擎取紫，和警告橙、按钮绿都不撞；
-    // Mod 取低饱和铜金（暖调、但比警告橙暗）；关于/反馈取主题主绿的亮档。
-    val ZonePort: Color = EratwInk.zonePort()
-    val ZoneEngine: Color = EratwInk.zoneEngine()
-    val ZoneMod: Color = EratwInk.zoneMod()
-    val ZoneAbout: Color = EratwInk.zoneAbout()
-}
-
-/**
  * 设置页的四个分区（顶栏下方的一排标签页）。
  *
  * 分档的依据是**写什么**，不是主题：[PORT] 与 [ABOUT] 里的东西随改随存、只落
@@ -1777,12 +1923,6 @@ private enum class SettingsZone(val accent: Color) {
         val DEFAULT: SettingsZone = PORT
     }
 }
-
-/**
- * 当前分区的主题色。卡片外观（左侧细条、标题色）由它推导，
- * 于是每张卡不必各自声明属于哪一档：分区切换时整档卡片一起换色。
- */
-private val LocalZoneAccent = compositionLocalOf { UiColors.ZonePort }
 
 private fun SettingsStrings.zoneTabLabel(zone: SettingsZone): String = when (zone) {
     SettingsZone.PORT -> zonePortTab
@@ -1833,6 +1973,8 @@ private fun SettingsScreen(
     onPickBgmFiles: () -> Unit,
     onPickBgmFolder: () -> Unit,
     onPickResourcePacks: () -> Unit,
+    onClearBackground: () -> Unit,
+    onClearBgm: () -> Unit,
     onRestartForResources: () -> Unit,
     exporting: Boolean,
     exportLines: List<ExportLine>,
@@ -1859,31 +2001,53 @@ private fun SettingsScreen(
     // 两项 app 侧偏好：随改随存（UiPrefs 直接写 SharedPreferences），不参与 emuera.config 的保存。
     var fontColumns by remember { mutableIntStateOf(UiPrefs.fontColumns(context)) }
     var screenFit by remember { mutableStateOf(UiPrefs.screenFit(context)) }
-    // 更精简的游戏选项：只显示屏上自带编号的常用指令（默认关）
-    var leanOptions by remember { mutableStateOf(UiPrefs.leanOptions(context)) }
     // 竖屏模式（默认关 = 锁横屏）：随改随存；重建 Activity 才换壳，返回游戏时由
     // MainActivity.onActivityResult 认这次改动并征求「现在重开」。
     var portraitMode by remember { mutableStateOf(UiPrefs.portraitMode(context)) }
+    // 竖屏字号档（竖屏设计稿 §5.2：50/62/75/90，缺省 62）：与横屏档互相独立、随改随存；
+    // 返回游戏时由 MainActivity.onActivityResult **按当前方向**取键判重开（竖屏比竖屏键）。
+    var portraitFontColumns by remember { mutableIntStateOf(UiPrefs.fontColumnsPortrait(context)) }
     // 窗口宽窄变化时重新排版（LIVE-REFLOW，默认关）：随改随存，下一次会话装配生效
     // （与字号/列数档同口径：改完要重开一局）。
     var liveReflow by remember { mutableStateOf(UiPrefs.liveReflow(context)) }
     // 键入回显复刻（ECHO-INPUT，默认关 = 点剧本后不再多出一行编号）：随改随存，
     // 下一次会话装配生效（与 LIVE-REFLOW 同口径，改完要重开一局）。
     var echoInput by remember { mutableStateOf(UiPrefs.echoInput(context)) }
+    // 长页忙碌提示（PRAY-BUSY，默认开）：随改随存，下一次会话装配生效（宿主构造期定死）。
+    var busyIndicator by remember { mutableStateOf(UiPrefs.busyIndicator(context)) }
+    // RT2 Mod 运行时总闸（默认关）：与会话构造期参数同口径，改完重开一局生效。
+    var modRuntime by remember { mutableStateOf(UiPrefs.modRuntime(context)) }
+    // RT2 玩家排序配置（逗号分隔 packageId 原始串）：随改随存，下一次会话装配生效。
+    // 读的是原始串（玩家输入原样回填输入框），归一化在 UiPrefs.preferredPackageIds 构造期做。
+    var modPackageOrder by remember { mutableStateOf(UiPrefs.preferredPackageIdsRaw(context)) }
     // 启动画面样式（玩家面加载页外观）：随改随存，下一次启动生效
     var loadingStyle by remember { mutableStateOf(UiPrefs.loadingStyle(context)) }
     // 底边抓手位置（输入栏手势条）
     var knobAt by remember { mutableFloatStateOf(UiPrefs.inputKnobFraction(context)) }
+    // 画面左右留白居中档位（圆屏适配）：会话构造期参数，随改随存、改完重开一局生效。
+    var contentMargin by remember { mutableFloatStateOf(UiPrefs.contentMarginFraction(context)) }
     // 右侧选项栏按钮大小档（随改随存；纯壳层几何，不必重开游戏）
     var railButtonSize by remember { mutableStateOf(UiPrefs.railButtonSize(context)) }
+    // 右栏布局模式 + 每行最多按钮数（随改随存；纯壳层摆法，不必重开游戏）
+    var railLayout by remember { mutableStateOf(UiPrefs.railLayout(context)) }
+    var railChipsPerRow by remember { mutableIntStateOf(UiPrefs.railChipsPerRow(context)) }
+    // 右栏过滤（规则开关 + 隐藏名单）与常用置顶（名单 + 历史候选）：随改随存
+    var railHideUnnumbered by remember { mutableStateOf(UiPrefs.railHideUnnumbered(context)) }
+    var railHiddenLabels by remember { mutableStateOf(UiPrefs.railHiddenLabels(context)) }
+    var railPinned by remember { mutableStateOf(UiPrefs.railPinned(context)) }
+    var railHistory by remember { mutableStateOf(UiPrefs.railHistory(context)) }
+    // 快捷宏（2026-11-11）：设置页里增删改，游戏壳常用区按它渲染。
+    var quickMacros by remember { mutableStateOf(UiPrefs.quickMacros(context)) }
     // 标题彩蛋屏蔽（引擎级 EngineFunctionPolicy 的宿主开关）
     var disableBadApple by remember { mutableStateOf(UiPrefs.disableBadApple(context)) }
     // 自动更新开关（国内镜像仓通道）：随改随存，下一次检查生效。
     var autoUpdate by remember { mutableStateOf(UiPrefs.autoUpdateEnabled(context)) }
     // 仅 Wi-Fi 下载（U5 P2-10）：默认关，随改随存，偏好键在 UiPrefs。
     var wifiOnly by remember { mutableStateOf(UiPrefs.wifiOnlyDownload(context)) }
-    // 匿名玩家数统计：默认开、可在设置里关；随改随存，冷启接线读的就是这个键。
+    // 匿名玩家数统计：默认开、可在关于档关；随改随存，冷启接线读的就是这个键。
     var playerStats by remember { mutableStateOf(UiPrefs.playerStatsEnabled(context)) }
+    // 教程重阅（关于档入口）：首启那次由 MainActivity 弹并落「已读」，这里只复用弹窗。
+    var tutorialVisible by remember { mutableStateOf(false) }
     // 正在编辑的配置条目（null = 没有对话框）；布尔项不弹框，直接走开关。
     var editing by remember { mutableStateOf<EditRequest?>(null) }
     // 「恢复默认设置」的二次确认（列表底部那张卡片点出来的）
@@ -1945,6 +2109,29 @@ private fun SettingsScreen(
                         }
                         when (zone) {
                             SettingsZone.PORT -> {
+                                // 存档导入/导出是玩家进设置页最常做的事（换机导档、备份），
+                                // 放在本档最前；两张卡不占满行，宽布局下并排，窄布局上下叠。
+                                item(key = "save-group-header", span = StaggeredGridItemSpan.FullLine) {
+                                    GroupHeader(title = text.saveGroupTitle, subtitle = text.saveGroupSubtitle)
+                                }
+                                item(key = "save-import") {
+                                    SaveImportCard(
+                                        text = text,
+                                        busy = importing || exporting,
+                                        importing = importing,
+                                        lines = importLines,
+                                        onPickSaveFiles = onPickSaveFiles,
+                                    )
+                                }
+                                item(key = "save-export") {
+                                    SaveExportCard(
+                                        text = text,
+                                        busy = importing || exporting,
+                                        exporting = exporting,
+                                        lines = exportLines,
+                                        onExport = onExport,
+                                    )
+                                }
                                 item(key = "ui-prefs-header", span = StaggeredGridItemSpan.FullLine) {
                                     GroupHeader(title = text.appPrefsTitle, subtitle = text.appPrefsSubtitle)
                                 }
@@ -1974,6 +2161,18 @@ private fun SettingsScreen(
                                         },
                                     )
                                 }
+                                // 竖屏字号（竖屏三区壳 §5.2 四档）：独立卡片，复用既有共用件，
+                                // 不改 ControlCard / FontCard 的形参表（两张都已进 detekt baseline）。
+                                item(key = "ui-portrait-font") {
+                                    PortraitFontCard(
+                                        text = text,
+                                        columns = portraitFontColumns,
+                                        onColumns = { columns ->
+                                            portraitFontColumns = columns
+                                            UiPrefs.setFontColumnsPortrait(context, columns)
+                                        },
+                                    )
+                                }
                                 item(key = "ui-control") {
                                     ControlCard(
                                         text = text,
@@ -1982,15 +2181,20 @@ private fun SettingsScreen(
                                             railButtonSize = size
                                             UiPrefs.setRailButtonSize(context, size)
                                         },
+                                        railLayout = railLayout,
+                                        onRailLayout = { mode ->
+                                            railLayout = mode
+                                            UiPrefs.setRailLayout(context, mode)
+                                        },
+                                        railChipsPerRow = railChipsPerRow,
+                                        onRailChipsPerRow = { count ->
+                                            railChipsPerRow = count
+                                            UiPrefs.setRailChipsPerRow(context, count)
+                                        },
                                         screenFit = screenFit,
                                         onScreenFit = { enabled ->
                                             screenFit = enabled
                                             UiPrefs.setScreenFit(context, enabled)
-                                        },
-                                        leanOptions = leanOptions,
-                                        onLeanOptions = { enabled ->
-                                            leanOptions = enabled
-                                            UiPrefs.setLeanOptions(context, enabled)
                                         },
                                         portraitMode = portraitMode,
                                         onPortraitMode = { enabled ->
@@ -2007,10 +2211,110 @@ private fun SettingsScreen(
                                             echoInput = enabled
                                             UiPrefs.setEchoInput(context, enabled)
                                         },
+                                        busyIndicator = busyIndicator,
+                                        onBusyIndicator = { enabled ->
+                                            busyIndicator = enabled
+                                            UiPrefs.setBusyIndicator(context, enabled)
+                                        },
+                                        modRuntime = modRuntime,
+                                        onModRuntime = { enabled ->
+                                            modRuntime = enabled
+                                            UiPrefs.setModRuntime(context, enabled)
+                                        },
                                         knobAt = knobAt,
                                         onKnobAt = { f ->
                                             knobAt = f
                                             UiPrefs.setInputKnobFraction(context, f)
+                                        },
+                                    )
+                                }
+                                // 画面左右留白居中（圆屏适配）：独立卡片，复用既有共用件，不改 ControlCard 形参。
+                                item(key = "ui-content-margin") {
+                                    ContentMarginCard(
+                                        text = text,
+                                        contentMargin = contentMargin,
+                                        onContentMargin = { fraction ->
+                                            contentMargin = fraction
+                                            UiPrefs.setContentMarginFraction(context, fraction)
+                                        },
+                                    )
+                                }
+                                // RT2 玩家排序配置（L2）：独立卡片，复用既有共用件，不改 ControlCard 形参。
+                                item(key = "ui-mod-package-order") {
+                                    ModPackageOrderCard(
+                                        text = text,
+                                        value = modPackageOrder,
+                                        onValueChange = { raw ->
+                                            modPackageOrder = raw
+                                            UiPrefs.setPreferredPackageIds(context, raw)
+                                        },
+                                    )
+                                }
+                                item(key = "ui-rail-filter") {
+                                    RailFilterCard(
+                                        text = text,
+                                        hideUnnumbered = railHideUnnumbered,
+                                        actions = RailFilterActions(
+                                            onHideUnnumbered = { enabled ->
+                                                railHideUnnumbered = enabled
+                                                UiPrefs.setRailHideUnnumbered(context, enabled)
+                                            },
+                                            onRestore = { label ->
+                                                UiPrefs.removeRailHiddenLabel(context, label)
+                                                railHiddenLabels = UiPrefs.railHiddenLabels(context)
+                                            },
+                                            onClearHidden = {
+                                                UiPrefs.clearRailHiddenLabels(context)
+                                                railHiddenLabels = UiPrefs.railHiddenLabels(context)
+                                            },
+                                        ),
+                                        hiddenLabels = railHiddenLabels,
+                                    )
+                                }
+                                item(key = "ui-rail-pinned") {
+                                    RailPinnedCard(
+                                        text = text,
+                                        pinned = railPinned,
+                                        history = railHistory,
+                                        pinnedCap = UiPrefs.RAIL_PINNED_CAP,
+                                        actions = RailPinnedActions(
+                                            onUnpin = { value ->
+                                                UiPrefs.unpinRailOption(context, value)
+                                                railPinned = UiPrefs.railPinned(context)
+                                            },
+                                            onPin = { value ->
+                                                UiPrefs.pinRailOption(context, value)
+                                                railPinned = UiPrefs.railPinned(context)
+                                            },
+                                            onClearPinned = {
+                                                UiPrefs.clearRailPinned(context)
+                                                railPinned = UiPrefs.railPinned(context)
+                                            },
+                                        ),
+                                    )
+                                }
+                                item(key = "ui-quick-macro") {
+                                    RailQuickMacroCard(
+                                        text = text,
+                                        macros = quickMacros,
+                                        // 步骤候选 = 最近见过的带编号指令（与「常用置顶」共用同一份历史）。
+                                        recent = railHistory,
+                                        onAdd = { macro ->
+                                            val ok = UiPrefs.addQuickMacro(context, macro)
+                                            quickMacros = UiPrefs.quickMacros(context)
+                                            ok
+                                        },
+                                        onUpdate = { index, macro ->
+                                            UiPrefs.updateQuickMacro(context, index, macro)
+                                            quickMacros = UiPrefs.quickMacros(context)
+                                        },
+                                        onDelete = { index ->
+                                            UiPrefs.removeQuickMacro(context, index)
+                                            quickMacros = UiPrefs.quickMacros(context)
+                                        },
+                                        onClear = {
+                                            UiPrefs.clearQuickMacros(context)
+                                            quickMacros = UiPrefs.quickMacros(context)
                                         },
                                     )
                                 }
@@ -2037,11 +2341,6 @@ private fun SettingsScreen(
                                             wifiOnly = enabled
                                             UiPrefs.setWifiOnlyDownload(context, enabled)
                                         },
-                                        playerStats = playerStats,
-                                        onPlayerStats = { enabled ->
-                                            playerStats = enabled
-                                            UiPrefs.setPlayerStatsEnabled(context, enabled)
-                                        },
                                         onCheckUpdate = onCheckUpdate,
                                         updateChecking = updateChecking,
                                         updateReadout = updateReadout,
@@ -2052,6 +2351,21 @@ private fun SettingsScreen(
                                         onCancelDownload = onCancelDownload,
                                         skippedUpdateVersion = skippedUpdateVersion,
                                         onRestoreUpdateReminder = onRestoreUpdateReminder,
+                                        stagedApkPath = updateReadout.stagedApkPath,
+                                        onInstallStagedApk = {
+                                            val apk = UpdateManager.handedOffApk(context)
+                                            if (apk != null) {
+                                                val problem = UpdateManager.launchInstaller(context, apk)
+                                                // 29+ 会话提交返回 SESSION_SUBMITTED_SIGNAL（不是 problem，
+                                                // 回执在会话侧：成功多半收不到，取消/失败各自有通知+Toast）；
+                                                // 只有真 problem（最常见「安装未知应用」未放行）才上屏。
+                                                val isRealProblem =
+                                                    problem != null && problem != UpdateManager.SESSION_SUBMITTED_SIGNAL
+                                                if (isRealProblem) {
+                                                    Toast.makeText(context, problem, Toast.LENGTH_LONG).show()
+                                                }
+                                            }
+                                        },
                                     )
                                 }
                                 item(key = "ui-advanced") {
@@ -2068,27 +2382,6 @@ private fun SettingsScreen(
                                         lines = diagLines,
                                         onShare = onShareDiagnostics,
                                         onCopy = onCopyDiagnostics,
-                                    )
-                                }
-                                item(key = "save-group-header", span = StaggeredGridItemSpan.FullLine) {
-                                    GroupHeader(title = text.saveGroupTitle, subtitle = text.saveGroupSubtitle)
-                                }
-                                item(key = "save-export", span = StaggeredGridItemSpan.FullLine) {
-                                    SaveExportCard(
-                                        text = text,
-                                        busy = importing || exporting,
-                                        exporting = exporting,
-                                        lines = exportLines,
-                                        onExport = onExport,
-                                    )
-                                }
-                                item(key = "save-import", span = StaggeredGridItemSpan.FullLine) {
-                                    SaveImportCard(
-                                        text = text,
-                                        busy = importing || exporting,
-                                        importing = importing,
-                                        lines = importLines,
-                                        onPickSaveFiles = onPickSaveFiles,
                                     )
                                 }
                             }
@@ -2137,9 +2430,11 @@ private fun SettingsScreen(
                                 item(key = "mod-header", span = StaggeredGridItemSpan.FullLine) {
                                     GroupHeader(title = text.modGroupTitle, subtitle = text.modGroupSubtitle)
                                 }
-                                val materialBusy = backgroundPackState is ResourcePackUiState.Importing ||
-                                    bgmPackState is ResourcePackUiState.Importing ||
-                                    archivePackState is ResourcePackUiState.Importing
+                                // 导入与清理都要禁掉同一批按钮：单飞闸在 resourcePackBusy，
+                                // 这里只管视觉（多选一批素材时不许同时点清理）。
+                                val materialBusy = backgroundPackState.isPackBusy ||
+                                    bgmPackState.isPackBusy ||
+                                    archivePackState.isPackBusy
                                 item(key = "resource-pack-background", span = StaggeredGridItemSpan.FullLine) {
                                     ResourcePackBackgroundCard(
                                         state = backgroundPackState,
@@ -2148,6 +2443,7 @@ private fun SettingsScreen(
                                         copy = resourcePackCopy,
                                         onPickFiles = onPickBackgroundFiles,
                                         onPickFolder = onPickBackgroundFolder,
+                                        onClear = onClearBackground,
                                         onRestart = onRestartForResources,
                                     )
                                 }
@@ -2161,6 +2457,7 @@ private fun SettingsScreen(
                                         copy = resourcePackCopy,
                                         onPickFiles = onPickBgmFiles,
                                         onPickFolder = onPickBgmFolder,
+                                        onClear = onClearBgm,
                                         onRestart = onRestartForResources,
                                     )
                                 }
@@ -2182,6 +2479,9 @@ private fun SettingsScreen(
                                         copy = modImportCopy,
                                     )
                                 }
+                                item(key = "plugin-policy", span = StaggeredGridItemSpan.FullLine) {
+                                    PluginPolicyCard(text = text)
+                                }
                             }
 
                             SettingsZone.ABOUT -> {
@@ -2190,6 +2490,24 @@ private fun SettingsScreen(
                                 }
                                 item(key = "about", span = StaggeredGridItemSpan.FullLine) {
                                     AboutCard(text = text)
+                                }
+                                // 匿名统计开关从启动卡迁到关于档（2026-11-09）：它是「这个应用
+                                // 拿我的数据做什么」的知情同意项，和版本/署名/反馈同档才好找。
+                                item(key = "player-stats", span = StaggeredGridItemSpan.FullLine) {
+                                    PlayerStatsCard(
+                                        text = text,
+                                        checked = playerStats,
+                                        onCheckedChange = { enabled ->
+                                            playerStats = enabled
+                                            UiPrefs.setPlayerStatsEnabled(context, enabled)
+                                        },
+                                    )
+                                }
+                                item(key = "tutorial-revisit", span = StaggeredGridItemSpan.FullLine) {
+                                    TutorialRevisitCard(
+                                        language = language,
+                                        onOpen = { tutorialVisible = true },
+                                    )
                                 }
                                 item(key = "credits", span = StaggeredGridItemSpan.FullLine) {
                                     CreditsCard(text = text)
@@ -2295,6 +2613,16 @@ private fun SettingsScreen(
         )
     }
 
+    // 教程重阅：与首启那次同一只像素指南弹窗；这里不落「已读」（首启时早已落过）。
+    // immersive=false：设置页系统栏可见（这是页面语义的一部分），弹窗窗口只做
+    // edge-to-edge 几何装配（挖孔延伸 + MATCH_PARENT，防「右侧截断」），不藏栏。
+    if (tutorialVisible) {
+        TutorialDialog(
+            copy = TutorialCopy.of(language),
+            onDismiss = { tutorialVisible = false },
+            immersive = false,
+        )
+    }
 }
 
 /**
@@ -2408,14 +2736,25 @@ private fun ZoneTabs(zone: SettingsZone, onZone: (SettingsZone) -> Unit, text: S
         ) {
             SettingsZone.entries.forEach { option ->
                 val selected = option == zone
+                // 换档时字色与底色渐变过渡，不做硬切（200ms，跟手但不闪）。
+                val tabColor by animateColorAsState(
+                    targetValue = if (selected) option.accent else UiColors.TextDim,
+                    animationSpec = tween(200),
+                    label = "zone-tab-color",
+                )
+                val tabBg by animateColorAsState(
+                    targetValue = if (selected) option.accent.copy(alpha = 0.16f) else Color.Transparent,
+                    animationSpec = tween(200),
+                    label = "zone-tab-bg",
+                )
                 Text(
                     text = text.zoneTabLabel(option),
-                    color = if (selected) option.accent else UiColors.TextDim,
+                    color = tabColor,
                     fontSize = 13.sp,
                     maxLines = 1,
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
-                        .background(if (selected) option.accent.copy(alpha = 0.16f) else Color.Transparent)
+                        .background(tabBg)
                         .selectable(selected = selected, role = Role.Tab, onClick = { onZone(option) })
                         .padding(horizontal = 12.dp, vertical = 7.dp),
                 )
@@ -2486,8 +2825,8 @@ private fun SaveExportCard(
         Button(
             onClick = onExport,
             enabled = !busy,
-            modifier = Modifier.height(40.dp),
-            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth().height(42.dp),
+            shape = RoundedCornerShape(10.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = UiColors.PrimaryButton,
                 contentColor = UiColors.Text,
@@ -2577,6 +2916,7 @@ private fun ResourcePackBackgroundCard(
     copy: ResourcePackCopy,
     onPickFiles: () -> Unit,
     onPickFolder: () -> Unit,
+    onClear: () -> Unit,
     onRestart: () -> Unit,
 ) {
     MaterialImportCard(
@@ -2611,6 +2951,11 @@ private fun ResourcePackBackgroundCard(
             onPickFiles = onPickFiles,
             onPickFolder = onPickFolder,
         )
+        MaterialClearButton(
+            text = if (state is ResourcePackUiState.Clearing) copy.clearRunningText else copy.clearBackgroundButton,
+            enabled = !busy,
+            onClick = onClear,
+        )
         ResourcePackOutcome(state, copy, listOf(copy.backgroundEnabledHint), onRestart)
     }
 }
@@ -2626,6 +2971,7 @@ private fun ResourcePackBgmCard(
     copy: ResourcePackCopy,
     onPickFiles: () -> Unit,
     onPickFolder: () -> Unit,
+    onClear: () -> Unit,
     onRestart: () -> Unit,
 ) {
     MaterialImportCard(
@@ -2675,6 +3021,11 @@ private fun ResourcePackBgmCard(
             onPickFiles = onPickFiles,
             onPickFolder = onPickFolder,
         )
+        MaterialClearButton(
+            text = if (state is ResourcePackUiState.Clearing) copy.clearRunningText else copy.clearBgmButton,
+            enabled = !busy,
+            onClick = onClear,
+        )
         ResourcePackOutcome(state, copy, listOf(copy.bgmEnabledHint), onRestart)
     }
 }
@@ -2714,6 +3065,15 @@ private fun archiveEnableHints(status: ResourcePackStatus?, copy: ResourcePackCo
         if (status == null || status.bgmReady) add(copy.bgmEnabledHint)
     }
 
+/**
+ * 素材卡忙碌判据：导入与清理都要禁掉同一批按钮。
+ *
+ * 单飞闸本身在 Activity 的 resourcePackBusy（导入与清理共用同一个），这里只决定按钮的可用性；
+ * 少算清理态会让玩家在删除进行中再点一次导入，两批文件系统写入互相踩。
+ */
+private val ResourcePackUiState.isPackBusy: Boolean
+    get() = this is ResourcePackUiState.Importing || this is ResourcePackUiState.Clearing
+
 /** 结果区已经顶出启用步骤时，卡上方的常驻提示不再重复同一句。 */
 private val ResourcePackUiState.showsEnableStepsInOutcome: Boolean
     get() = when (this) {
@@ -2734,6 +3094,28 @@ private fun MaterialImportCard(
         Text(text = intro, color = UiColors.TextMuted, fontSize = 11.sp)
         Spacer(Modifier.height(6.dp))
         content()
+    }
+}
+
+/**
+ * 素材卡底部的「清除已导入 …」按钮：描边 + 警示色，与上面「导入」的主按钮分开。
+ *
+ * 只置确认目标（真正的删除在确认框之后），所以这里不管单飞闸；禁不禁用由 busy 决定，
+ * 清理进行中把标签换成 [ResourcePackCopy.clearRunningText]，玩家能看出这一格正在动。
+ */
+@Composable
+private fun MaterialClearButton(
+    text: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth().height(40.dp).padding(top = 6.dp),
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        Text(text = text, color = UiColors.Warn, fontSize = 13.sp, maxLines = 1)
     }
 }
 
@@ -2821,6 +3203,15 @@ private fun ResourcePackOutcome(
             }
         }
 
+        is ResourcePackUiState.Clearing -> Text(
+            text = copy.clearRunningText,
+            color = UiColors.TextDim,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 2.dp),
+        )
+
+        is ResourcePackUiState.Cleared -> ResourcePackCleanupArea(state.summary, copy, onRestart)
+
         is ResourcePackUiState.Importing, is ResourcePackUiState.Idle -> Unit
     }
 }
@@ -2883,6 +3274,46 @@ private fun ResourcePackResultArea(
 }
 
 /**
+ * 清理结果区：汇总句 + 还原/失败取证行 + 「重启才生效」提示与重启按钮。
+ *
+ * 与 [ResourcePackResultArea] 分开摆位：清理**不产生**启用步骤（刚把素材撤了，没有要开的开关），
+ * 所以只在真动了盘（删了文件或被覆盖的随包文件被还原）时才顶出重启按钮与那句提示 ——
+ * 「没找到需要清理的东西」不该顺手让人重开一局。
+ */
+@Composable
+private fun ResourcePackCleanupArea(
+    summary: ResourcePackCleanupSummary,
+    copy: ResourcePackCopy,
+    onRestart: () -> Unit,
+) {
+    Text(
+        text = summary.message,
+        color = if (summary.failedDeletions > 0) UiColors.Warn else UiColors.TextDim,
+        fontSize = 12.sp,
+        modifier = Modifier.padding(top = 2.dp),
+    )
+    summary.warningLines.forEach { line ->
+        Text(text = line, color = UiColors.Warn, fontSize = 11.sp)
+    }
+    if (summary.deletedFiles > 0 || summary.restoredBaseFiles > 0) {
+        Spacer(Modifier.height(6.dp))
+        Text(text = copy.clearRestartHint, color = UiColors.TextMuted, fontSize = 11.sp)
+        Spacer(Modifier.height(6.dp))
+        Button(
+            onClick = onRestart,
+            modifier = Modifier.height(40.dp),
+            shape = RoundedCornerShape(8.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = UiColors.PrimaryButton,
+                contentColor = UiColors.Text,
+            ),
+        ) {
+            Text(text = copy.restartButton, fontSize = 14.sp)
+        }
+    }
+}
+
+/**
  * 导入已有存档卡片：一个按钮 + 刚才到底发生了什么，一行一条。
  *
  * 这里刻意不写「该怎么准备文件」那类话：玩家选中之后要什么，[SaveImport] 当场判，
@@ -2899,11 +3330,12 @@ private fun SaveImportCard(
 ) {
     SettingsCard {
         SectionTitle(text.importTitle)
+        Spacer(Modifier.height(2.dp))
         Button(
             onClick = onPickSaveFiles,
             enabled = !busy,
-            modifier = Modifier.height(40.dp),
-            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth().height(42.dp),
+            shape = RoundedCornerShape(10.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = UiColors.PrimaryButton,
                 contentColor = UiColors.Text,
@@ -2915,6 +3347,34 @@ private fun SaveImportCard(
             Text(
                 text = line.text,
                 color = if (line.ok) UiColors.TextDim else UiColors.Warn,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 补丁兼容性卡（PLUGIN-POLICY，2026-11-07；第二轮改为整体禁载）：目录内被禁补丁的只读列出。
+ *
+ * 无开关——「启用」只会把官方缺插件报错请回来（装载期英文警告 + 执行期 CodeEE），对玩家
+ * 没有价值；权威面是引擎侧 `com.eratw.port.core.policy.DisabledErbPatchCatalog`，
+ * [PluginPolicyCatalog] 只是 app 的只读视图，erbcc 编译期按同一张表把这些 `.ERB` 脚本
+ * 整体排除（不是只停用某条 CALLSHARP）。要支持某补丁的正确路径是实现本机方法并重新出包，
+ * 而不是放出开关。文案走域表 [PluginPolicyCopy]（[SettingsStrings] 构造器已顶到 JVM 参数
+ * 上限，本卡不往大表加键），补丁名按 id 映射，漏档 [PluginPolicyCatalog.displayName] 直接炸。
+ */
+@Composable
+private fun PluginPolicyCard(text: SettingsStrings) {
+    val copy = PluginPolicyCopy.of(text.lang)
+    SettingsCard {
+        SectionTitle(copy.title)
+        Text(text = copy.intro, color = UiColors.TextMuted, fontSize = 11.sp)
+        Spacer(Modifier.height(6.dp))
+        PluginPolicyCatalog.all.forEach { plugin ->
+            Text(
+                text = "${PluginPolicyCatalog.displayName(plugin.id, copy)} —— ${copy.disabled}",
+                color = UiColors.TextDim,
                 fontSize = 12.sp,
                 modifier = Modifier.padding(top = 2.dp),
             )
@@ -3076,6 +3536,84 @@ private fun AboutContactRow(
             ) {
                 Text(button, fontSize = 12.sp, maxLines = 1)
             }
+        }
+    }
+}
+
+/**
+ * 匿名统计卡（关于档，2026-11-09 从启动卡迁来）：开关 + 正式说明四段。
+ *
+ * 这是知情同意项而非普通偏好：标题行整行可点（不必戳小开关），下面把「为什么收、
+ * 收什么、怎么关」逐段说清。措辞全在 [PlayerStatsCopy] 三语小表里
+ * （[SettingsStrings] 已贴着 JVM 255 参数槽上限，见其类头），这里一个字不写死。
+ */
+@Composable
+private fun PlayerStatsCard(
+    text: SettingsStrings,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    val copy = PlayerStatsCopy.of(text.lang)
+    SettingsCard {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(6.dp))
+                .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
+                .padding(horizontal = 2.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                Text(copy.title, color = LocalZoneAccent.current, fontSize = 15.sp)
+                Text(
+                    text = copy.hint,
+                    color = UiColors.TextMuted,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            Switch(checked = checked, onCheckedChange = null)
+        }
+        HorizontalDivider(color = UiColors.Border, modifier = Modifier.padding(vertical = 8.dp))
+        Text(
+            text = copy.detailTitle,
+            color = LocalZoneAccent.current,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
+        listOf(copy.purposeBody, copy.privacyBody, copy.controlBody).forEach { body ->
+            Text(
+                text = body,
+                color = UiColors.TextDim,
+                fontSize = 12.sp,
+                lineHeight = 18.sp,
+                modifier = Modifier.padding(bottom = 6.dp),
+            )
+        }
+    }
+}
+
+/** 教程重阅入口（关于档）：首启像素指南的常驻回头路，文案走 [TutorialCopy]。 */
+@Composable
+private fun TutorialRevisitCard(language: SettingsLanguage, onOpen: () -> Unit) {
+    val copy = TutorialCopy.of(language)
+    SettingsCard {
+        SectionTitle(copy.revisitTitle)
+        Text(
+            text = copy.revisitHint,
+            color = UiColors.TextMuted,
+            fontSize = 11.sp,
+            lineHeight = 16.sp,
+        )
+        Spacer(Modifier.height(6.dp))
+        OutlinedButton(
+            onClick = onOpen,
+            modifier = Modifier.height(40.dp),
+            shape = RoundedCornerShape(8.dp),
+            border = BorderStroke(1.dp, UiColors.Border),
+        ) {
+            Text(copy.revisitButton, color = UiColors.Accent, fontSize = 14.sp)
         }
     }
 }
@@ -3254,22 +3792,97 @@ private fun FontCard(
     }
 }
 
-/** 操作与显示：选项按钮大小、底边抓手、适应屏幕、精简选项。 */
+/**
+ * 「竖屏字号」档位卡（竖屏三区壳设计稿 §5.2：50/62/75/90，缺省 62）。
+ *
+ * 档位表与读写层同源（[UiPrefs.FONT_COLUMN_OPTIONS_PORTRAIT] /
+ * [UiPrefs.setFontColumnsPortrait]），四档一行分段滑选，当前档回显；文案一律取
+ * [SettingsStrings] 三语表（不内联玩家可见字面量）。
+ *
+ * 独立成卡而不塞进 [ControlCard] 或 [FontCard]：那两张卡的形参表已进 detekt baseline
+ * （`LongMethod` 的 ID 含完整签名文本），本卡三形参最稳（契约 §1.5）。
+ *
+ * 生效口径：竖屏档是装配期参数（`CanvasConsoleView.minColumnsOverride` / `fontScale`
+ * 按方向二选一），只在**竖屏模式**下生效；改完返回游戏由 `MainActivity` 按当前方向判重开。
+ * 横屏实例里改它不影响当前会话，也就不会误弹「重开」确认。
+ */
+@Composable
+private fun PortraitFontCard(
+    text: SettingsStrings,
+    columns: Int,
+    onColumns: (Int) -> Unit,
+) {
+    SettingsCard {
+        SectionTitle(text.portraitFontTitle)
+        PrefCaption(text.portraitFontHint)
+        SegmentedSwitcher(
+            // 选项值直接取自档位表（与 UiPrefs 的校验、装配同源）；档名在三语表里。
+            options = UiPrefs.FONT_COLUMN_OPTIONS_PORTRAIT.map { it.columns },
+            selected = columns,
+            labelOf = text::portraitFontColumnLabel,
+            onSelected = onColumns,
+        )
+    }
+}
+
+/**
+ * 「画面左右留白居中」档位卡（圆屏适配，PORT 分区）：四档分段滑选，随改随存写 [UiPrefs]。
+ *
+ * 文案一律取 [SettingsStrings] 三语表（不内联玩家可见字面量）；复用 `SettingsCard` /
+ * `SectionTitle` / `PrefCaption` / `SegmentedSwitcher` 既有共用件，不新建第二套卡片。
+ * 独立成卡而不塞进 [ControlCard] 的理由与 ModPackageOrderCard 相同：ControlCard 形参表
+ * 已进 detekt baseline（LongMethod），不再添形参。
+ * 生效口径与字号档相同：会话构造期参数（`CanvasConsoleView.contentMarginFraction`，
+ * 解算收口在 `ScreenLayout.resolve` 的 `contentMarginPx`），改完要重开一局。
+ */
+@Composable
+private fun ContentMarginCard(
+    text: SettingsStrings,
+    contentMargin: Float,
+    onContentMargin: (Float) -> Unit,
+) {
+    SettingsCard {
+        SectionTitle(text.contentMarginLabel)
+        PrefCaption(text.contentMarginHint)
+        SegmentedSwitcher(
+            options = UiPrefs.CONTENT_MARGIN_OPTIONS,
+            selected = contentMargin,
+            // 档位值是 UiPrefs 白名单常量，按常量配对即按档配对。
+            labelOf = { fraction ->
+                when (fraction) {
+                    UiPrefs.CONTENT_MARGIN_SMALL -> text.contentMarginSmall
+                    UiPrefs.CONTENT_MARGIN_MEDIUM -> text.contentMarginMedium
+                    UiPrefs.CONTENT_MARGIN_LARGE -> text.contentMarginLarge
+                    else -> text.contentMarginOff
+                }
+            },
+            onSelected = onContentMargin,
+        )
+    }
+}
+
+/** 操作与显示：选项按钮大小与右栏布局、底边抓手、适应屏幕。 */
 @Composable
 private fun ControlCard(
     text: SettingsStrings,
     railButtonSize: UiPrefs.RailButtonSize,
     onRailButtonSize: (UiPrefs.RailButtonSize) -> Unit,
+    railLayout: UiPrefs.RailLayoutMode,
+    onRailLayout: (UiPrefs.RailLayoutMode) -> Unit,
+    railChipsPerRow: Int,
+    onRailChipsPerRow: (Int) -> Unit,
     screenFit: Boolean,
     onScreenFit: (Boolean) -> Unit,
-    leanOptions: Boolean,
-    onLeanOptions: (Boolean) -> Unit,
     portraitMode: Boolean,
     onPortraitMode: (Boolean) -> Unit,
     liveReflow: Boolean,
     onLiveReflow: (Boolean) -> Unit,
     echoInput: Boolean,
     onEchoInput: (Boolean) -> Unit,
+    busyIndicator: Boolean,
+    onBusyIndicator: (Boolean) -> Unit,
+    modRuntime: Boolean,
+    onModRuntime: (Boolean) -> Unit,
     knobAt: Float,
     onKnobAt: (Float) -> Unit,
 ) {
@@ -3305,6 +3918,48 @@ private fun ControlCard(
             modifier = Modifier.padding(top = 6.dp),
         )
         HorizontalDivider(color = UiColors.Border, modifier = Modifier.padding(vertical = 8.dp))
+        // 右栏布局（2026-11-11 三档：行内横滑/竖列/完全展开）+ 每行最多按钮数（1..6，三档通用）。
+        // 都是纯壳层摆法，随改随存不必重开游戏；摆法纯函数在 ShellUi.railLayoutOf。
+        PrefCaption(text.railLayoutLabel)
+        SegmentedSwitcher(
+            options = UiPrefs.RailLayoutMode.entries.toList(),
+            selected = railLayout,
+            labelOf = text::railModeLabel,
+            onSelected = onRailLayout,
+        )
+        // 说明只留选中档那一句：三条并成一条控件之后，「读三段话才知道自己在哪档」的问题
+        // 本身就没了。
+        Text(
+            text = text.railModeHint(railLayout),
+            color = UiColors.TextMuted,
+            fontSize = 11.sp,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+        RailLayoutPreview(
+            // 与右栏同一条绘制通路（railLayoutOf + OptionRailRow）：滑到哪档就看见哪档的真摆法。
+            metrics = railMetricsForFontScale(railMetricsOf(railButtonSize), LocalDensity.current.fontScale),
+            mode = railLayout,
+            perRow = railChipsPerRow,
+            labels = listOf(
+                text.railSampleTalk to 31,
+                text.railSampleMove to 400,
+                text.railSampleBuy to 10000,
+                text.railSampleAttack to 7,
+                // 后两枚是屏上不印名字、只印编号的裸数字按钮（自动按钮那一形）：
+                // 它们排在第二条显示行上，让预览同时演示「按游戏行分组」这件事。
+                "" to 208,
+                "" to 310,
+            ),
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        PrefCaption(text.railPerRowLabel)
+        SegmentedSwitcher(
+            options = (UiPrefs.RAIL_CHIPS_PER_ROW_MIN..UiPrefs.RAIL_CHIPS_PER_ROW_MAX).toList(),
+            selected = railChipsPerRow,
+            labelOf = Int::toString,
+            onSelected = onRailChipsPerRow,
+        )
+        HorizontalDivider(color = UiColors.Border, modifier = Modifier.padding(vertical = 8.dp))
         // 底边抓手位置（输入栏的手势条）：三档，避免必须靠拖动来调位置
         PrefCaption(text.knobLabel)
         listOf(
@@ -3324,12 +3979,6 @@ private fun ControlCard(
             hint = text.screenFitHint,
             checked = screenFit,
             onCheckedChange = onScreenFit,
-        )
-        SwitchRow(
-            title = text.leanTitle,
-            hint = text.leanHint,
-            checked = leanOptions,
-            onCheckedChange = onLeanOptions,
         )
         HorizontalDivider(color = UiColors.Border, modifier = Modifier.padding(vertical = 8.dp))
         // 竖屏是**显式开关**（默认关）：关 = 锁横屏，与原版版面一致；开 = 锁竖屏三区壳。
@@ -3357,8 +4006,58 @@ private fun ControlCard(
             checked = echoInput,
             onCheckedChange = onEchoInput,
         )
+        // 长页忙碌提示（PRAY-BUSY，默认开）：一页算满 1 秒后在最下面一行画「少女祈祷中…」；
+        // 纯显示态、不打印行，关掉不影响任何脚本语义。
+        SwitchRow(
+            title = text.busyIndicatorTitle,
+            hint = text.busyIndicatorHint,
+            checked = busyIndicator,
+            onCheckedChange = onBusyIndicator,
+        )
+        // RT2 Mod 运行时（实验，默认关）：会话构造期参数，关态装配链一次都不进、磁盘都不碰；
+        // 开 = 随包内置 Mod 才装载、活动 Mod 数据随存档写 `.rt2` 侧车。改完要重开一局。
+        SwitchRow(
+            title = text.modRuntimeTitle,
+            hint = text.modRuntimeHint,
+            checked = modRuntime,
+            onCheckedChange = onModRuntime,
+        )
     }
 }
+
+/**
+ * 「Mod 装载优先级」输入卡（RT2 L2）：逗号分隔的 packageId 列表，随改随存写 `UiPrefs`。
+ *
+ * 文案一律取 `SettingsStrings` 三语表（不内联玩家可见字面量）；复用 `SettingsCard` /
+ * `SectionTitle` / `OutlinedTextField` / `Text` 等既有共用件，不新建第二套卡片。
+ * 这是「优先级」而非完整顺序：说明句点明依赖关系会改变实际装载序（契约 §1.2）。
+ * 独立成卡（不塞进 `ControlCard`）是为了不给那个已进 detekt baseline 的长参数表再添形参。
+ */
+@Composable
+private fun ModPackageOrderCard(
+    text: SettingsStrings,
+    value: String,
+    onValueChange: (String) -> Unit,
+) {
+    SettingsCard {
+        SectionTitle(text.modPackageOrderTitle)
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            singleLine = true,
+            label = { Text(text.modPackageOrderEmpty, fontSize = 12.sp) },
+            modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+        )
+        Text(
+            text = text.modPackageOrderHint,
+            color = UiColors.TextMuted,
+            fontSize = 11.sp,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+    }
+}
+
 
 /**
  * 启动相关：加载页外观、标题彩蛋与这条更新通道的现状。
@@ -3381,8 +4080,6 @@ private fun LaunchCard(
     onAutoUpdate: (Boolean) -> Unit,
     wifiOnly: Boolean,
     onWifiOnly: (Boolean) -> Unit,
-    playerStats: Boolean,
-    onPlayerStats: (Boolean) -> Unit,
     onCheckUpdate: () -> Unit,
     updateChecking: Boolean,
     updateReadout: UpdateChannelReadout.Readout,
@@ -3393,6 +4090,8 @@ private fun LaunchCard(
     onCancelDownload: () -> Unit,
     skippedUpdateVersion: Long,
     onRestoreUpdateReminder: () -> Unit,
+    stagedApkPath: String,
+    onInstallStagedApk: () -> Unit,
 ) {
     SettingsCard {
         SectionTitle(text.launchTitle)
@@ -3429,16 +4128,6 @@ private fun LaunchCard(
             checked = wifiOnly,
             onCheckedChange = onWifiOnly,
         )
-        // 匿名玩家数：只发一枚本地随机编号，服务端只回聚合总数；关掉即零出网。
-        // 文案走独立三语小表（SettingsStrings 已贴着 JVM 255 参数槽上限，见 PlayerStatsCopy 类头），
-        // 语言与 text.lang 同源，不在这里另写一套只有中文的话。
-        val statsCopy = PlayerStatsCopy.of(text.lang)
-        SwitchRow(
-            title = statsCopy.title,
-            hint = statsCopy.hint,
-            checked = playerStats,
-            onCheckedChange = onPlayerStats,
-        )
         HorizontalDivider(color = UiColors.Border, modifier = Modifier.padding(vertical = 8.dp))
         // 进行中态（EP4 U2-②）：只有真的拿到单飞闸才禁用，结果回来随改随消。话术用按钮自己的词条加省略号，
         // 不在这里新增一套只有中文的文案（三语表键位归 U3）。
@@ -3468,6 +4157,20 @@ private fun LaunchCard(
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
             ) {
                 Text(updateCopy.cancelNotifyAction, color = UiColors.Accent, fontSize = 13.sp)
+            }
+        }
+        // 「安装已下载的更新」（下载完成拍登记的已核对整包）：完成通知是会丢的（权限被拒/
+        // 渠道被关/被划掉/被 ROM 折叠），这颗按钮是通知之外唯一持久的安装入口 —— 玩家从
+        // 系统设置授权回来，回到设置页总有路可走，不再依赖「回头再点一次下载」的快路径。
+        if (stagedApkPath.isNotEmpty()) {
+            OutlinedButton(
+                onClick = onInstallStagedApk,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier
+                    .padding(top = 6.dp)
+                    .height(40.dp),
+            ) {
+                Text(updateCopy.installStagedApk, color = UiColors.Accent, fontSize = 14.sp)
             }
         }
         // 通道现状（EP4 U2-①）：分行讲人话 —— 这条通道能不能查、上次查到了什么、有没有东西等着应用。
@@ -3711,17 +4414,6 @@ private fun RestoreDefaultsCard(text: SettingsStrings, onRestore: () -> Unit) {
     }
 }
 
-/** 卡片内的小节标题（比 [SectionTitle] 低一级）。 */
-@Composable
-private fun PrefCaption(text: String) {
-    Text(
-        text = text,
-        color = UiColors.TextDim,
-        fontSize = 12.sp,
-        modifier = Modifier.padding(top = 4.dp, bottom = 2.dp),
-    )
-}
-
 /**
  * 一行单选项：整行可点，RadioButton 本身不再吃第二次点击。
  *
@@ -3758,31 +4450,107 @@ private fun RadioChoiceRow(
     }
 }
 
-/** 「标题 + 小字说明 + 右侧开关」的一行；整行可点，不必精确戳到小开关。 */
+/** 分段滑选控件的单档高度：一行 13sp 文案加上下留白，够按又不把卡片撑肥。 */
+private val SEGMENT_HEIGHT = 38.dp
+
+/**
+ * 分段滑选控件：一排等宽胶囊，选中档底下压一条跟着滑的圆角底色。
+ * 点任意一档直接切；按住整排横拖就是**滑**着换档 —— 拖过半个档宽跳一档，跳完清零，
+ * 所以慢拖是一档一档过、快拖能连跳。
+ *
+ * 立它的直接动机是右栏布局那一组：三档原来是三条单选行、各带两行说明，玩家得读完三段话
+ * 才知道自己在哪一档；收成一条之后「一共几档 / 我在第几档 / 往哪边拖」一眼有数。
+ *
+ * 控件只认「第几档」，档位文案与语义都在调用侧 ⇒ 同一件东西也装得下每行枚数 1..6。
+ * 读屏走 `selectableGroup` + 每档 `selectable(role = Role.Tab)`：念「第 2 个，共 3 个，已选中」。
+ */
 @Composable
-private fun SwitchRow(
-    title: String,
-    hint: String?,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
+private fun <T> SegmentedSwitcher(
+    options: List<T>,
+    selected: T,
+    labelOf: (T) -> String,
+    onSelected: (T) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Row(
-        modifier = Modifier
+    if (options.isEmpty()) return
+    val density = LocalDensity.current
+    BoxWithConstraints(
+        modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(6.dp))
-            .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
-            .padding(horizontal = 2.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .clip(RoundedCornerShape(9.dp))
+            .background(UiColors.CardAlt),
     ) {
-        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-            Text(title, color = UiColors.Text, fontSize = 14.sp)
-            if (hint != null) {
-                Text(hint, color = UiColors.TextMuted, fontSize = 11.sp)
+        val cellWidth = maxWidth / options.size
+        val selectedIndex = options.indexOf(selected).coerceAtLeast(0)
+        // 拖拽回调里读到必须是最新一档：拖过一档后 `selected` 会变，但 pointerInput 的
+        // 闭包不会重跑，直接闭包捕获会把连跳锁死在第一档。
+        val latestIndex = rememberUpdatedState(options.indexOf(selected))
+        val indicatorLeft by animateDpAsState(
+            targetValue = cellWidth * selectedIndex,
+            animationSpec = tween(190),
+            label = "segmentIndicator",
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(SEGMENT_HEIGHT)
+                .pointerInput(options, cellWidth) {
+                    val cellPx = with(density) { cellWidth.toPx() }
+                    if (cellPx <= 0f) return@pointerInput
+                    var dragged = 0f
+                    val stepTo: (Int) -> Unit = { target ->
+                        val next = target.coerceIn(options.indices)
+                        if (next != latestIndex.value) onSelected(options[next])
+                    }
+                    detectDragGestures { change, dragAmount ->
+                        change.consume()
+                        dragged += dragAmount.x
+                        if (dragged >= cellPx / 2f) {
+                            dragged = 0f
+                            stepTo(latestIndex.value + 1)
+                        } else if (dragged <= -cellPx / 2f) {
+                            dragged = 0f
+                            stepTo(latestIndex.value - 1)
+                        }
+                    }
+                },
+        ) {
+            Box(
+                modifier = Modifier
+                    .offset(x = indicatorLeft)
+                    .width(cellWidth)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(UiColors.Accent.copy(alpha = 0.30f)),
+            )
+            Row(modifier = Modifier.fillMaxWidth().selectableGroup()) {
+                options.forEachIndexed { position, option ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .selectable(
+                                selected = position == selectedIndex,
+                                role = Role.Tab,
+                                onClick = { onSelected(option) },
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = labelOf(option),
+                            color = if (position == selectedIndex) UiColors.Text else UiColors.TextMuted,
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 4.dp),
+                        )
+                    }
+                }
             }
         }
-        Switch(checked = checked, onCheckedChange = null)
     }
 }
+
 
 /**
  * 分区带：色块 + 分区名 + 一句话说明，下面压一条同色的细线。
@@ -4023,58 +4791,6 @@ private fun BottomBar(text: SettingsStrings, onSave: () -> Unit, onSaveAndRestar
     }
 }
 
-/**
- * 统一卡片外观：深灰 #262626、圆角 8dp、细描边、内边距 12/10（与主界面底栏同色）。
- *
- * 左边一条 3dp 的分区色带：卡片滚出屏幕再滚回来，也看得出它属于哪一档 ——
- * 分区色由 [LocalZoneAccent] 给，卡片自己不需要声明归属。
- *
- * 色带用 [BoxScope.matchParentSize] 的 Canvas **叠画**在卡片左缘，不用
- * `Row(height(IntrinsicSize.Min))` + 独立 3dp 列。后者在内容动态增高时（素材导入卡
- * 从「无结果」变成「成功摘要 + 重启按钮」）会让 `LazyStaggeredGrid` 复用旧的固有高度：
- * 新加的行被压成 0 高、整块裁在卡片外，读屏树里也看不到（2026-11-04 模拟器实测）。
- * Box 先量卡片、Canvas 再按父尺寸叠画，卡片高度完全由内容决定，没有固有测量。
- */
-@Composable
-private fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
-    val accent = LocalZoneAccent.current
-    Box(modifier = Modifier.fillMaxWidth()) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(8.dp),
-            colors = CardDefaults.cardColors(containerColor = UiColors.Card),
-            border = BorderStroke(1.dp, UiColors.Border),
-        ) {
-            Column(
-                // 起点 15dp：让出 3dp 色带 + 与旧版一致的 12dp 正文内距。
-                modifier = Modifier.fillMaxWidth().padding(start = 15.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
-                content = content,
-            )
-        }
-        Canvas(modifier = Modifier.matchParentSize()) {
-            val width = 3.dp.toPx()
-            val radius = 8.dp.toPx()
-            val path = Path().apply {
-                addRoundRect(
-                    RoundRect(0f, 0f, width, size.height, radius, radius),
-                )
-            }
-            drawPath(path, accent.copy(alpha = 0.75f))
-        }
-    }
-}
-
-/** 卡片标题（跟随当前分区的主题色）。 */
-@Composable
-private fun SectionTitle(text: String) {
-    Text(
-        text = text,
-        color = LocalZoneAccent.current,
-        fontSize = 15.sp,
-        modifier = Modifier.padding(bottom = 4.dp),
-    )
-}
-
 // =====================================================================
 // 编辑对话框
 // =====================================================================
@@ -4089,16 +4805,28 @@ private class EditRequest(
 )
 
 /**
- * 一次「需要先确认」的导入：字节已经在手上（体积闸保证它不会大）。
+ * 一次「需要先确认」的导入：按**逻辑存档单元**攒（MODGC2 裁定 1）。
  *
- * 判据、落位路径、那一格里已有谁都全由 [SaveImport.plan] 定，这里只搬运结果 ——
+ * 判据、落位路径、那一格里已有谁都全由 [SaveImport] 定，这里只搬运结果 ——
  * 页面上不再判一次，免得设置页和游戏内 `CHKDATA` 说出不一样的一句话。
+ *
+ * 为什么持**成员列表**而不是单个文件：`.sav` 本体与它的 `.rt2` 侧车是一个单元，对话框只能
+ * 问玩家一次、落盘也只能要么全写要么全不写（只写侧车 = 半套配对）。展示走 [place]/[fileName]
+ * 这两个代表项（有本体就用本体），落盘走 [members] 全部成员。
  */
-private class PendingImport(
-    val place: SaveImport.Place,
-    val bytes: ByteArray,
-    val fileName: String,
-)
+private class PendingImport(val members: List<Member>) {
+
+    /** 单元里的一个成员：判定 + 字节 + 显示名（落盘与上屏都按成员逐条做）。 */
+    class Member(val place: SaveImport.Place, val bytes: ByteArray, val fileName: String)
+
+    /** 代表项：有本体成员就用本体（[placeUnit] 同一排序口径），否则第一个。 */
+    private val representative: Member =
+        members.firstOrNull { !SaveImport.isSidecarName(it.fileName) } ?: members.first()
+
+    val place: SaveImport.Place get() = representative.place
+
+    val fileName: String get() = representative.fileName
+}
 
 /** 把条目快照变成一次编辑请求（点开值按钮时调用，拿的是模型当前值）。 */
 private fun editRequestFor(entry: SettingsEntry, englishLabels: Boolean, text: SettingsStrings): EditRequest {

@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import com.eratw.port.android.ShellState
+import com.eratw.port.android.RailOptionRules
 import com.eratw.port.android.UiPrefs
 import com.eratw.port.render.canvas.CanvasConsoleView
 import kotlinx.coroutines.delay
@@ -85,8 +86,8 @@ internal fun stageVisibleFor(form: TrayForm): Boolean =
  * AnimatedVisibility 真移除（§0-15）。
  *
  * @param linesProvider 屏行尾窗快照（serial to 行文本，显示序；调用侧实现见
- *   `MainActivity.portraitScreenLines`——经 `GameHost.debugSession()` 的只读口取
- *   `LineBufferConsoleSink.lines()` 尾窗，GameHost 本体零改动）
+ *   `MainActivity.portraitScreenLines`——经 `GameHost.consoleTail(limit)` 的窄只读口取
+ *   `LineBufferConsoleSink.lines()` 尾窗，只交不可变快照、不暴露 `GameSession`）
  * @param contentWidth 宿主内容区宽（断点选档输入，§5.1）
  * @param contentMaxHeight 宿主内容区高（盘/抽屉上限派生基准，§4.3/§0-14）
  */
@@ -99,6 +100,7 @@ internal fun PortraitShellContent(
     contentMaxHeight: Dp,
     onSettings: () -> Unit,
     onOption: (String) -> Unit,
+    onQuickMacro: (RailOptionRules.QuickMacro) -> Unit = {},
     onInputChanged: (String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -206,6 +208,8 @@ internal fun PortraitShellContent(
         }
 
         // ── 指令盘（§4.3）：开合只跟用户开关（§10-4），高度上限宿主派生（§0-14）。
+        //    快捷宏小节（2026-11-11）：盘顶常驻一排，横屏走右栏常用区、竖屏走这里——两套壳
+        //    同一份数据源（ShellState.quickMacros），提交路径同为 onQuickMacro → 键盘路。
         CommandTray(
             groups = groups,
             peek = peek,
@@ -222,6 +226,8 @@ internal fun PortraitShellContent(
             },
             lastCommandText = hud.lastCommand,
             onOption = onOption,
+            quickMacros = state.quickMacros,
+            onQuickMacro = onQuickMacro,
         )
     }
 }

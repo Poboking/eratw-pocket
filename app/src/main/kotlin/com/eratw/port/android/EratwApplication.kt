@@ -80,6 +80,11 @@ class EratwApplication : Application() {
         runCatching {
             EratwStrictMode.install(StrictModeGuard.policyFor(BuildConfig.DEBUG))
         }.onFailure { Log.w(StrictModeGuard.LOG_TAG, "StrictMode 装载失败（游戏照常起）", it) }
+        // OOM-C 波：Android 17 的 OOM / 内存异常自动堆转储。官方要求每次启动都注册回调
+        // （上次崩溃采到的配置在本次注册时投递），故装配点必须是进程入口而不是某个界面。
+        // 低于 API 37、ROM 没这套服务、常量取不到时 install 自己静默关闭，不影响开机。
+        runCatching { ProfilingTriggers.install(this) }
+            .onFailure { Log.w("EratwProfiling", "自动堆转储装配失败（游戏照常起）", it) }
     }
 
     private companion object {

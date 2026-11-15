@@ -59,8 +59,18 @@ object MemoryLimiterConfig {
         SYSTEM("system"),
     }
 
-    /** [readDevice] 的读数：档位表 + 来源。 */
-    data class DeviceConfig(val origin: Origin, val sets: List<LimitSet>)
+    /**
+     * [readDevice] 的读数：档位表 + 来源 + 逐路径诊断串。
+     *
+     * [diagnostics] 是 OOM-C 波补的取证面（2026-11-09）：旧形状把「读不到」一律吞成
+     * `src=estimate`，报告里分不清是文件不存在、SELinux 拒绝还是解析失败 —— 而这正是
+     * BOARD 51/52 行挂着的两笔 Android 17 真机 TODO(verify)。串只进报告，不参与判式。
+     */
+    data class DeviceConfig(
+        val origin: Origin,
+        val sets: List<LimitSet>,
+        val diagnostics: String = "",
+    )
 
     /**
      * 解析一份 `memory-limiter-config.xml`，返回 `limitSet` 列表（按文件顺序）。
@@ -107,12 +117,47 @@ object MemoryLimiterConfig {
      *
      * @param readFile 路径 → 文本；缺省读真实系统文件（测试注入假体，保证纯 JVM 可测）。
      */
-    fun readDevice(readFile: (String) -> String? = ::readSystemFile): DeviceConfig? {
-        readFile(VENDOR_PATH)?.let { parse(it) }?.takeIf { it.isNotEmpty() }
-            ?.let { return DeviceConfig(Origin.VENDOR, it) }
-        readFile(SYSTEM_PATH)?.let { parse(it) }?.takeIf { it.isNotEmpty() }
-            ?.let { return DeviceConfig(Origin.SYSTEM, it) }
-        return null
+    fun readDevice(readFile: (String) -> String? = ::readSystemFile): DeviceConfig? =
+        readDeviceWithDiagnostics(readFile).first
+
+    /**
+     * [readDevice] 的取证版：除档位表外，逐路径记下「为什么没读到」，供错误报告对账
+     * （OOM-C 波，2026-11-09）。
+     *
+     * 四种落点：`ok:N档`（解析出条目）/ `notFound`（文件不存在或读不到）/
+     * `denied:异常简名`（读取抛掷，真机上最可能是 SELinux 的 SecurityException）/
+     * `parseEmpty`（读到文本但解析不出条目）。路径顺序仍是 vendor → system，第一路命中
+     * 就返回，与平台 `Injector.configFile()` 的优先级一致。
+     *
+     * 为什么单独开一口而不改 [readDevice] 的返回值：后者已被 `GameHost.memoryLimiterDevice`
+     * 与既有单测按 `DeviceConfig?` 消费，签名一动就是跨文件行为变更；本口只做加法。
+     *
+     * @return `Pair(配置或 null, 诊断串)`；诊断串用 `|` 连接，恒非空（两路都试过）。
+     */
+    fun readDeviceWithDiagnostics(
+        readFile: (String) -> String? = ::readSystemFile,
+    ): Pair<DeviceConfig?, String> {
+        val notes = ArrayList<String>(2)
+        for ((origin, path) in listOf(Origin.VENDOR to VENDOR_PATH, Origin.SYSTEM to SYSTEM_PATH)) {
+            val raw = try {
+                readFile(path)
+            } catch (t: Throwable) {
+                notes.add("${origin.label}=denied:${t.javaClass.simpleName}")
+                continue
+            }
+            if (raw == null) {
+                notes.add("${origin.label}=notFound")
+                continue
+            }
+            val sets = parse(raw)
+            if (sets.isEmpty()) {
+                notes.add("${origin.label}=parseEmpty")
+                continue
+            }
+            val text = (notes + "${origin.label}=ok:${sets.size}档").joinToString("|")
+            return Pair(DeviceConfig(origin, sets, text), text)
+        }
+        return Pair(null, notes.joinToString("|"))
     }
 
     /** 读系统文件；不存在 / 读失败（含 SELinux 拒绝）⇒ null，不外抛。 */

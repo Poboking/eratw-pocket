@@ -308,4 +308,85 @@ class TouchGestureControllerTest {
         )
         assertEquals("横挥清掉候选：下一击重新起算", Action.Tap(0), tap(controller, 0, 200L))
     }
+
+    // ------------------------------------------------------------------
+    // 长按（Action.LongPress）：2026-11-11「长按空白跳过」的上游判据。
+    //
+    // 长按本身在 C# 里没有对应语义（原版是右键 `MainWindow.cs:814-816` / Esc），
+    // 阈值取 Android ViewConfiguration 的 500ms 缺省。这一组钉四件事：
+    // 1. 到阈值即 LongPress，**不再是单击**；
+    // 2. 未到阈值仍是单击；
+    // 3. 长按消费双击候选（它既不是第一击，也不能让下一击被当成第二击）；
+    // 4. 滑动优先于长按（按住不放再拖 = 缓慢滚动，不是长按）。
+    // 注意：canSkip **不参与**长按判定（它只作用于双击配对）——跳过闸由绑定层
+    // （MainActivity.handleSkip）再守一次，这样执行期的长按不会额外提交一条 skip。
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `按住到阈值产出长按而不是单击`() {
+        val controller = controller()
+        controller.onDown(col = 3, y = 100f, timeMs = 0L)
+        assertEquals(
+            "恰好 500ms 即长按（阈值闭区间）",
+            Action.LongPress,
+            controller.onUp(y = 100f, timeMs = 500L),
+        )
+    }
+
+    @Test
+    fun `未到阈值仍是单击`() {
+        val controller = controller()
+        controller.onDown(col = 3, y = 100f, timeMs = 0L)
+        assertEquals(
+            "499ms 还没到长按阈值",
+            Action.Tap(3),
+            controller.onUp(y = 100f, timeMs = 499L),
+        )
+    }
+
+    @Test
+    fun `长按消费双击候选`() {
+        val controller = controller()
+        assertEquals(Action.Tap(0), tap(controller, 0, 0L))
+        controller.onDown(col = 0, y = 100f, timeMs = 100L)
+        assertEquals(Action.LongPress, controller.onUp(y = 100f, timeMs = 700L))
+        assertEquals(
+            "长按之后紧跟的一击重新起算，不当成双击的第二击",
+            Action.Tap(0),
+            tap(controller, 0, 900L),
+        )
+    }
+
+    @Test
+    fun `滑动优先于长按`() {
+        val controller = controller()
+        controller.onDown(col = 0, y = 100f, timeMs = 0L)
+        // 按住 600ms（超过阈值）但纵移两行 ⇒ 缓慢滚动，不是长按。
+        // 符号口径：手指下移 = 内容跟着往下 = 回看更早，即负行数（见类文档「行数换算」）。
+        assertEquals(
+            "按住不放再拖动 = 滚动（与 GestureDetector 的 onScroll 先于 onLongPress 同向）",
+            Action.Scroll(-2),
+            controller.onUp(y = 138f, timeMs = 600L),
+        )
+    }
+
+    @Test
+    fun `长按判定不看跳过闸`() {
+        val controller = controller()
+        controller.onDown(col = 0, y = 100f, timeMs = 0L)
+        assertEquals(
+            "canSkip=false 也照样判 LongPress：跳过闸在绑定层，手势层只判形态",
+            Action.LongPress,
+            controller.onUp(y = 100f, timeMs = 600L, canSkip = false),
+        )
+    }
+
+    @Test
+    fun `长按阈值可注入`() {
+        val controller = TouchGestureController(pixelsPerLine = 19f, longPressMs = 1000L)
+        controller.onDown(col = 0, y = 100f, timeMs = 0L)
+        assertEquals(Action.Tap(0), controller.onUp(y = 100f, timeMs = 900L))
+        controller.onDown(col = 0, y = 100f, timeMs = 1000L)
+        assertEquals(Action.LongPress, controller.onUp(y = 100f, timeMs = 2000L))
+    }
 }

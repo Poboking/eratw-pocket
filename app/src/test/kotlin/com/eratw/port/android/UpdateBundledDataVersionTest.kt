@@ -8,11 +8,17 @@ import org.junit.rules.TemporaryFolder
 import java.io.File
 
 /**
- * [UpdateManager.seedBundledDataVersion] 的定向单测（2026-11-06 主人反馈的幻影更新窗）。
+ * `update/data-version.txt` 的定向单测（2026-11-06 主人反馈的幻影更新窗 +
+ * CONTRACT-BOOTUNPACK 的 marker 两套口径根修）。
  *
  * 钉的是「装完最新整包还弹数据更新」这一条的根因：随包解包从不写 `update/data-version.txt`，
  * 盘上读数停在 0/旧版，而清单的 assets-version 缺省等于整包 versionCode（`emit_update.py:2514-2516`）
- * ⇒ 每次检查都判成「有数据更新」。这里只测抬版本这一拍（纯 JVM、临时目录、不碰 Android 运行时）。
+ * ⇒ 每次检查都判成「有数据更新」。
+ *
+ * 第二组钉的是同一个标记**只升不降**：`seedBundledDataVersion` 与
+ * `rememberInstalledDataVersion` 原先两套口径，后者无条件写，会把数据更新推上去的 23
+ * 拨回随包的 22，让位判据从此恒不成立、冷启全量重写约 919 MiB 的循环不收敛。
+ * 两条路径现在共用 `UpdateManager.advanceDataVersion`（纯 JVM、临时目录、不碰 Android 运行时）。
  */
 class UpdateBundledDataVersionTest {
 
@@ -64,5 +70,48 @@ class UpdateBundledDataVersionTest {
         UpdateManager.seedBundledDataVersion(root, -1L)
 
         assertFalse("versionCode 读不出时不能凭空声明数据版本", markerFile(root).exists())
+    }
+
+    @Test
+    fun `随包解包收尾把盘上数据版本抬到整包 versionCode`() {
+        val root = tmp.newFolder("game-root")
+
+        UpdateManager.rememberInstalledDataVersion(root, 17L)
+
+        assertEquals(17L, UpdateManager.installedDataVersion(root))
+    }
+
+    @Test
+    fun `随包解包收尾不许把数据更新推上去的高版本拨回`() {
+        // 反向证明的判红点：撤掉 advanceDataVersion 的「只升不降」这一条必然红。
+        val root = tmp.newFolder("game-root")
+        markerFile(root).apply {
+            parentFile?.mkdirs()
+            writeText("23")
+        }
+
+        UpdateManager.rememberInstalledDataVersion(root, 22L)
+
+        assertEquals("盘上 23 版数据不能被 APK 随包 22 版拨回", 23L, UpdateManager.installedDataVersion(root))
+    }
+
+    @Test
+    fun `随包解包收尾同版重复落标记不改变读数`() {
+        val root = tmp.newFolder("game-root")
+        UpdateManager.rememberInstalledDataVersion(root, 17L)
+
+        UpdateManager.rememberInstalledDataVersion(root, 17L)
+
+        assertEquals(17L, UpdateManager.installedDataVersion(root))
+    }
+
+    @Test
+    fun `随包解包收尾读不出版本时一个字节都不写`() {
+        val root = tmp.newFolder("game-root")
+
+        UpdateManager.rememberInstalledDataVersion(root, 0L)
+        UpdateManager.rememberInstalledDataVersion(root, -1L)
+
+        assertFalse(markerFile(root).exists())
     }
 }

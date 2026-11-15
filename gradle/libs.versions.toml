@@ -19,6 +19,9 @@ androidxTestRunner = "1.7.0"
 androidxTestCore = "1.7.0"
 androidxTestUiautomator = "2.3.0"
 androidxProfileinstaller = "1.4.1"
+# SQLite 迁移：2.5.2 是保留 minSdk 21 的最后一档 bundled 驱动；SQLite 3.46.0，
+# 16 KB page-size 对齐已实测。JVM 变体只用于桌面测试/vmdbg。
+androidxSqlite = "2.5.2"
 # 构建常量：三个 sdk 值是 Int 域，使用处 toInt()；jvmTarget 同时喂
 # jvmToolchain(int)、JvmTarget.fromTarget(str) 与 JavaVersion.toVersion(str)。
 compileSdk = "36"
@@ -30,6 +33,9 @@ detekt = "1.23.8"
 # 素材导入：7z 解包（纯 JVM，Android 可用）；xz 是 commons-compress 读 LZMA2 的可选依赖。
 commonsCompress = "1.26.2"
 xz = "1.10"
+# Compose Multiplatform（2026-11-11）：uipreview 的**壳层预览口**用它把 Compose 件真渲染成
+# 像素（Skiko 光栅化，Windows/Linux/macOS 通吃）。1.7.1 与 Kotlin 2.0.20 配对。
+composeMultiplatform = "1.7.1"
 
 [libraries]
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junitJupiter" }
@@ -48,6 +54,9 @@ androidx-test-runner = { module = "androidx.test:runner", version.ref = "android
 androidx-test-core = { module = "androidx.test:core", version.ref = "androidxTestCore" }
 androidx-test-uiautomator = { module = "androidx.test.uiautomator:uiautomator", version.ref = "androidxTestUiautomator" }
 androidx-profileinstaller = { module = "androidx.profileinstaller:profileinstaller", version.ref = "androidxProfileinstaller" }
+androidx-sqlite = { module = "androidx.sqlite:sqlite", version.ref = "androidxSqlite" }
+androidx-sqlite-bundled = { module = "androidx.sqlite:sqlite-bundled", version.ref = "androidxSqlite" }
+androidx-sqlite-bundled-jvm = { module = "androidx.sqlite:sqlite-bundled-jvm", version.ref = "androidxSqlite" }
 # 素材包解包：zip 用 JDK 自带；7z 走 commons-compress（LZMA2 需 xz）。
 commons-compress = { module = "org.apache.commons:commons-compress", version.ref = "commonsCompress" }
 xz = { module = "org.tukaani:xz", version.ref = "xz" }
@@ -57,6 +66,8 @@ kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 # 壳层 Compose（2026-10-23）：编译器插件版本必须与 Kotlin 同版，同走 kotlin ref。
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+# 壳层预览（uipreview 扩展）：Compose Desktop 产物走 org.jetbrains.compose。
+compose-multiplatform = { id = "org.jetbrains.compose", version.ref = "composeMultiplatform" }
 android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
 # A-6 质量闸：detekt 只在根工程应用，单任务 `gradlew detekt` 全仓扫描（接线在根 build.gradle.kts）。

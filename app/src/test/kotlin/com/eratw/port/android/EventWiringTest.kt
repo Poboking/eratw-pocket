@@ -28,7 +28,9 @@ class EventWiringTest {
     @Test
     fun `GameHost 装载相位经 LoadTrace 监听进事件链`() {
         val src = sourceOf("GameHost.kt")
-        assertTrue("装载监听必须装上（trace.onSample = { s ->）", src.contains("trace.onSample = { s ->"))
+        // 钉监听器的存在与形状，不钉赋值语法：直接赋值（trace.onSample = …）与
+        // LoadTrace 构造块里的 .apply { onSample = … } 都算装上。
+        assertTrue("装载监听必须装上（onSample = { s ->）", src.contains("onSample = { s ->"))
         assertTrue(
             "load.phase 必须带 stage/usedMiB/maxMiB/t 四列（缺一列因果链就断一段）",
             src.contains("\"load.phase\"") &&
@@ -57,19 +59,29 @@ class EventWiringTest {
     @Test
     fun `GameHost 错误与回收写点`() {
         val src = sourceOf("GameHost.kt")
+        // 钉「record 先于 collect、带 kind+相位」这条契约，不钉调用排版（单行/多行都算）。
+        val writeBody = src.substringAfter("private fun writeErrorReport", "")
+            .substringBefore("ErrorReportCollector.collect")
         assertTrue(
             "error 必须在 writeErrorReport 开头发（kind + 失败族/相位）",
-            src.contains("EventJournal.record(\n            \"error\",\n            mapOf(\"kind\" to kind, \"phase\" to lastFailureScreenKind.name),"),
+            writeBody.contains("EventJournal.record") &&
+                writeBody.contains("\"error\"") &&
+                writeBody.contains("\"kind\" to kind") &&
+                writeBody.contains("\"phase\" to lastFailureScreenKind.name"),
         )
+        // 回收记账面已随 W1 拆到 MemoryGovernor（journalEvict 是它的私有出口）。
+        val governor = sourceOf("MemoryGovernor.kt")
         assertTrue(
             "回收量非零时发 resource.evict（0 = 没收到，不记）",
-            src.contains("private fun journalEvict(freedMiB: Long)") &&
-                src.contains("if (freedMiB <= 0L) return") &&
-                src.contains("EventJournal.record(\"resource.evict\", mapOf(\"freedMiB\" to freedMiB.toString()))"),
+            governor.contains("private fun journalEvict(freedMiB: Long)") &&
+                governor.contains("if (freedMiB <= 0L) return") &&
+                governor.contains(
+                    "EventJournal.record(\"resource.evict\", mapOf(\"freedMiB\" to freedMiB.toString()))",
+                ),
         )
         assertTrue(
             "回合边界各路回收都要经 journalEvict 记账（至少预算档 + 堆水位档）",
-            src.split("journalEvict(").size - 1 >= 2,
+            governor.split("journalEvict(").size - 1 >= 2,
         )
     }
 

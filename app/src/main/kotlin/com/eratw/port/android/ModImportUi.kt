@@ -210,11 +210,29 @@ object ModImportSessionChannel {
     private var liveSession: (() -> com.eratw.port.core.proc.GameSession?)? = null
 
     /**
-     * 壳接线：装上 [provider]；传 null 即卸载（MainActivity 销毁清场侧）。幂等：
-     * 重开一局会再次装，重复 install 无害。
+     * 当前接线归属（2026-11-13 认主）：与 [HotConfigChannel.uninstall] 同一防撅语义。
+     * 会话升进程级后双壳交接窗口（旧壳 onDestroy 跑在新壳接回/交接之后，2026-10-31
+     * 真机实形）里，旧壳的卸载不得把新壳刚装好的活引用撅空——否则设置页读会话侧
+     * 四读数静默变空，导入报告退回「mods 静态清单」形态且无任何痕迹。
      */
-    fun install(provider: (() -> com.eratw.port.core.proc.GameSession?)?) {
+    @Volatile
+    private var owner: Any? = null
+
+    /**
+     * 壳接线：装上 [provider] 并记 [owner]（通常为本 Activity）。幂等：重开一局会再次装，
+     * 重复 install 无害（后装者覆盖，owner 同步换）。
+     */
+    fun install(owner: Any?, provider: (() -> com.eratw.port.core.proc.GameSession?)?) {
+        this.owner = owner
         liveSession = provider
+    }
+
+    /** 认主卸载：只有归属正是 [owner] 才清（旧壳无权撅新壳刚装的接线）。 */
+    fun uninstall(owner: Any) {
+        if (this.owner === owner) {
+            this.owner = null
+            liveSession = null
+        }
     }
 
     /** 现取现用：未接线或会话未装配时为 null（调用方按「无会话」呈现）。 */
@@ -256,6 +274,8 @@ fun ModImportChrome(
         maxWidth = 680.dp,
         maxHeight = 620.dp,
         scrollable = false,
+        // 宿主是设置页（系统栏可见，那是页面语义的一部分）：只做几何装配，不藏栏。
+        immersive = false,
     ) {
         EratwText(text = copy.cardTitle, tone = EratwTextTone.HEADLINE)
         Spacer(modifier = Modifier.height(4.dp))
@@ -301,6 +321,9 @@ private fun SuccessBlock(detail: ImportedPatchDetail, onRestartGame: () -> Unit,
         )
         for (w in detail.parseWarnings) {
             EratwText(text = copy.fill(copy.warningLineFormat, w), tone = EratwTextTone.NOTE, colorOverride = EratwInk.amber())
+        }
+        detail.modRuntimeOffHint?.let {
+            EratwText(text = it, tone = EratwTextTone.NOTE, colorOverride = EratwInk.amber())
         }
         EratwText(
             text = copy.fill(copy.savedSourcesFormat, detail.sourceFileNames.joinToString(copy.nameListSeparator)),

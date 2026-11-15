@@ -67,8 +67,13 @@ class CanvasWindowSeedReadTest {
                 "core 的 WindowX 以屏上实际版面为准（MainWindow.cs:726 回填语义）",
         )
         assertTrue(
-            body.contains("layoutWidth.toFloat() / ratio"),
-            "逆折算必须用同一把尺：实际版面宽 ÷ （真机字号 / 脚本字号），与 CellMetrics.scriptPixels 同式",
+            body.contains("scriptPixelsInverse(layoutWidth, sourceFontPixelSize)"),
+            "反折算必须走 CellMetrics.scriptPixelsInverse 单源入口（度量单源化 2026-11-13）——" +
+                "×k 与 ÷k 两向共用一把尺，手写 ratio 的第二把尺不许回潮",
+        )
+        assertTrue(
+            !body.contains("/ ratio"),
+            "手写反折算式已删除：尺的定义只许活在 CellMetrics 一处",
         )
     }
 

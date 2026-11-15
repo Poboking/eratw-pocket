@@ -29,6 +29,8 @@ JVM 挡位（本脚本自留，**不进 vmdbg argv**）：
                堆压浸泡用 `cmd --xmx 512m explore ...`（soak.py 原样透传本旗标）。
 
 解析顺序：--erbc/--game 显式参数 > 环境变量 ERATW_ERBC_DIR/ERATW_GAMEDIR > 按主机名的缺省。
+缺省游戏根取生成物 `specs/engine-profiles.yaml` 的**现行**语料（唯一 `retired: false`），
+不在本脚本内联语料根名（CONTRACT-ENGCPL E7；旧实现写死退役根 4.980，与出包侧矛盾）。
 java：JAVA_HOME > $ERATW_ROOT/.tooling/jdk-17.0.20.1+1 > PATH。
 """
 
@@ -127,16 +129,47 @@ def default_erbc() -> str:
     env = os.environ.get("ERATW_ERBC_DIR")
     if env:
         return env
-    return str(Path(eratw_root()) / "erbc.v1")
+    sys.exit("erbc 产物路径未知：请 --erbc <erbc.v1 目录> 或设 ERATW_ERBC_DIR")
+
+
+def active_corpus_dir_name() -> str:
+    """现行语料根目录名：读生成物 `specs/engine-profiles.yaml` 的 `corpora:` 段（CONTRACT-ENGCPL E7）。
+
+    本脚本原先在这里内联退役根 `eratw-画蛇添足版eratw4.980`，与出包侧（`pack_release.py`
+    的现行根）互相矛盾：桌面调试会拿退役语料的 CSV/resources 去跑当前 erbc。现在唯一出处
+    是手写 input yaml 的投影，取值 = 唯一 `retired: false` 的那条。
+
+    缺 PyYAML / 表坏 = 直接退出（不猜目录名）：调试装置静默指到退役根，读出来的 CSV 槽数
+    与脚本不符会让后续判据全变成「文件不存在」的空转。
+    """
+    spec = KCORE_ROOT / "specs" / "engine-profiles.yaml"
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        sys.exit(f"读语料身份需要 PyYAML：先 pip install pyyaml（{spec} 是生成物，"
+                 "devtools/desktop.py 不再内联语料根名）")
+    if not spec.is_file():
+        sys.exit(f"语料身份表不存在：{spec}（姐妹仓 erak-engine 里 devtools/gen_engine_profiles.py 的生成物，先重生成）")
+    with open(spec, "r", encoding="utf-8") as fh:
+        try:
+            doc = yaml.safe_load(fh)
+        except yaml.YAMLError as exc:
+            sys.exit(f"语料身份表 {spec} 不是合法 YAML：{exc}")
+    corpora = doc.get("corpora") if isinstance(doc, dict) else None
+    active = [c for c in (corpora or {}).values()
+              if isinstance(c, dict) and c.get("retired") is False and isinstance(c.get("root_dir"), str)]
+    if len(active) != 1:
+        sys.exit(f"{spec} 的 corpora 段必须恰有一条 retired=false 的语料，实际 {len(active)} 条")
+    return active[0]["root_dir"]
 
 
 def default_game() -> str:
-    return os.environ.get("ERATW_GAMEDIR") or str(Path(eratw_root()) / "game")
+    return os.environ.get("ERATW_GAMEDIR") or eratw_root() + "/" + active_corpus_dir_name()
 
 
 def java_argv(extra: list[str], xmx: str = DEFAULT_XMX) -> list[str]:
-    if not Path(KCORE_ROOT / "tools" / "vmdbg" / "build" / "install" / "vmdbg" / "lib").is_dir():
-        sys.exit("vmdbg 未安装：先在 erak-engine 下跑 ./gradlew --configure-on-demand :tools:vmdbg:installDist")
+    if not Path(ANDROID_ROOT / "tools" / "vmdbg" / "build" / "install" / "vmdbg" / "lib").is_dir():
+        sys.exit("vmdbg 未安装：先在 eratw-android 下跑 ./gradlew --configure-on-demand :tools:vmdbg:installDist")
     return [resolve_java(), "-Xmx" + xmx, "-cp", VMDBG_CP, MAIN_KT, *extra]
 
 
@@ -228,7 +261,7 @@ def do_sweep(rest: list[str]) -> int:
         sys.exit(
             "sweep 的 --shard 由本脚本按分片注入（0..<shards），请勿自带 --shard；"
             "要只跑某一片就请直接跑 vmdbg（例：./gradlew 装好的 installDist 里 "
-            "java -cp ../erak-engine/tools/vmdbg/build/install/vmdbg/lib/'*' com.eratw.port.vmdbg.MainKt "
+            "java -cp tools/vmdbg/build/install/vmdbg/lib/'*' com.eratw.port.vmdbg.MainKt "
             "sweep --shard 3/8 --out <目录>），或在这里用 --only/--skip-methods 收窄清单。"
         )
 
@@ -236,7 +269,7 @@ def do_sweep(rest: list[str]) -> int:
 
     procs: list[tuple[int, subprocess.Popen, Path]] = []
     # 日志句柄由 ExitStack 收口（W5-misc 第 3 条之二）：旧写法 open 之后从不 close，
-    # 而拉起循环中途会抛（`default_erbc()` 在未设共享根时 sys.exit、vmdbg 未安装时
+    # 而拉起循环中途会抛（`default_erbc()` 在 Haruki 机上 sys.exit、vmdbg 未安装时
     # sys.exit、子进程 fork 失败）—— 已打开的句柄全留在进程里，Windows 上父进程不退
     # 这些 .log 就一直被占着，随后的「读日志尾巴」与人工删除都撞拒绝访问。
     with ExitStack() as stack:

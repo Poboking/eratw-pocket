@@ -1,6 +1,7 @@
 package com.eratw.port.platform.save
 
 import com.eratw.port.core.save.SaveConfig
+import com.eratw.port.core.save.SidecarSaveInventory
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
@@ -15,8 +16,10 @@ import java.util.zip.ZipOutputStream
  *
  * ## 导出什么
  *
- * 与 [SaveImport] 是一个对称面：只导**存档槽本体** `saveNN.sav` 与跨槽共享的
- * `global.sav`（spec: `save-format.md` §2.1；`VariableEvaluator.cs:2018-2032`）。
+ * 与 [SaveImport] 是一个对称面：只导**存档槽本体** `saveNN.sav`、它的 `.rt2` 侧车
+ * `saveNN.sav.rt2`（RT2 C 车：.sav + .rt2 = 一个逻辑存档单元）与跨槽共享的
+ * `global.sav`（及 `global.sav.rt2`）（spec: `save-format.md` §2.1；
+ * `VariableEvaluator.cs:2018-2032`）。
  * `dat/` 下的 `chara_*.dat` / `var_*.dat` 是 `SAVECHARA` 族的角色/变量转储，不是存档槽
  * 的零件，导入侧也不收（[SaveImport] 只认 `.sav`），这里同样不碰。
  *
@@ -56,8 +59,14 @@ object SaveExport {
     /** 存档槽名 `saveNN.sav`（`SaveDataProbe.saveName`，`VariableEvaluator.cs:2023-2032`）。 */
     private val SLOT_NAME = Regex("(?i)save\\d+\\.sav")
 
+    /** 存档槽的 .rt2 侧车名 `saveNN.sav.rt2`（RT2 C 车：.sav + .rt2 = 一个逻辑存档单元）。 */
+    private val SLOT_SIDECAR_NAME = Regex("(?i)save\\d+\\.sav\\.rt2")
+
     /** 全局档固定名（`getSaveDataPathG()`，`VariableEvaluator.cs:2018-2021`）。 */
     private const val GLOBAL_NAME = "global.sav"
+
+    /** 全局档的 .rt2 侧车名（与 `global.sav` 同目录同名加后缀）。 */
+    private const val GLOBAL_SIDECAR_NAME = "global.sav.rt2"
 
     private val NAME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss", Locale.ROOT)
 
@@ -82,6 +91,16 @@ object SaveExport {
     /**
      * 收集要导出的存档。
      *
+     * ## 配对判据（MODGC2 裁定 1）
+     *
+     * 导出的是**完整逻辑存档单元**：`.rt2` 侧车只有在其同槽本体**同一批进包**时才收。
+     * 本体缺失的侧车（DELDATA 历史遗留、迁移随迁失败留在根的那一半）一律进 [Bundle.skipped]，
+     * 理由 = [SaveImport.REASON_SIDECAR_WITHOUT_BODY] —— 一个只有 `.rt2` 的包导到别的设备上
+     * 谁也读不了（[SaveImport] 也会拒收），收它只是把孤儿搬到玩家另一个目录里。
+     *
+     * 配对按**文件名**跨目录成立：生效目录里是本体、兜底目录里是侧车时照样成对进包
+     * （这正是迁移只搬走本体那一半的形态）。生效目录优先的「先到先得」不变。
+     *
      * @param root          游戏根（[com.eratw.port.platform.storage.GameStorage.gameRoot]）
      * @param config        设置页当前的生效口径，只消费 [SaveConfig.useSaveFolder]
      * @param maxEntryBytes 单文件体积闸，缺省与导入侧同一值
@@ -93,37 +112,63 @@ object SaveExport {
     ): Bundle {
         val effective = if (config.useSaveFolder) File(root, SAV_DIR) else root
         val fallback = if (config.useSaveFolder) root else File(root, SAV_DIR)
-        // 小写名 → 结果；同一文件名只出现一次（生效目录先扫，先到先得）。
+        val draft = Draft()
+
+        // 第一趟：只收本体（槽 + global）。侧车能不能进包取决于本体在不在 ⇒ 必须先定本体。
+        scanDir(effective, ::isBodyName, { null }, draft, maxEntryBytes)
+        scanDir(fallback, ::isBodyName, { null }, draft, maxEntryBytes)
+        val bodiesInBundle = draft.claimed.filterValues { it != null }.keys
+
+        // 第二趟：侧车只在同槽本体已在包内时收；否则如实跳过（不替玩家把孤儿搬进包里）。
+        val unpaired: (String) -> String? = { key ->
+            if (bodyKeyOf(key) in bodiesInBundle) null else SaveImport.REASON_SIDECAR_WITHOUT_BODY
+        }
+        scanDir(effective, ::isSidecarName, unpaired, draft, maxEntryBytes)
+        scanDir(fallback, ::isSidecarName, unpaired, draft, maxEntryBytes)
+
+        val entries = draft.claimed.values.filterNotNull().sortedBy { it.name.lowercase(Locale.ROOT) }
+        return Bundle(entries, draft.skipped)
+    }
+
+    /**
+     * 一次收集的中间状态：[claimed] 兼去重与占位（同名只认生效目录先到的那一份，被闸挡下的
+     * 名字也不再被兜底目录顶替），[skipped] 是逐条上屏理由。
+     */
+    private class Draft {
         val claimed = LinkedHashMap<String, Entry?>()
         val skipped = ArrayList<Skipped>()
+    }
 
-        fun scan(dir: File) {
-            val listed = dir.listFiles() ?: return
-            for (file in listed.sortedBy { it.name.lowercase(Locale.ROOT) }) {
-                if (!file.isFile || !isSaveName(file.name)) continue
-                val key = file.name.lowercase(Locale.ROOT)
-                if (key in claimed) continue
-                when {
-                    file.length() == 0L -> {
-                        claimed[key] = null
-                        skipped += Skipped(file.name, "是空文件")
-                    }
-
-                    file.length() > maxEntryBytes -> {
-                        claimed[key] = null
-                        skipped += Skipped(file.name, "超过体积上限")
-                    }
-
-                    else -> claimed[key] = Entry("$SAV_DIR/${file.name}", file)
-                }
+    /**
+     * 扫一层目录（[accept] 只决定「收不收这一类」），把结果记进 [draft]。
+     *
+     * [unpaired] 是配对闸：回 null = 可以收，回理由 = 记 [Skipped]。
+     */
+    private fun scanDir(
+        dir: File,
+        accept: (String) -> Boolean,
+        unpaired: (String) -> String?,
+        draft: Draft,
+        maxEntryBytes: Int,
+    ) {
+        val listed = dir.listFiles() ?: return
+        for (file in listed.sortedBy { it.name.lowercase(Locale.ROOT) }) {
+            if (!file.isFile || !accept(file.name)) continue
+            val key = file.name.lowercase(Locale.ROOT)
+            if (key in draft.claimed) continue
+            // 两道通用闸（空文件 / 超体积）优先于配对闸：坏文件本来就进不了包。
+            val reason = when {
+                file.length() == 0L -> "是空文件"
+                file.length() > maxEntryBytes -> "超过体积上限"
+                else -> unpaired(key)
+            }
+            if (reason == null) {
+                draft.claimed[key] = Entry("$SAV_DIR/${file.name}", file)
+            } else {
+                draft.claimed[key] = null
+                draft.skipped += Skipped(file.name, reason)
             }
         }
-
-        scan(effective)
-        scan(fallback)
-
-        val entries = claimed.values.filterNotNull().sortedBy { it.name.lowercase(Locale.ROOT) }
-        return Bundle(entries, skipped)
     }
 
     /**
@@ -156,8 +201,15 @@ object SaveExport {
     /** 建议的文件名：`eratw-saves-yyyyMMdd-HHmmss.zip`（ASCII，PC 与安卓都不挑编码）。 */
     fun suggestName(now: LocalDateTime): String = "eratw-saves-${now.format(NAME_FORMAT)}.zip"
 
-    private fun isSaveName(name: String): Boolean =
+    private fun isBodyName(name: String): Boolean =
         name.equals(GLOBAL_NAME, ignoreCase = true) || SLOT_NAME.matches(name)
+
+    private fun isSidecarName(name: String): Boolean =
+        name.equals(GLOBAL_SIDECAR_NAME, ignoreCase = true) || SLOT_SIDECAR_NAME.matches(name)
+
+    /** 侧车的小写名 → 同槽本体的小写名（`save00.sav.rt2` → `save00.sav`）。 */
+    private fun bodyKeyOf(sidecarKey: String): String =
+        sidecarKey.removeSuffix(SidecarSaveInventory.CONTAINER_SUFFIX)
 
     private fun copy(input: InputStream, out: OutputStream) {
         val buffer = ByteArray(64 * 1024)

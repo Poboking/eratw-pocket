@@ -100,6 +100,18 @@ internal class LoadTrace(
     /** native 分配最高的那一段。 */
     fun peakNative(): Sample? = snapshot().maxByOrNull { it.nativeMiB }
 
+    /**
+     * 当前装载分段进度（首屏覆盖层的唯一进度源，CONTRACT-BOOTPHASE）。
+     *
+     * 只把加锁快照里的阶段名序列交给 [LoadPhaseProgress] 折算，不新增状态、不改采样口径。
+     * 与 [logPeak] 同一把 monitor：装载线程与 UI 线程的 `boot.` 交界采样并发追加时不会读到
+     * 半张表（2026-11-03 真机 CME 的同一份纪律，见 [snapshot]）。比例来自真实阶段序列，
+     * 不是时间估算，也不加速装载、不隐藏失败。
+     */
+    @Synchronized
+    internal fun currentProgress(): LoadProgress? =
+        LoadPhaseProgress.of(snapshot().map { it.stage })
+
     /** 采一段并落一行日志（release 只采样、不打日志）。 */
     @Synchronized
     fun mark(stage: String): Sample {

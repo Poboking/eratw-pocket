@@ -1,0 +1,52 @@
+--- a/キャラデータ/Chara_data_11_魔理沙.ERB
++++ b/キャラデータ/Chara_data_11_魔理沙.ERB
+@@ -495,22 +495,24 @@
+ 				ENDIF
+ 			ELSEIF CFLAG:CHARA:睡眠
+ 				RESULTS = 睡眠
++				;A13：睡眠前缀会把 11_別顔_睡眠.webp 的半透明睡脸叠到醒脸上（眼睛重叠/表情模糊），效果层改用正常照れ cell
++				RESULTS = 
+ 			ELSEIF DAY:2 == 4
+ 				RESULTS = 冬服
+ 			ELSEIF DAY:0 % 2 && DAY:2 != 4
+ 				RESULTS = _日替わり
+ 			ENDIF
+ 		ENDIF
+ 	ELSE
+ 		;立绘
+ 	ENDIF
+ ELSE
+ 	;通常画像
+ 	IF FLAG:立绘种类
+ 		;颜绘
+ 	ELSE
+ 		;立绘
+ 	ENDIF
+ ENDIF
+ 
+ ;IMAGE_I11_特殊吐息(CHARA)--------------------------------------------------------------------
+@@ -545,22 +545,24 @@
+ 				ENDIF
+ 			ELSEIF CFLAG:CHARA:睡眠
+ 				RESULTS = 睡眠
++				;A13：同上，吐息层改用正常吐息 cell（睡眠吐息 cell 近空会让吐息消失）
++				RESULTS = 
+ 			ELSEIF DAY:2 == 4
+ 				RESULTS = 冬服
+ 			ELSEIF DAY:0 % 2 && DAY:2 != 4
+ 				RESULTS = _日替わり
+ 			ENDIF
+ 		ENDIF
+ 	ELSE
+ 		;立绘
+ 	ENDIF
+ ELSE
+ 	;通常画像
+ 	IF FLAG:立绘种类
+ 		;颜绘
+ 	ELSE
+ 		;立绘
+ 	ENDIF
+ ENDIF
+ 
+ ;IMAGE_I11_特殊汗(CHARA)--------------------------------------------------------------------

@@ -39,6 +39,30 @@ class ShellUiRailGeometryTest {
     }
 
     @Test
+    fun perRowWidthFormulaMatchesTheEqualShareOnEveryCount() {
+        // 2026-11-11 每行枚数旋钮（1..6，三档布局通用）：N 枚定宽 + (N-1) 处行距
+        // 应当正好铺满栏宽（与 weight(1f) 的等分结果一致），单参版本 = 3 枚基准档。
+        for (size in tiers) {
+            val metrics = railMetricsOf(size)
+            for (perRow in UiPrefs.RAIL_CHIPS_PER_ROW_MIN..UiPrefs.RAIL_CHIPS_PER_ROW_MAX) {
+                val rowWidth = railButtonWidth(metrics.railWidth, perRow) * perRow +
+                    RAIL_ROW_SPACING * (perRow - 1)
+                assertEquals(
+                    "$size 档每行 $perRow 枚：N 枚 + (N-1) 处行距应铺满栏宽",
+                    metrics.railWidth.value,
+                    rowWidth.value,
+                    0.01f,
+                )
+            }
+            assertEquals(
+                "$size 档：单参版本应是 3 枚基准档",
+                railButtonWidth(metrics.railWidth),
+                railButtonWidth(metrics.railWidth, RAIL_MAX_CHIPS_PER_ROW),
+            )
+        }
+    }
+
+    @Test
     fun collapsedRailClearsWholeFootprintOnEveryTier() {
         for (size in tiers) {
             val metrics = railMetricsOf(size)
@@ -59,6 +83,27 @@ class ShellUiRailGeometryTest {
             val cap = railButtonWidth(metrics.railWidth) * 0.32f
             assertEquals(cap.value, railBadgeReserve(9, metrics).value, 0.01f)
             assertEquals(railBadgeReserve(1, metrics), railBadgeReserve(0, metrics))
+        }
+    }
+
+    @Test
+    fun badgeReserveFollowsTheActualPerRowCount() {
+        // 2026-11-11 复查：让位上限必须按**这一行实际摆几枚**算。旧实现固定按「一行三枚」
+        // 算上限，玩家把每行枚数调到 6 时真按钮只有 ~35dp，却仍让出 ~24dp 角标位，
+        // 标题被挤到 3dp 左右（等于只剩省略号）。
+        for (size in tiers) {
+            val metrics = railMetricsOf(size)
+            val three = railBadgeReserve(5, metrics, perRow = 3)
+            val six = railBadgeReserve(5, metrics, perRow = 6)
+            assertTrue("$size 档：6 枚一排的让位必须不大于 3 枚一排", six <= three)
+            assertTrue(
+                "$size 档：让位不得超过该行按钮宽的三分之一",
+                six <= railButtonWidth(metrics.railWidth, 6) * 0.32f,
+            )
+            // 缺省口径 = 三枚一排（兼容旧调用点与既有测试）。
+            assertEquals(three, railBadgeReserve(5, metrics))
+            // 整宽单列（常用区）能让得比 6 枚一排更多。
+            assertTrue(railBadgeReserve(5, metrics, perRow = 1) >= six)
         }
     }
 

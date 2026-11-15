@@ -36,6 +36,36 @@ class PixelArrayDecodeOptionsTest {
         assertFalse("inDither 必须为 false：抖动会改写像素值", options.inDither)
     }
 
+    /**
+     * 绘制句柄口径（0.2.44 回归钉）：**必须预乘存底**。
+     *
+     * 这条与上面那条看似矛盾，其实是两个消费者：抽像素数组要直通值，画上 Canvas 要预乘值。
+     * 0.2.44 把绘制句柄也解成直通再 `setPremultiplied(true)`（只翻标志不翻数据），
+     * 真机实测半透明像素 `0x6BF89C95` 读回 `0x6BFFFFFF`（R/G/B 打满），
+     * 屏上是「特效层发白 + 脸周白框」。
+     */
+    @Test
+    fun `绘制句柄解码选项必须预乘存底`() {
+        val options = BitmapImageDecoder.renderDecodeOptions()
+        assertTrue(
+            "inPremultiplied 必须为 true：消费者是 Skia，混合公式假定源已预乘；" +
+                "解成直通再翻标志会把半透明贡献放大 1/a 倍",
+            options.inPremultiplied,
+        )
+        assertFalse("inScaled 必须为 false：文件像素口径与像素阵列路径同源", options.inScaled)
+        assertSame("必须 ARGB_8888：其它配置丢 alpha 或改通道序", Bitmap.Config.ARGB_8888, options.inPreferredConfig)
+        assertFalse("inDither 必须为 false：抖动会改写像素值", options.inDither)
+    }
+
+    @Test
+    fun `绘制句柄与像素阵列是两份独立选项_不得混用`() {
+        val array = BitmapImageDecoder.pixelArrayDecodeOptions()
+        val render = BitmapImageDecoder.renderDecodeOptions()
+        assertTrue("每次调用必须新建 Options（解码器各自持有，不得共享可变实例）", array !== render)
+        assertFalse("抽像素口径必须是直通存底", array.inPremultiplied)
+        assertTrue("绘制口径必须是预乘存底", render.inPremultiplied)
+    }
+
     @Test
     fun `选项对象是新实例_调用方各自持有`() {
         // 两次调用拿到两个独立对象：ResourceCsvHost 与 BitmapImageDecoder 的实例字段

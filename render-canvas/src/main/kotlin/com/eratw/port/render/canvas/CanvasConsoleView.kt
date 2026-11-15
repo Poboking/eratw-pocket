@@ -34,8 +34,10 @@ import com.eratw.port.render.font.BundledFontFamily
 import com.eratw.port.render.font.GlyphFallback
 import com.eratw.port.render.font.ResolvedFontFamilyCache
 import com.eratw.port.render.glyph.CellMetrics
+import com.eratw.port.render.glyph.GlyphCache
 import com.eratw.port.render.sprite.AnimeRepaintPlan
 import com.eratw.port.render.sprite.planAnimeRepaint
+import com.eratw.port.core.host.BusyIndicator
 import com.eratw.port.core.host.CbgLayerSnapshot
 import com.eratw.port.core.host.FontDisplayWidth
 import com.eratw.port.render.view.CbgDrawOrder
@@ -188,6 +190,17 @@ class CanvasConsoleView @JvmOverloads constructor(
      * 再调 [reflowAttachedFeed] 换新 [ConsoleScreen]。
      */
     private val liveReflow: Boolean = false,
+
+    /**
+     * 画面左右留白居中（壳层圆屏适配）：每侧留白 = 物理内容宽 × 本比例，收掉的部分露出
+     * 宿主黑底即黑边，内容在去留白区域按既有规则居中。
+     *
+     * 只是 [ScreenLayout.resolve] 的一个输入（`contentMarginPx`，构造期定格）：列数守护
+     * 随之看去留白宽继续保列数（字号相应让步），与窗口宽接线（`applySourceWindowMetrics`）
+     * 在解算式里 min 显式合成、互不覆写。折算只发生在 [resolveFor] 一处（唯一真相源，
+     * 不给绘制/命中侧留第二份留白算式）；≤0 / 非有限 = 未开 ⇒ 全部读数与未传时逐值相同。
+     */
+    private val contentMarginFraction: Float = 0f,
 ) : View(context, attrs, defStyleAttr) {
 
     /**
@@ -290,14 +303,17 @@ class CanvasConsoleView @JvmOverloads constructor(
     /**
      * 交给 core 回填用的脚本 px 版面宽（同尺逆折算：实际版面宽 ÷ 「真机字号 / 脚本字号」）。
      *
+     * 反折算式已收进 [CellMetrics.scriptPixelsInverse]（与正向 [CellMetrics.scriptPixels] 单源同类）；
      * 消费链：`GameHost` 取 [windowWidthScriptPx] 存进 `ScriptPixelMetrics` → `GameSession`
      * → `ConfigMethods.backfillWindowWidth` 的 `WindowX` **链后回填**。折算比
      * `k = fontPixelSize / sourceFontPixelSize` 与 [CellMetrics.scriptPixels] 同一把尺；
      * 回填后核心 `drawableWidth` 折算到设备像素应与屏上可绘制宽差不到一格（R5.1）。
      *
-     * 读数是**实际版面宽**的逆折算，与窗口宽是否接线无关：接线（`sourceWindowWidthScriptPx > 0`）
-     * 时版面被 `min(配置宽×k, 物理宽)` 收窄，逆折算回配置窄化语义；未接线（≤ 0，生产常态）
-     * 时版面是物理满宽，逆折算给出满宽脚本 px —— 无论哪种，core 的 `WindowX` 都以屏上
+     * 读数是**实际版面宽**的逆折算，与窗口宽是否接线无关：接线（`sourceWindowWidthScriptPx > 0`，
+     * 装配层按「`WINDOW WIDTH` 链上显式写过、且值不是引擎裸缺省 760」判定，见
+     * `GameHost.applyBootFontMetrics` 的两道闸）
+     * 时版面被 `min(配置宽×k, 物理宽)` 收窄，逆折算回配置窄化语义；未接线（≤ 0，链上没写
+     * 该键的盘）时版面是物理满宽，逆折算给出满宽脚本 px —— 无论哪种，core 的 `WindowX` 都以屏上
      * **实际**版面为准（原版 `MainWindow.cs:726` 的回填语义），而不是配置文件的期望值。
      * 0.2.43 曾在这里「未接线原样返回 0」，那会让回填层把 0 当「未接线」跳过 —— 旧盘的
      * `WINDOW WIDTH` 读数（裸缺省 760）压住真机满宽版面，`MAXWIDTH()` 掉进除零区
@@ -309,8 +325,7 @@ class CanvasConsoleView @JvmOverloads constructor(
     fun windowWidthScriptPx(): Int {
         val layoutWidth = resolvedLayoutWidthPx
         if (layoutWidth <= 0 || sourceFontPixelSize <= 0) return sourceWindowWidthScriptPx
-        val ratio = metrics.fontPixelSize.toFloat() / sourceFontPixelSize
-        return (layoutWidth.toFloat() / ratio).roundToInt()
+        return metrics.scriptPixelsInverse(layoutWidth, sourceFontPixelSize)
     }
 
     /** 当前生效度量（唯一解算见 [resolveFor]）；绘制/折行/展平一律读它。 */
@@ -359,7 +374,8 @@ class CanvasConsoleView @JvmOverloads constructor(
 
 
     /**
-     * div 子行展平器的**图元尺寸源**：现读当前挂着的 [frameSource]。
+     * div 子行展平器的**图元尺寸源**：现读当前挂着的 [frameSource]，**双口**转发
+     * （MODERN-R12-WIRE 起 `frameAvailable` 也转发）。
      *
      * 子行里的 `<img>` 与正文同一套几何（`HtmlRunFlatten.emitImage` 缺 width 时按基图
      * 纵横比推宽，`ConsoleImagePart.cs:66-70`），但展平器此前拿不到尺寸源
@@ -367,12 +383,22 @@ class CanvasConsoleView @JvmOverloads constructor(
      * 实际对象 `SpriteBitmapSource` 同时实现 [ImageFrameSource] 与
      * [HtmlRunFlatten.ImageSizeSource]（platform 侧声明），故直接转发。
      *
-     * 用 lambda 现读而不是构造期抓一份：图形通路是后挂的（[attachGraphics]），
+     * **`frameAvailable` 必须同口转发**（MODERN-R12-WIRE）：div 子行的缺帧行宽判据与正文/
+     * core 折行同尺（尺寸命中而帧拿不到 ⇒ AltText 文本量宽，判据唯一名下 = core
+     * `CellWidth.imgWidthPxOrNull`）。此前只有单口 SAM（`frameAvailable` 吃接口缺省 true =
+     * 未接线），子行展平判不了缺帧面。`frameSource` 未挂/实现对不上时答 true = 未接线旧
+     * 读数（与接口缺省同值，见方占位与图宽口径照旧）。
+     *
+     * 用匿名对象现读而不是构造期抓一份：图形通路是后挂的（[attachGraphics]），
      * 子行展平发生在规划期（[divPlanner] 的子行折行）⇒ 现读才能拿到最新挂载；
-     * 未挂/实现对不上时返回 null，回落见方占位（旧行为）。
+     * 未挂/实现对不上时 `destSize` 返回 null 回落见方占位、`frameAvailable` 答 true（旧行为）。
      */
-    private val divSizeSource: HtmlRunFlatten.ImageSizeSource = HtmlRunFlatten.ImageSizeSource { resource ->
-        (frameSource as? HtmlRunFlatten.ImageSizeSource)?.destSize(resource)
+    private val divSizeSource: HtmlRunFlatten.ImageSizeSource = object : HtmlRunFlatten.ImageSizeSource {
+        override fun destSize(resource: String): Int? =
+            (frameSource as? HtmlRunFlatten.ImageSizeSource)?.destSize(resource)
+
+        override fun frameAvailable(resource: String): Boolean =
+            (frameSource as? HtmlRunFlatten.ImageSizeSource)?.frameAvailable(resource) ?: true
     }
 
     /**
@@ -390,7 +416,8 @@ class CanvasConsoleView @JvmOverloads constructor(
      * 绘制/命中两侧只消费 `ChildRow` 成品。随 [applyMetrics] 换代（字号/行高变了块的
      * 矩形全体重折）。
      */
-    private var divPlanner: DivOverlayPlanner = DivOverlayPlanner(metrics, sourceFontPixelSize, divFlattener)
+    private var divPlanner: DivOverlayPlanner =
+        DivOverlayPlanner(metrics, sourceFontPixelSize, divFlattener, scriptLineHeightPx = sourceLineHeight)
 
     /** 上一帧是否画过覆盖块：退场帧（块没了但行签名没变）也要整幅一次清掉旧像素。 */
     private var lastFrameHadOverlay: Boolean = false
@@ -427,12 +454,22 @@ class CanvasConsoleView @JvmOverloads constructor(
      */
     private val fontFamilies = ResolvedFontFamilyCache()
 
+    /**
+     * 字形缓存支路开关（CONTRACT-MODERN-R11-T4B S4）：构造期读一次系统属性，缺省关。
+     * 关态既有度量与绘制语句一个字节不动、零分配；开态度量与像素都改走 GlyphCache。
+     * 真机上屏与字色合成对账前记 TODO(verify)。
+     */
+    private val glyphCacheEnabled: Boolean = System.getProperty("eratw.render.glyphCache") == "1"
+
+    /** 开态专用的字形缓存实例：每 View 一份，关态恒 null 所以零分配。 */
+    private var glyphCacheInstance: GlyphCache? = null
+
     /** 最近一次取用的族与 Typeface（`metricOf` 的快路径，避免每字形查两次 map）。 */
     private var lastTypefaceFamily: String? = null
     private var lastTypeface: Typeface? = null
 
     /**
-     * 单源解算：把「可见区像素 + 配置字号 + 显示大小倍率 + 列数守护 + 窗口宽/高」交给
+     * 单源解算：把「可见区像素 + 配置字号 + 显示大小倍率 + 列数守护 + 窗口宽/高 + 留白」交给
      * [ScreenLayout.resolve]。
      *
      * 唯一调用方是 [rebuildScreen] / [applySourceFontMetrics] / [reflowAttachedFeed]；
@@ -472,8 +509,18 @@ class CanvasConsoleView @JvmOverloads constructor(
         // 窗口宽/高同理：脚本 px → 设备 px 的折算比就是本轮的「真机字号 / 脚本字号」，
         // 候选字号没定就折不出最终客户区宽。三者一起迭代（最多 5 轮 = 既有 4 轮上限 + 1 轮余量，
         // 收敛判据取 (居中偏移, 列数, 行数, 版面宽, 字号) 元组相等）。
+        // 留白不在迭代元组里：它是「物理内容宽 × 档位比例」，与字号无关，每轮恒定
+        // ——**折算全 View 只此一处**，解算点拿到的是设备 px 的单一真相。
+        val marginPx = if (contentMarginFraction.isFinite() && contentMarginFraction > 0f) {
+            (contentWidth * contentMarginFraction.coerceAtMost(MAX_CONTENT_MARGIN_FRACTION)).roundToInt()
+        } else {
+            0
+        }
         var inset = shapeShiftPx
-        var layout = resolveWithInset(contentWidth, contentHeight, densityDpi, minColumns, inset)
+        var layout = resolveWithInset(
+            contentWidth, contentHeight, densityDpi, minColumns, inset,
+            contentMarginPx = marginPx,
+        )
         var rounds = 0
         while (rounds++ < 5) {
             val nextInset = ShapePositionShift.of(layout.fontPixelSize)
@@ -481,7 +528,7 @@ class CanvasConsoleView @JvmOverloads constructor(
             val windowHeightPx = windowHeightPxFor(layout.metrics)
             val next = resolveWithInset(
                 contentWidth, contentHeight, densityDpi, minColumns, nextInset,
-                windowWidthPx, windowHeightPx,
+                windowWidthPx, windowHeightPx, marginPx,
             )
             val converged = nextInset == inset &&
                 next.fontPixelSize == layout.fontPixelSize &&
@@ -536,6 +583,7 @@ class CanvasConsoleView @JvmOverloads constructor(
     /**
      * @param contentWidthPx 物理内容区宽（含右端预留）
      * @param insetPx 右端形状预留（`Math.Max(2, FontSize / 6)` 的本轮候选读数）
+     * @param contentMarginPx 每侧留白（设备 px，[resolveFor] 单点折算）；0 = 未开
      */
     private fun resolveWithInset(
         contentWidthPx: Int,
@@ -545,6 +593,7 @@ class CanvasConsoleView @JvmOverloads constructor(
         insetPx: Int,
         windowWidthPx: Int = 0,
         windowHeightPx: Int = 0,
+        contentMarginPx: Int = 0,
     ): ScreenLayout = ScreenLayout.resolve(
         widthPx = (contentWidthPx - insetPx).coerceAtLeast(0),
         heightPx = contentHeightPx,
@@ -556,6 +605,7 @@ class CanvasConsoleView @JvmOverloads constructor(
         contentWidthPx = contentWidthPx,
         windowWidthPx = windowWidthPx,
         windowHeightPx = windowHeightPx,
+        contentMarginPx = contentMarginPx,
     )
 
     /** 应用新度量；字号/行高变了就整链作废缓存（原因见下）。 */
@@ -589,17 +639,28 @@ class CanvasConsoleView @JvmOverloads constructor(
         // 生效度量，随本方法换代（与上面 shapeShiftPx 同一批改写的道理）。展平器先换代、
         // 规划器接新的那一份 —— 子行折行发生在规划期，规划器必须拿到新度量的展平器。
         divFlattener = HtmlRunFlatten(next, sizeSource = divSizeSource, scriptFontPixelSize = sourceFontPixelSize)
-        divPlanner = DivOverlayPlanner(next, sourceFontPixelSize, divFlattener)
+        divPlanner = DivOverlayPlanner(next, sourceFontPixelSize, divFlattener, scriptLineHeightPx = sourceLineHeight)
         // 同一次度量换代还要作废**像素侧**的两份缓存：行位图是按旧字号烤死的、保留面里也是
         // 旧字号的像素。行高没变而字号变了时，行位图的几何判据（行高/内容宽）挡不住这种
         // 陈旧 —— 不清就会把旧字号的字原样贴回来（ADR-009 决策 4）。
         rowCache.clear()
         planner.notifySurfaceLost()
+        glyphCacheInstance?.clear()
     }
 
     private var screen: ConsoleScreen? = null
     private var pending: List<RenderLine> = emptyList()
     private var feed: ConsoleFeed? = null
+
+    /**
+     * 上一帧是否真的画过长页忙碌横带。
+     *
+     * 用途只有一处：指示器被宿主置 null 的那一帧 [pumpAndInvalidateIfNeeded] 必须再失效一次，
+     * 让下一次 [onDraw] 的 `blitSurface` 把横带像素盖回正文（否则屏上会挂着一条不再更新的
+     * 「少女祈祷中」）。出现方向不靠它 —— 指示器非空时 [ConsoleFeed.hasUnpublishedContent]
+     * 每帧为真，UI 循环本来就在持续 invalidate（呼吸/动点靠这一路）。
+     */
+    private var busyBandDrawn = false
 
     /**
      * 一次性「首屏有内容」回调（UI 线程）：生产桥发布出第一屏**非空**内容并完成落笔后调用。
@@ -1293,14 +1354,29 @@ class CanvasConsoleView @JvmOverloads constructor(
      * 整个不响应：这两个状态闸都在装配层（本 View 不读输入状态），装配层若要在
      * 原语等待期保留原版口径，应把那一路走 `mappingColor` 而不是本方法。
      *
+     * ## 4.981 NF 等待（`noFocus`）
+     *
+     * `TINPUTNF` / `TINPUTSNF` 走 `WaitInputNoFocus`（`Instraction.Child.cs:1126-1127` /
+     * `:1179-1180`，`EmueraConsole.cs:780-818`），控制台状态变成 `WaitInputNoFocus`；
+     * `MainWindow.cs:949`（鼠标点击）与 `:1591`（按键）都以 `IsWaitInputNoFocusState`
+     * 跳过 `Value = Maximum` + `RefreshStrings(true)`，即**不把玩家从历史位置拽回底部**。
+     * 本 View 不读引擎状态，由装配层把当前等待请求的 `InputRequest.noFocus` 传进来；
+     * 缺省 false = 1.824 基线路径逐字不变。命中仍按贴底前的当前视图算。
+     *
      * ## 返回值（M11-B DEV-01 收尾，C4）
      *
      * 返回 [TapOutcome] 而不是裸文本：调用方要复刻 `MainWindow.cs:806` 块外的 `!flag`
      * 门（`:808`），而「这一击是否刚回贴底」只有本方法知道（`Viewport.snapToBottomForTap`
-     * 的返回值在内部被消费掉了）。贴底无条件发生 —— 命中与否都一样，`MainWindow.cs:801-805`
-     * 在命中判定之前、也不受任何 early return 影响。
+     * 的返回值在内部被消费掉了）。基线路径下贴底无条件发生 —— 命中与否都一样，
+     * `MainWindow.cs:801-805` 在命中判定之前、也不受任何 early return 影响；
+     * 唯一例外是上面的 4.981 NF 闸（`noFocus=true` 时整段跳过贴底）。
      */
-    fun tap(x: Float, y: Float, acceptance: ButtonAcceptance = ButtonAcceptance.ANY): TapOutcome {
+    fun tap(
+        x: Float,
+        y: Float,
+        acceptance: ButtonAcceptance = ButtonAcceptance.ANY,
+        noFocus: Boolean = false,
+    ): TapOutcome {
         val console = feed?.screen ?: screen ?: return TapOutcome(hit = null, snappedToBottom = false)
         // 一次点击（抬起）就是按下态的终点：先清掉高亮，未命中也一样（高亮不残留）。
         // 清除走 [clearPointer] 的置脏口；点击回环本身仍由调用方拿返回值去提交。
@@ -1308,7 +1384,10 @@ class CanvasConsoleView @JvmOverloads constructor(
         // 原版顺序（MainWindow.cs:800 在 :803 之前）：命中目标先按贴底前的视图取好。
         val submitted = hitOnCurrentView(console, x, y, acceptance)
         // MainWindow.cs:799-805 的贴底半边：未贴底时任何点击（含未命中）都回最新行。
-        val snapped = console.viewport.snapToBottomForTap()
+        // 4.981 NF 闸（MainWindow.cs:949）：`IsWaitInputNoFocusState` 为真时这一下拉回
+        // 整段跳过 —— 玩家在 TINPUTNF/TINPUTSNF 的动画轮询等待里上翻看历史，点一下
+        // 不该被拽回底部。命中仍按当前视图算，只有贴底动作被抑制。
+        val snapped = if (noFocus) false else console.viewport.snapToBottomForTap()
         if (snapped) {
             console.refresh()
             requestRedraw()
@@ -1324,15 +1403,20 @@ class CanvasConsoleView @JvmOverloads constructor(
      * 「不自动提交」），所以这条半边由提交入口（`MainActivity.submitInput`）补，
      * 选项按钮提交路（原版 `:799-805` 的点击语义）同走这里。
      * 未贴底时归零、重算窗口并重绘；已贴底或无屏返回 false（与 [snapToBottomForTap] 同构）。
+     *
+     * `noFocus` = 当前等待请求带 [com.eratw.port.core.host.InputRequest.noFocus]
+     * （4.981 NF 族）：原版 `MainWindow.cs:1591` 在 `IsWaitInputNoFocusState` 下整段跳过
+     * `Value = Maximum`，所以这一路同样不贴底、返回 false。缺省 false = 基线路径不变。
      */
-    fun snapToBottomForSubmit(): Boolean {
+    fun snapToBottomForSubmit(noFocus: Boolean = false): Boolean {
         val console = feed?.screen ?: screen ?: return false
-        if (!console.viewport.snapToBottomForTap()) {
-            return false
+        // `!noFocus &&` 短路：NF 等待下连视口都不碰（MainWindow.cs:1591）。
+        val snapped = !noFocus && console.viewport.snapToBottomForTap()
+        if (snapped) {
+            console.refresh()
+            requestRedraw()
         }
-        console.refresh()
-        requestRedraw()
-        return true
+        return snapped
     }
 
     /**
@@ -1500,10 +1584,25 @@ class CanvasConsoleView @JvmOverloads constructor(
         }
         // 回落：像素入口取不到时走既有格路径，非 div 命中的老行为不由本次接线改变。
         val hit = cellHitAt(console, x, y) ?: return null
-        // 与点击同一条行内纵判据：点不中的行内空白不该弹 title（原版 `:2368` 的 y 判式
-        // 同样作用于提示扫描）。锚行回退行不叠此门（tap 点不在锚行带内）。
-        if (hit.gated && inlineHitOrNull(console, hit) == null) return null
-        return console.tooltip(hit.row, hit.col)
+        // 行内纵判归**渲染层**：它按「该点有没有节点」判（`ConsoleScreen.tooltipInline`，
+        // 原版 `EmueraConsole.cs:2368` 的 `Top/Bottom` 判，非按钮节点同样算节点）。
+        // 这里**不能**拿 `hitInline`（只认识可点目标）当纵门 —— 那样
+        // `<nonbutton title='…'>` 整行判空，素质/种族的长按提示会全丢（0.2.44 玩家反馈）。
+        // 锚行回退行不叠纵门（tap 点不在锚行带内，行内纵坐标对它没有意义）。
+        val tip = if (hit.gated) {
+            console.tooltipInline(
+                row = hit.row,
+                col = hit.col,
+                yInRowPx = hit.yInRowPx,
+                fontSizePx = fontPixelSize.toInt(),
+                rowHeightPx = hit.rowHeightPx,
+                lineHeightPx = lineHeightPx,
+                pureArtRow = hit.pureArtRow,
+            )
+        } else {
+            console.tooltip(hit.row, hit.col)
+        }
+        return tip
     }
 
     /**
@@ -1543,6 +1642,14 @@ class CanvasConsoleView @JvmOverloads constructor(
     fun clientX(viewX: Float): Int = (viewX - contentLeftPx()).roundToInt()
 
     /** 视图坐标 → 客户区坐标（相对内容区左上角，纵向由 `MouseState.mouseY()` 再换算）。 */
+    /**
+     * 视图坐标 → **半角格列号**（手势层用；W1 度量单源化前 MainActivity 自算
+     * `floor((x - paddingLeft) / cellWidth)`，漏算窗口收窄居中的 [contentLeftPx] 水平偏移 ——
+     * `WindowX` 接线（版面收窄居中）时手势列号与 tap 命中（[cellHitAt]）分成两把尺。
+     * 现在两种读数都走 [contentLeftPx] / [halfCellPx] 单一权威；未接线时 inset = 0，
+     * 读数与旧算式逐值相同，接线时手势列号的偏移同时得到修正（修 bug 不是改语义）。
+     */
+    fun columnAt(x: Float): Int = kotlin.math.floor((x - contentLeftPx()) / halfCellPx).toInt()
     fun clientY(viewY: Float): Int = (viewY - paddingTop).roundToInt()
 
     /**
@@ -1710,7 +1817,11 @@ class CanvasConsoleView @JvmOverloads constructor(
      * （2026-10-22 真机收口：每帧 pump 把「发布」与「询问」混在一起）。
      */
     fun pumpAndInvalidateIfNeeded() {
-        if (feed?.hasUnpublishedContent() == true) invalidate()
+        // 清掉横带的那一帧也要重绘一次：指示器置 null 后 `hasUnpublishedContent()` 回假，
+        // 若不再失效，最后一次画上去的横带会一直挂在屏上（像素是上一帧的）。
+        val attached = feed
+        val busyGone = attached != null && busyBandDrawn && attached.busyIndicator() == null
+        if (attached?.hasUnpublishedContent() == true || busyGone) invalidate()
         // 字号不再随页面内容重算：版面只在尺寸变化 / 配置字号灌入时解算（[rebuildScreen]）。
     }
 
@@ -2259,15 +2370,28 @@ class CanvasConsoleView @JvmOverloads constructor(
         val contentHeight = (h - paddingTop - paddingBottom).coerceAtLeast(0)
         val attached = feed
         if (attached != null) {
-            // **纯几何刷新**（不碰字号/列宽）：`MainActivity` 声明了
+            // **几何与度量必须同代**：`MainActivity` 声明了
             // `configChanges="orientation|screenSize|…"` ⇒ 旋转/分屏**不重建 Activity**，
             // 只经 onSizeChanged 走到本分支；而 feed 已挂时下面只改行数就 return。若不在这里
             // 重解一次版面几何，[resolvedLayoutWidthPx] / [resolvedContentInsetLeftPx] 会停在
             // 旧屏宽 —— drawScreen 的内容右沿已改成 `contentLeftPx() + layoutWidthPx()`（不再是
             // 活读 `width - paddingRight`），窗口调窄过的玩家一转屏就会按旧屏宽的偏移画。
-            // [resolveFor] 只做纯几何解算（[publishLayoutGeometry] 更新三个读数），**不**调
-            // [applyMetrics]：会话期字号/列宽冻结的既有纪律不变（见下方 rows-only 路径）。
+            //
+            // 但只刷几何、不刷度量就是「一页两套宽」：[publishLayoutGeometry] 把版面宽改成新值后，
+            // [windowColumns] = `新版面宽 / halfCellPx`，而 [halfCellPx] 还停在会话构造期那一代。
+            // 真机 2272→1704px 实测 `1704 / 16.64 = 102` 列，可 [ConsoleScreen.clientWidth] 与
+            // sink 折行宽仍是 136 ⇒ 文字/按钮按 136 列折行，绘制右沿与命中上界按 102 列裁，
+            // `DRAWLINE` 和按钮列区间被硬裁掉右侧 34 列（玩家反馈的「补丁页面 UI 错位」）。
+            //
+            // [ScreenLayout.resolve] 的列数守护本来就会在窄屏把字号压到刚好铺下 136 列
+            // （真机同一次实测 32→24px、halfCell 16.64→12.48px），只是那一代度量过去在会话期
+            // 被丢掉了。这里补一次 [applyMetrics]：**只换渲染度量，不重排文字** ——
+            // [ConsoleScreen.clientWidth]、sink 折行宽、日志、revision 一个字都不动；
+            // 列数守护保证 136 列在窄屏仍铺得下，绘制 / 命中 / 折行回到同一把尺。
+            // 只有**宽度**变化会让 [ScreenLayout.resolve] 换代（字号/行高只由可绘制宽反推，
+            // 高度不参与）⇒ 输入栏 / 键盘显隐这种纯高度变化连 [applyMetrics] 都早退，零副作用。
             val layout = resolveFor(w, h)
+            applyMetrics(layout.metrics)
             // LIVE-REFLOW（契约 §5 L4）：宽度变了就**不许**再走下面的 rows-only 路径 ——
             // 旧路径的前提是「会话期宽度冻结」，还按旧宽折行会让 sink 折行、本类绘制、
             // 命中几何三套坐标系一起错位（列号漂、按钮点不中）。这里只负责把新列数/新行数
@@ -2276,7 +2400,8 @@ class CanvasConsoleView @JvmOverloads constructor(
             //
             // 关态（liveReflow=false）永不回调：「关态永不回调」的判据本体仍带开关
             // （[LiveReflowPlan.viewportNeedsReflow]），这样那条不变量本身可以在纯 JVM 单测里
-            // 直接钉住。上面的 [resolveFor] 只是几何刷新，不产生任何宿主回调 / 换屏。
+            // 直接钉住。上面的 [resolveFor] + [applyMetrics] 只做「几何/度量同代」，
+            // 不产生任何宿主回调 / 换屏 / 文字重排。
             //
             // 宽度比对读 `feed.screen.clientWidth`（当前**显示中**的那只屏）：本判据问的是
             // 「画面配不配得上新版面」，换屏没补做时旧屏宽照样不等于新解算列数 ⇒ 下次继续问。
@@ -2291,8 +2416,8 @@ class CanvasConsoleView @JvmOverloads constructor(
                     // 读数同源），不是 View 全高（含系统栏/状态栏），也不是 sink 的逻辑格宽。
                     // 宽读 [ScreenLayout.layoutWidthPx]（窗口宽窄于物理屏时它才是客户区宽，与
                     // [clientWidthPx] / MouseState 的 clientWidth 同一读数）；未布局解不出宽时
-                    // 回落本次的物理内容宽。字号取本次 layout 的解算值（此刻 [cellMetrics]
-                    // 尚未 applyMetrics，是旧档）。
+                    // 回落本次的物理内容宽。字号取本次 layout 的解算值（[applyMetrics] 已在
+                    // 上面把 [cellMetrics] 换成同一代，两者逐值一致）。
                     val physicalContentWidth = (w - paddingLeft - paddingRight).coerceAtLeast(0)
                     val contentWidth = layout.layoutWidthPx.takeIf { it > 0 } ?: physicalContentWidth
                     notify(
@@ -2305,10 +2430,11 @@ class CanvasConsoleView @JvmOverloads constructor(
                     return
                 }
             }
-            // 会话期字号与列宽**冻结**：ConsoleFeed 的 sink 宽、展平 metrics、命中几何都是
-            // 会话构造期定死的，中途换字号会让三套坐标系错位（绘制用新字号、折行/命中用旧字号）。
-            // 可见行数必须跟着高度走（输入栏/系统栏显隐就是这个维度）；宽度变化需先经
-            // [reflowAttachedFeed] 换屏（开关打开时），否则只能重开会话。
+            // 会话期**折行列宽冻结**：ConsoleFeed 的 sink 宽与 [ConsoleScreen.clientWidth] 是
+            // 会话构造期定死的，改它们才会让折行与绘制分叉。上面的 [applyMetrics] 只换渲染
+            // 度量（列数守护保证列数不变），不碰这两个读数 ⇒ 这里仍只需按高度改可见行数。
+            // 可见行数必须跟着高度走（输入栏/系统栏显隐就是这个维度）；「显示过的文字按新
+            // 宽度重新折行」始终是 [reflowAttachedFeed] 那条可选项，不是这里的职责。
             val rows = if (contentHeight > 0) {
                 (contentHeight / lineHeightPx).toInt().coerceAtLeast(1)
             } else {
@@ -2379,9 +2505,11 @@ class CanvasConsoleView @JvmOverloads constructor(
      * 把当前字号/可见区推给 [ConsoleFeed]，让内联图形按新度量重展平一次。
      *
      * 展平器是 `ConsoleFeed` 构造期按当时的 [metrics] 建的：`<img>` 缺省高、占宽格数、
-     * 竖带合并的行高都取自它。会话期字号/列宽是冻结的（见 [rebuildScreen]），这里真正会变的
-     * 只有可见高（系统栏/输入栏收起）与由此派生的 [bandMaxHeightPx]；图片带宽仍按构造期
-     * 的度量展平。若误把「字号在会话中变了」写回这里，会重新引入会话期重排。
+     * 竖带合并的行高都取自它。会话期**列宽冻结**（[ConsoleScreen.clientWidth] 与 sink 折行宽
+     * 不变，见 [rebuildScreen]），但**渲染度量**会在窗口宽变化时经 [applyMetrics] 换代 ——
+     * 这里把换代后的 [metrics] 推给 [ConsoleFeed]，图形段按新字号重展平，与绘制/命中同一把尺。
+     * 纯高度变化（输入栏/键盘显隐）不改字号，`updateLayout` 最多因 [bandMaxHeightPx] 重算；
+     * 两条路都不碰折行宽，不构成会话期重排。
      *
      * 可用宽取**固定窗口列数** × 当前半角格宽：`sink.clientWidth` 构造期定死，字号变了
      * 也不能按 `contentWidth / 当前格宽` 重算（那会把 123 列算成 148 列，图形占宽越界）。
@@ -2618,6 +2746,8 @@ class CanvasConsoleView @JvmOverloads constructor(
                 // 已更新的 DisplayList（folding/入列/脏区都在 :render 内完成）。
                 attached.pump()
                 drawScreen(canvas, attached.screen)
+                // 内容绘制之后：长页忙碌横带独占内容区最下面一行（纯显示态，不进行表）。
+                drawBusyIndicatorBand(canvas, attached)
                 notifyFirstContentFrame(attached.screen)
                 return
             }
@@ -2632,6 +2762,90 @@ class CanvasConsoleView @JvmOverloads constructor(
             if ((frameSource?.cacheRebuilds ?: 0L) != rebuildsBefore) postInvalidateOnAnimation()
             // 有重建被「写空闲稳定期」推迟 ⇒ 继续排帧，等这波图形写停下来再重建（否则画面停在旧图）。
             if (frameSource?.hasPendingRebuild == true) postInvalidateOnAnimation()
+        }
+    }
+
+    /**
+     * 长页忙碌横带（玩家可见形态 = 「少女祈祷中」+ 动点，水平居中、独占内容区最下面一行）。
+     *
+     * ## 为什么画在 `blitSurface` 之后（直接画在 View 画布上）
+     *
+     * 保留面（[screenSurface]）是**增量**栅格化的：只重烤 planner 判脏的行。横带是一条
+     * 每帧都在变的纯展示层，若烤进保留面，指示器消失时没有任何行签名会变，旧像素就永远
+     * 留在屏上。画在内容贴图之后则相反：每帧 `blitSurface` 都会把整张保留面重新贴一遍，
+     * 指示器一置 null，下一帧自然恢复成正文像素。清屏那一帧由
+     * [pumpAndInvalidateIfNeeded] 的 `busyGone` 补一次失效。
+     *
+     * ## 几何与配色
+     *
+     * - 矩形：既有 `contentLeftPx()` / `layoutWidthPx()` / `contentBottom = height - paddingBottom`
+     *   与既有行高 [lineHeightPx]（不另算新尺），**带高 = 一行**、紧贴内容区下沿；
+     * - 底：`ConsoleScreen.backgroundArgb`（= sink 活值底色 / Config.BackColor 同源）强制
+     *   不透明后整行覆盖 ⇒ 「独占一行」而不是叠字；
+     * - 字：`sink.foregroundColor ?: sink.defaultForeColor`（SETCOLOR 活值 / Config.ForeColor
+     *   同源），字体用 [typefaceFor] 的缺省族 + [fontPixelSize]（游戏自己的字体与字号），
+     *   量宽用同一支 [paint] 的 `measureText`。
+     *
+     * 只在 `BusyIndicatorBand.isVisible`（elapsedMs ≥ 1 s）时落笔；null / 不足 1 s 一律不画。
+     */
+    private fun drawBusyIndicatorBand(canvas: Canvas, console: ConsoleFeed) {
+        val indicator: BusyIndicator = console.busyIndicator() ?: run {
+            busyBandDrawn = false
+            return
+        }
+        if (!BusyIndicatorBand.isVisible(indicator)) {
+            busyBandDrawn = false
+            return
+        }
+        val contentLeft = contentLeftPx()
+        val rect = BusyIndicatorBand.bandRect(
+            contentLeft = contentLeft,
+            contentRight = contentLeft + layoutWidthPx(),
+            contentBottom = (height - paddingBottom).toFloat(),
+            rowHeightPx = lineHeightPx,
+        )
+        if (rect.width <= 0f || rect.height <= 0f) {
+            busyBandDrawn = false
+            return
+        }
+        val sink = console.sink
+        val foreArgb = sink.foregroundColor ?: sink.defaultForeColor
+        val label = BusyIndicatorBand.text(indicator)
+        val prevStyle = paint.style
+        val prevColor = paint.color
+        val prevAlpha = paint.alpha
+        val prevSize = paint.textSize
+        val prevScaleX = paint.textScaleX
+        val prevTypeface = paint.typeface
+        try {
+            // 底：不透明当前控制台底色，整行覆盖。
+            paint.style = Paint.Style.FILL
+            paint.alpha = 255
+            paint.color = opaque(console.screen.backgroundArgb)
+            canvas.drawRect(rect.left, rect.top, rect.right, rect.bottom, paint)
+            // 字：游戏自己的字体 / 前景色 / 呼吸 alpha。
+            paint.style = Paint.Style.FILL
+            paint.typeface = typefaceFor(null)
+            paint.textSize = fontPixelSize
+            paint.textScaleX = 1f
+            paint.color = opaque(foreArgb)
+            paint.alpha = BusyIndicatorBand.textAlpha(indicator)
+            val measured = paint.measureText(label)
+            val x = BusyIndicatorBand.textX(rect, measured)
+            val fm = paint.fontMetrics
+            // 窄屏 + 大字号时标签可能比内容区还宽：裁到横带矩形内，绝不画到内边距/状态栏带上。
+            val save = canvas.save()
+            canvas.clipRect(rect.left, rect.top, rect.right, rect.bottom)
+            canvas.drawText(label, x, BusyIndicatorBand.baselineY(rect, fm.ascent, fm.descent), paint)
+            canvas.restoreToCount(save)
+            busyBandDrawn = true
+        } finally {
+            paint.style = prevStyle
+            paint.color = prevColor
+            paint.alpha = prevAlpha
+            paint.textSize = prevSize
+            paint.textScaleX = prevScaleX
+            paint.typeface = prevTypeface
         }
     }
 
@@ -3226,7 +3440,7 @@ class CanvasConsoleView @JvmOverloads constructor(
             val originLeft = MappingColorGeometry.graphicOriginLeftPx(
                 originX, cmd.colStart, halfCellPx, shapeShiftPx,
             )
-            drawDivGraphic(canvas, graphic, originLeft, rowTop, highlighted, cmd.focusFore)
+            drawDivGraphic(canvas, cmd, graphic, originLeft, rowTop, highlighted, cmd.focusFore)
             return
         }
         val left = originX + cmd.colStart * halfCellPx
@@ -3278,18 +3492,22 @@ class CanvasConsoleView @JvmOverloads constructor(
      *
      * 与正文 [drawGraphic] 的差异只有两处，都是 div 路径的口径：
      * - 色块高亮换色（正文路径只画原色；这里是本波交付项，`:45`）；
-     * - 查不到资源时**静默跳过**（div 子行不画 altText 回落 —— 原版 `ConsoleImagePart.cs:175-182`
-     *   的回落是正文路径既有行为，div 侧不接，登记 TODO(verify)）。
+     * - 查不到资源时回落画 `AltText`（与正文 [drawImage] 缺帧支同一条官方语义：
+     *   `ConsoleImagePart.cs:168` 的 `aSprite != null && aSprite.IsCreated` 不成立 ⇒
+     *   `:175-182` 把重建的 img 标签当文本画；实现复用同一份 [drawImageAltText]，
+     *   见 [drawDivImage]）。
      * 裁剪已在调用方 [drawDivBlock] 的 save/clipRect（内容盒，`ConsoleDivPart.cs:196`），
      * 负 x/y 由裁剪静默吃掉 —— **不夹到 0**（`xpos` 允许为负，语料
      * `TEMP_CHARA_LIST_BY_DT.ERB:641` 就是负 xpos）。
      *
+     * @param cmd 本段的显示列表命令（缺帧回落取它的前景色与字形族，口径同 [drawImageAltText]）
      * @param originLeft 图形段绘制框左沿（列游标 + ShapePositionShift 的成品，见 [drawDivCmd]）
      * @param highlighted 本段是否处于焦点/按下态（位图换 srcb、色块换 ButtonColor）
      * @param buttonColor 该段按钮的 `ButtonColor`（[DrawCmd.focusFore]）
      */
     private fun drawDivGraphic(
         canvas: Canvas,
+        cmd: DrawCmd,
         graphic: InlineGraphic,
         originLeft: Float,
         rowTop: Float,
@@ -3324,7 +3542,7 @@ class CanvasConsoleView @JvmOverloads constructor(
                 canvas.drawRect(x0, top, right, bottom, paint)
                 paint.shader = null
             }
-            is InlineGraphic.Image -> drawDivImage(canvas, graphic, originLeft, rowTop, highlighted)
+            is InlineGraphic.Image -> drawDivImage(canvas, graphic, originLeft, rowTop, highlighted, cmd)
         }
     }
 
@@ -3341,6 +3559,7 @@ class CanvasConsoleView @JvmOverloads constructor(
      * `GetSprite` 对未注册名返回 null ⇒ `cImageB == null` 的判式落空，`AppContents.cs:46-48`）。
      *
      * @param highlighted 焦点或按下（两者都换 `srcb` 图，取不到退主图）
+     * @param cmd 本段的显示列表命令（缺帧回落交 [drawImageAltText] 取前景色 / 字形族）
      */
     private fun drawDivImage(
         canvas: Canvas,
@@ -3348,6 +3567,7 @@ class CanvasConsoleView @JvmOverloads constructor(
         originLeft: Float,
         rowTop: Float,
         highlighted: Boolean,
+        cmd: DrawCmd,
     ) {
         // 竖带块（ImageBandMerge 产物）：div 子行理论上不出现（合并在正文绘制路径开），
         // 但同一份 Image 形态可能带着 bandResources，按既有原语堆叠，行为可预期。
@@ -3355,28 +3575,50 @@ class CanvasConsoleView @JvmOverloads constructor(
             drawBandStack(canvas, image, it, originLeft, rowTop)
             return
         }
-        val source = frameSource ?: return
+        val source = frameSource
+        if (source == null) {
+            // 取图通道没接：与原版 sprite 取不到同档（这一帧没有可画的帧）⇒ 退 AltText。
+            drawDivImageAltText(canvas, image, originLeft, rowTop, cmd)
+            return
+        }
         val requested = image.drawResource(highlighted)
         var frame = source.frame(requested)
         if (frame == null && requested != image.resource) {
             // 按下图缺失退主图（同 drawImage：GetSprite 未注册名返回 null）。
             frame = source.frame(image.resource)
         }
-        val found = frame ?: return
-        val bitmap = found.handle as? Bitmap ?: return
-        val w = GraphicGeometry.inlineSize(image.widthPx, found.width)
-        val h = GraphicGeometry.inlineSize(image.heightPx, found.height)
-        if (w <= 0 || h <= 0) return
+        if (frame == null) {
+            // 查不到帧 = 原版 `aSprite == null`（`ConsoleImagePart.cs:168` 守卫不成立）⇒
+            // 把重建的 img 标签当文本画（`:175-182`）。
+            drawDivImageAltText(canvas, image, originLeft, rowTop, cmd)
+            return
+        }
+        val bitmap = frame.handle as? Bitmap
+        if (bitmap == null) {
+            // 帧在但句柄不是位图（未解码/占位）：同属「这一帧拿不到像素」，同档回落。
+            drawDivImageAltText(canvas, image, originLeft, rowTop, cmd)
+            return
+        }
+        val w = GraphicGeometry.inlineSize(image.widthPx, frame.width)
+        val h = GraphicGeometry.inlineSize(image.heightPx, frame.height)
+        if (w <= 0 || h <= 0) {
+            drawDivImageAltText(canvas, image, originLeft, rowTop, cmd)
+            return
+        }
         val src = GraphicGeometry.sourceRectClipped(
-            found.srcX, found.srcY, found.srcW, found.srcH, bitmap.width, bitmap.height,
-        ) ?: return
+            frame.srcX, frame.srcY, frame.srcW, frame.srcH, bitmap.width, bitmap.height,
+        )
+        if (src == null) {
+            drawDivImageAltText(canvas, image, originLeft, rowTop, cmd)
+            return
+        }
         srcRect.set(src[0], src[1], src[2], src[3])
         val top = rowTop + image.yOffsetPx
         // 落位框（ASpriteSingle.cs:79-85 / SpriteAnime.cs:153-156），div 子行不缩（缩放系数恒 1）。
         val place = GraphicGeometry.spriteDestRect(
-            w, h, found.destW, found.destH,
-            found.basePosX, found.basePosY, found.offsetX, found.offsetY,
-            found.srcW, found.srcH, found.anime,
+            w, h, frame.destW, frame.destH,
+            frame.basePosX, frame.basePosY, frame.offsetX, frame.offsetY,
+            frame.srcW, frame.srcH, frame.anime,
         )
         val left = originLeft + place[0]
         val drawTop = top + place[1]
@@ -3384,6 +3626,27 @@ class CanvasConsoleView @JvmOverloads constructor(
         paint.isFilterBitmap = true
         canvas.drawBitmap(bitmap, srcRect, dstRect, paint)
         paint.isFilterBitmap = false
+    }
+
+    /**
+     * div 子行 `<img>` 缺帧回落：复用正文同一份 [drawImageAltText]（spec:
+     * `ConsoleImagePart.cs:175-182` 的 `new Point(PointX, pointY)`）。
+     *
+     * 只做一件事：把绘制链的 [originLeft] 还原成**裸 PointX** —— div 子行的图形原点由
+     * [MappingColorGeometry.graphicOriginLeftPx] 给出、**已含** `ShapePositionShift`
+     * （`ConsoleImagePart.cs:171`），而回落那句用的是裸 `PointX`，shift 不参与。
+     * [rowTop] 本身就是 `pointY`（子行行顶），**不加** `ypos`（`destRect.Y` 不参与回落）。
+     * 内容盒裁剪由调用方 [drawDivBlock] 的 save/clipRect 承担（`ConsoleDivPart.cs:196`）。
+     * `altText == null`（生产侧没给）由 [drawImageAltText] 的守卫保持静默。
+     */
+    private fun drawDivImageAltText(
+        canvas: Canvas,
+        image: InlineGraphic.Image,
+        originLeft: Float,
+        rowTop: Float,
+        cmd: DrawCmd,
+    ) {
+        drawImageAltText(canvas, image, originLeft - shapeShiftPx, rowTop, cmd)
     }
 
     /** [drawDivBlock] 复用的圆角路径（每块重建内容，实例字段省分配）。 */
@@ -4019,6 +4282,10 @@ class CanvasConsoleView @JvmOverloads constructor(
         rowTop: Float,
         foreArgb: Int,
     ) {
+        if (glyphCacheEnabled) {
+            drawCmdTextCached(canvas, cmd, originX, rowTop, foreArgb)
+            return
+        }
         paint.color = opaque(foreArgb)
         paint.textSize = fontPixelSize
         paint.isFakeBoldText = cmd.styleMask and Grid.STYLE_BOLD != 0
@@ -4109,6 +4376,7 @@ class CanvasConsoleView @JvmOverloads constructor(
      * 分别落在选中族与兜底族上，绘制方必须按 [GlyphMetric.family] 设字体。
      */
     private fun metricOf(glyph: GlyphKey): GlyphMetric {
+        if (glyphCacheEnabled) return glyphCacheMetricOf(glyph)
         val bucket = bucketFor(glyph.fontName)
         val key = packGlyphKey(glyph)
         val cached = bucket.get(key)
@@ -4145,6 +4413,65 @@ class CanvasConsoleView @JvmOverloads constructor(
      *
      * 只在该字形**首次**进度量缓存时调用一次，不在每帧热路径上。
      */
+    /** 开态懒取字形缓存：只在 glyphCacheEnabled 为真时被调用，关态不进这个函数。 */
+    private fun glyphCache(): GlyphCache {
+        val existing = glyphCacheInstance
+        if (existing != null) return existing
+        val created = GlyphCache(2048, AndroidGlyphRaster(), metrics)
+        glyphCacheInstance = created
+        return created
+    }
+
+    /** 开态度量：前进量取 GlyphCache 的 GlyphEntry，不再问 Paint.measureText。 */
+    private fun glyphCacheMetricOf(glyph: GlyphKey): GlyphMetric {
+        val entry = glyphCache().get(glyph)
+        val family = fontFamilies.resolve(entry.servedFont)
+        val text = String(Character.toChars(glyph.codePoint))
+        return GlyphMetric(
+            text,
+            entry.advancePixels.toFloat(),
+            entry.advanceCells.toFloat(),
+            family,
+            entry.ascentPixels.toFloat(),
+        )
+    }
+
+    /** 开态绘制：逐字形贴 GlyphEntry.bitmap，1:1 落格，不再用 textScaleX 填格。 */
+    private fun drawCmdTextCached(
+        canvas: Canvas,
+        cmd: DrawCmd,
+        originX: Float,
+        rowTop: Float,
+        foreArgb: Int,
+    ) {
+        paint.color = opaque(foreArgb)
+        paint.textSize = fontPixelSize
+        paint.isFakeBoldText = false
+        paint.textSkewX = 0f
+        paint.isUnderlineText = false
+        paint.isStrikeThruText = false
+        paint.textScaleX = 1f
+        val cache = glyphCache()
+        var col = cmd.colStart.toFloat()
+        for (glyph in cmd.glyphs) {
+            if (col >= cmd.colEnd) break
+            val entry = cache.get(glyph)
+            val advance = entry.advanceCells.toFloat()
+            if (advance <= 0f || entry.bitmap.isEmpty()) {
+                col += advance
+                continue
+            }
+            canvas.drawBitmap(
+                entry.bitmap, 0, entry.bitmapWidth,
+                originX + col * halfCellPx, rowTop,
+                entry.bitmapWidth, entry.bitmapHeight,
+                true, paint,
+            )
+            col += advance
+        }
+        paint.textScaleX = 1f
+    }
+
     private fun effectiveFamily(requested: BundledFontFamily, codePoint: Int): BundledFontFamily {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return requested
         val text = String(Character.toChars(codePoint))
@@ -4579,6 +4906,12 @@ class CanvasConsoleView @JvmOverloads constructor(
 
         /** 绘制/取图的 logcat 标签（与既有 `EratwRender` 那批诊断行同源）。 */
         private const val TAG = "EratwRender"
+
+        /**
+         * 留白比例的防御上限：偏好层白名单已夹在 0.12（`UiPrefs.CONTENT_MARGIN_OPTIONS`），
+         * 这里再兜一道 0.5 —— 任何构造实参都不许把「每侧留白」算到吃掉半屏以上。
+         */
+        private const val MAX_CONTENT_MARGIN_FRACTION = 0.5f
 
         /**
          * div 边框色的回落值（`bcolor` 没写时原版取 `Config.ForeColor`，DrawBorder :94/:111

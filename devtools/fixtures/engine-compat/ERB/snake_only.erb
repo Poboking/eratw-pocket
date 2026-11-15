@@ -1,0 +1,9 @@
+@FIXTURE_SNAKE_ONLY_COMMANDS
+; engine-compat mini fixture: snake-only display/audio commands.
+; SETBGIMAGE / PLAYBGM exist in the snake (4.9xx) command surface but are
+; absent from the v24_1824 command surface, so compiling this file under
+; the v24 profile must take the engine-profile rejection path, while the
+; default (no --engine-profile) path compiles it unchanged.
+SETBGIMAGE "fixture_bg.png"
+PLAYBGM "fixture_bgm.ogg"
+PRINTL snake-only command file executed

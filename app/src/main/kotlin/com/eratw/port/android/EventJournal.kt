@@ -91,6 +91,9 @@ internal object EventJournal {
     /** 编码后的行（与落盘格式逐字相同）。 */
     fun lines(): List<String> = ring.snapshot().map { HostEventCodec.encode(it) }
 
+    /** 环内尾 [n] 条、编码后的行（只读）；供运行时快照的 events 节注入，写路径不受影响。 */
+    fun tailLines(n: Int): List<String> = ring.tail(n).map { HostEventCodec.encode(it) }
+
     /** 当前落盘文件；未 begin = null。 */
     fun file(): File? = dir?.let { File(it, EventFilePolicy.FILE_NAME) }
 

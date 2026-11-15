@@ -147,7 +147,7 @@ class EchoInputPrefTest {
         val sp = FakeSharedPreferences()
         sp.map["font_columns"] = 90
         sp.map["screen_fit"] = false
-        sp.map["lean_options"] = true
+        sp.map["busy_indicator"] = true
         sp.map["live_reflow"] = true
         val before = HashMap(sp.map)
 
@@ -156,7 +156,7 @@ class EchoInputPrefTest {
 
         // 反向：清空后把邻居全置 true，这一项仍必须回落缺省关
         val other = FakeSharedPreferences()
-        listOf("font_columns", "screen_fit", "lean_options", "live_reflow", "option_rail").forEach {
+        listOf("font_columns", "screen_fit", "busy_indicator", "live_reflow", "option_rail").forEach {
             other.map[it] = true
         }
         assertFalse(UiPrefs.readEchoInput(other))

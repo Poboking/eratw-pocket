@@ -587,7 +587,7 @@ class UpdateDownloadService : Service() {
                 .onFailure {
                     Log.w(TAG, "下载线程异常收场", it)
                     // 线程直接抛了 = 一条下载都没跑起来：类别未知（null），但补救面照给（Toast 不靠通知权限）。
-                    val visible = notificationsVisible()
+                    val visible = notificationsVisible(UpdateDownloadService.CHANNEL_RESULT)
                     rememberFailedJob(applicationContext, job)
                     postResultNotification(
                         copy.notStartedNotifyTitle,
@@ -627,7 +627,10 @@ class UpdateDownloadService : Service() {
                 recordProgress(done, total, now)
                 refreshProgress(now)
             }
-            val notifyVisible = notificationsVisible()
+            // 结果通知（完成/失败/取消）发 CHANNEL_RESULT，判据必须查同一条渠道：查成进度渠道
+            // 就会出现「判说可见、系统按渠道丢弃」的零触达窗 —— 完成通知发不出去、自动直装
+            // 又不触发、也没有补救 Toast，下载完成到安装之间就此断链（玩家报红「下载完没反应」）。
+            val resultVisible = notificationsVisible(UpdateDownloadService.CHANNEL_RESULT)
             val file = outcome.file
             // 文件已核对落盘就按完成报：取消只取消「还没下完的等待」，不许把已到手的产物吞掉。
             when {
@@ -644,7 +647,7 @@ class UpdateDownloadService : Service() {
                     )
                     when (job.kind) {
                         UpdateDownloadKind.Apk -> {
-                            if (notifyVisible) {
+                            if (resultVisible) {
                                 val done = UpdateProgressText.apkDoneText(copy, true)
                                 postResultNotification(
                                     copy.apkReadyTitle,
@@ -674,17 +677,16 @@ class UpdateDownloadService : Service() {
                                         copy,
                                         copy.assetsRegisterProblemLine,
                                         null,
-                                        notifyVisible,
+                                        resultVisible,
                                     ),
                                     retryIntent(applicationContext, job),
-                                    notifyVisible,
                                     null,
                                 )
                             } else {
                                 // 只说「下次启动时自动应用」：此刻还没生效，不许提前报喜（契约 §0.4）。
                                 val done = UpdateProgressText.assetsDoneText(copy)
                                 postResultNotification(copy.assetsReadyTitle, done, null)
-                                if (!notifyVisible) honestToast(done)
+                                if (!resultVisible) honestToast(done)
                             }
                         }
                     }
@@ -703,9 +705,9 @@ class UpdateDownloadService : Service() {
                 }
 
                 cancelFlag.get() -> {
-                    val cancelled = UpdateProgressText.cancelledText(copy, notifyVisible)
+                    val cancelled = UpdateProgressText.cancelledText(copy, resultVisible)
                     postResultNotification(copy.cancelledNotifyTitle, cancelled, null)
-                    if (!notifyVisible) honestToast(cancelled)
+                    if (!resultVisible) honestToast(cancelled)
                     // 漏斗遥测拍 4 取消（U6）：玩家按了「取消下载」（断点留在盘上，续传口径不变）。
                     UpdateTelemetryWiring.downloadCancelled(applicationContext, job.kind, job.assetsVersion)
                 }
@@ -723,9 +725,8 @@ class UpdateDownloadService : Service() {
                     reportFailure(
                         job,
                         copy.failedNotifyTitle,
-                        UpdateProgressText.failedText(copy, outcome.problem, outcome.kind, notifyVisible),
+                        UpdateProgressText.failedText(copy, outcome.problem, outcome.kind, resultVisible),
                         retryIntent(applicationContext, job),
-                        notifyVisible,
                         // 读现成的：UpdateManager 在「所有候选地址都试完」那一支不带类别（UpdateManager.kt:519），
                         // 那时 kind 为 null，本层的映射自有一句话，不许在这儿另造第二套分类。
                         outcome.kind,
@@ -775,7 +776,8 @@ class UpdateDownloadService : Service() {
     }
 
     /**
-     * 失败的上屏（EP4 U1-③④）：通知按能不能看见写正文，**Toast 无条件补一条**。
+     * 失败的上屏（EP4 U1-③④）：通知按能不能看见写正文（正文由调用方按同一条结果渠道
+     * 判据拼好后传入），**Toast 无条件补一条**。
      *
      * Toast 不依赖通知权限，是「不给通知权限的玩家也能看到该怎么办 + 去哪儿重试」的最后一条同屏面；
      * 它只有一行的余地，所以送 [UpdateProgressText.failureToast]（类别化的处置句，不带原话与术语）。
@@ -785,7 +787,6 @@ class UpdateDownloadService : Service() {
         title: String,
         text: String,
         contentIntent: Intent?,
-        notifyVisible: Boolean,
         kind: UpdateDownloadPlan.FailureKind?,
     ) {
         rememberFailedJob(applicationContext, job)
@@ -867,11 +868,14 @@ class UpdateDownloadService : Service() {
     /**
      * 通知到底看不看得见（EP4 U1-④ 的判据；P2-10 起加**渠道级**）。
      *
-     * 判据统一收在 [UpdateUi.notificationsVisible]：应用级开关 + 进度渠道的 importance 两档，
+     * 判据统一收在 [UpdateUi.notificationsVisible]：应用级开关 + **指定渠道**的 importance 两档，
      * 本服务与设置页共用同一份读数（同一件事不许两处各判一次，判歪了就是两套话术）。
+     * [channel] 必须与要判的通知的实际发送面配对：进度通知走 [CHANNEL_PROGRESS]（缺省），
+     * 完成/失败/取消等结果通知走 [CHANNEL_RESULT] —— 判错渠道 = 判说可见、系统按渠道丢弃。
      * 读数取不到时那边按「看得见」处理 —— 宁可少发一条 Toast，也不许对玩家说瞎话。
      */
-    private fun notificationsVisible(): Boolean = UpdateUi.notificationsVisible(applicationContext)
+    private fun notificationsVisible(channel: String = CHANNEL_PROGRESS): Boolean =
+        UpdateUi.notificationsVisible(applicationContext, channel)
 
     /** 系统通知服务：API 23 起才有 Class 形态的 getSystemService，21/22 走字符串形态。 */
     private fun notificationManager(): NotificationManager? = runCatching {

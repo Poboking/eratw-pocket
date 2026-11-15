@@ -1,0 +1,22 @@
+--- a/COMMON.ERB
++++ b/COMMON.ERB
+@@ -2801,5 +2801,8 @@
+ TARGET_STR '= REPLACE(TARGET_STR, "\/+", "/")
+ CALLF CNT_SPLIT(KEY_STR, KEY_LIST, KEY_CNT, KEY_NUM)
+ 
+ SPLIT TARGET_STR, "/", TEMP_STR, TEMP_NUM
++;【CB-014】注记：同 CNT_SPLIT —— SPLIT 只把前 VARSIZE 段写进 TEMP_STR、TEMP_NUM 仍是完整段数，本数组同为 #DIMS DYNAMIC TEMP_STR, 1000（:2798）；超界段不在数组里，钳回 VARSIZE 只统计实际保留的段（下方 MATCH 的结束下标也不再越界）。
++SIF TEMP_NUM > VARSIZE("TEMP_STR")
++	TEMP_NUM = VARSIZE("TEMP_STR")
+ FOR KEY_ID, 0, KEY_NUM
+@@ -2850,6 +2850,10 @@
+ STR_NUM = 0
+ 
+ SPLIT TARGET_STR, "/", TEMP_STR, TEMP_NUM
++;【CB-014】注记：SPLIT 只把前 VARSIZE 段写进 TEMP_STR、TEMP_NUM 仍是完整段数（蛇版 Process.ScriptProc.cs:549-565 的溢出报错已被注释），超界段一读即崩（玩家实报 第1参数(1000) 越界）。
++;本函数头注自限「单词总数 <1000 个（受限于函数内临时数组大小）」，超界段本就不在 TEMP_STR 里，钳回 VARSIZE 只统计 SPLIT 实际保留的段。
++SIF TEMP_NUM > VARSIZE("TEMP_STR")
++	TEMP_NUM = VARSIZE("TEMP_STR")
+ FOR TEMP_ID, 0, TEMP_NUM
+ 	;文字長判定
+ 	SIF !STRLENS(TEMP_STR:TEMP_ID)

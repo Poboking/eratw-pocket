@@ -1,0 +1,15 @@
+--- a/イベント関連/EVENTTURNEND.ERB
++++ b/イベント関連/EVENTTURNEND.ERB
+@@ -22,9 +22,10 @@
+ 	IF MAGIC_DLC_好感亲密重做 
+ 		IF CFLAG:LOCAL:4 > 0
+ 			LOCAL:1 = ABL:LOCAL:親密
+-			IF CFLAG:LOCAL:2 >= 1000000 && SQRT(CFLAG:LOCAL:4)/8 > LOCAL:1
+-				ABL:LOCAL:親密 = SQRT(CFLAG:LOCAL:4)/8
++			;CB-016：原式无上限（信赖度 999999 时 SQRT/8=124 级），而官方对亲密的有效消费面是 MIN(親密,15)（コマンド関連/COMF/外出系/NASIKUZUSI.ERB:582-592 多处）且升级消耗表 CASE 21+（CASEELSE）进入 40000*親密^2 公式段（ステータス計算関連/ABL/ABL_UP_DATA.ERB:573-574，100 级一次 4 亿好意之珠）——100+ 级时一次升级吞掉数亿好意，玩家报红「亲密过100变0/好意几千万」。封顶 15 对齐官方消费锚，存量等级只升不降不受影响
++			IF CFLAG:LOCAL:2 >= 1000000 && MIN(SQRT(CFLAG:LOCAL:4)/8, 15) > LOCAL:1
++				ABL:LOCAL:親密 = MIN(SQRT(CFLAG:LOCAL:4)/8, 15)
+ 				PRINTFORMW %CALLNAME:LOCAL%的亲密等级由于满好感+信赖度的补正，从 {LOCAL:1} 级变成了 {ABL:LOCAL:親密} 级
+ 			ENDIF
+ 			LOCAL:1 = 0
+ 		ENDIF

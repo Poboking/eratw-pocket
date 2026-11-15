@@ -133,7 +133,8 @@ class DevToolsHost private constructor(
                 // 回贴底那一击按原版 `MainWindow.cs:799-820` **只回贴底、不提交**（`:808` 的
                 // `if (!flag)` 罩住整段命中分支），实测通道照抄同一条口径，否则调试时会把
                 // 「滚动着的视图上点一下」记成一次按钮提交，取证就与真机行为对不上。
-                val outcome = view.tap(x, y, host.acceptance())
+                // NF 等待与真机同口径：不强制贴底（MainWindow.cs:949）。
+                val outcome = view.tap(x, y, host.acceptance(), host.pendingRequest()?.noFocus == true)
                 val text = outcome.hit
                 when {
                     outcome.snappedToBottom ->
@@ -450,9 +451,12 @@ class DevToolsHost private constructor(
     /**
      * `dating`：「约会中／路人子」现场读数（diag-datingsync，与错误报告里那一行同源同口径）。
      *
-     * 用途是把两条只能靠玩家描述的反馈变成可读数：①某人被 `CHK_DATENOW` 判成"正在约会"
-     * 时到底哪几个角色的 `CFLAG:约会中` 不等于 `MAIN_MAP`；②路人子那两半闸
-     * （`TALENT:路人` 与 `TFLAG:一日一回` 的第 9 位）当时各是什么。
+     * 用途是把三条只能靠玩家描述的反馈变成可读数：①某人被 `CHK_DATENOW` 判成"正在约会"
+     * 时到底哪几个角色的 `CFLAG:约会中` 不等于基准（4.980 基准 `MAIN_MAP` 与 4.981 基准
+     * `GET_HOME_MAP()` 双口径各出一行，出处见 core 侧 [com.eratw.port.core.proc.DatingForensics]）；
+     * ②路人子那两半闸（`TALENT:路人` 与 `TFLAG:一日一回` 的第 9 位）当时各是什么；
+     * ③「约去约会后人消失」道中链——`FLAG:约会的对象`、MASTER/对象的
+     * `CFLAG:現在位置/同行/约会中`、`TFLAG:约会道中`（97xx = ROAD_TO 道中 MAPID 段）。
      * 只读，不改状态；语料侧的 `#DIM SAVEDATA` 基准读不到时直说不可用（系统变量恒可读，
      * 一片 0 的现场比没有现场更容易误导定性）。
      */

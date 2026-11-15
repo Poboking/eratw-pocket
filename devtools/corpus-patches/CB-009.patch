@@ -1,0 +1,11 @@
+--- a/魔改内容/qol/qol_MAP.ERB
++++ b/魔改内容/qol/qol_MAP.ERB
+@@ -580,6 +580,8 @@ ELSEIF 特殊ワープ && NUM_RES == 特殊ワープ
+ 	PRINTFORML %CALLNAME:MASTER%踏入了空间的扭曲后
+ 	PRINTFORMW 不知不觉间便到达了%NAME_FROM_PLACE(特殊ワープ)%…
+ 	P_ID = 特殊ワープ
++	;直接到达目的地时清掉道中计数（EVENTCOMEND2.ERB:72 同形），否则下一回合会被再次复位位置
++	TFLAG:约会道中 = 0
+ 	CFLAG:MASTER:現在位置 = P_ID
+ 	CFLAG:MASTER:约会中 = GET_MAPID(P_ID)
+ 	IF HAS_ANY_COMPANION()

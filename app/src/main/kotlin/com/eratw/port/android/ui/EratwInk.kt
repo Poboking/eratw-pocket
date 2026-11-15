@@ -91,6 +91,48 @@ object EratwInk {
     /** 关于与反馈：主绿的亮档，读起来是「信息」而不是「可改的选项」。 */
     fun zoneAboutArgb(): Int = 0xFF9FC79F.toInt()
 
+    // ---- 复古文字游戏面（教程弹窗这类「本体风」浮层）----
+    // 不另起设计语言：全部取本体 eraTW 自己的颜色，锚点两处。
+    // - `emuera.config`：BACKGROUND COLOR 0,0,0 / TEXT COLOR 192,192,192（= 0xC0C0C0，
+    //   游戏里的「白字」其实是银灰）/ HIGHLIGHT COLOR 255,255,0；
+    // - 语料 `ERB/**/DIM.ERH:571-608` 的 C_* 常量（C_WHITE 即 0xC0C0C0，C_CREAM 0xFFFFCC，
+    //   C_GRAY 0x404040，C_L_GRAY 0x777777，C_AQUA 0x66FFFF）。
+    // 面板框仿 `ERB/TITLE.ERB` 的 HTML div：`border='2px' bcolor='#a5a5a5'`,
+    // 面板底 `color='#363636'`。改色仍只改这一处。
+
+    /** 屏幕底：纯黑（`emuera.config` 的 BACKGROUND COLOR）。 */
+    fun consoleBgArgb(): Int = 0xFF000000.toInt()
+
+    /** 浮层面板底：比屏幕亮一档，读得出「这块是盖在画面上的」。 */
+    fun consolePanelArgb(): Int = 0xFF0E0E0E.toInt()
+
+    /** 游戏 HTML div 的面板底：`#363636`（TITLE.ERB 的 `color='#363636'`）。 */
+    fun consoleBoxArgb(): Int = 0xFF363636.toInt()
+
+    /** 面板外框：游戏 HTML div 的 `border='2px' bcolor='#a5a5a5'`。 */
+    fun consoleFrameArgb(): Int = 0xFFA5A5A5.toInt()
+
+    /** 内框与分隔线：`C_GRAY` #404040。 */
+    fun consoleRuleArgb(): Int = 0xFF404040.toInt()
+
+    /** 正文：`C_WHITE` #C0C0C0（游戏默认字色）。 */
+    fun consoleTextArgb(): Int = 0xFFC0C0C0.toInt()
+
+    /** 次级字（注脚、未选中的章节号）：`C_L_GRAY` #777777。 */
+    fun consoleTextDimArgb(): Int = 0xFF777777.toInt()
+
+    /** 高亮与主行动（关键词、当前章节、末页主按钮）：`C_YELLOW` #FFFF00。 */
+    fun consoleHighlightArgb(): Int = 0xFFFFFF00.toInt()
+
+    /** 标题与柔和高亮：`C_CREAM` #FFFFCC。 */
+    fun consoleCreamArgb(): Int = 0xFFFFFFCC.toInt()
+
+    /** 可照抄的目录与文件名：`C_AQUA` #66FFFF。 */
+    fun consoleLinkArgb(): Int = 0xFF66FFFF.toInt()
+
+    /** CRT 扫描线（盖在像素面板最上层的极淡横线，alpha 约 7%）。 */
+    fun consoleScanlineArgb(): Int = 0x12FFFFFF
+
     // ---- 遮罩 ----
 
     /** 弹窗遮罩：压在立绘/画面上时用它，正文读得清。 */
@@ -140,6 +182,28 @@ object EratwInk {
     fun zoneMod(): Color = Color(zoneModArgb())
 
     fun zoneAbout(): Color = Color(zoneAboutArgb())
+
+    fun consoleBg(): Color = Color(consoleBgArgb())
+
+    fun consolePanel(): Color = Color(consolePanelArgb())
+
+    fun consoleBox(): Color = Color(consoleBoxArgb())
+
+    fun consoleFrame(): Color = Color(consoleFrameArgb())
+
+    fun consoleRule(): Color = Color(consoleRuleArgb())
+
+    fun consoleText(): Color = Color(consoleTextArgb())
+
+    fun consoleTextDim(): Color = Color(consoleTextDimArgb())
+
+    fun consoleHighlight(): Color = Color(consoleHighlightArgb())
+
+    fun consoleCream(): Color = Color(consoleCreamArgb())
+
+    fun consoleLink(): Color = Color(consoleLinkArgb())
+
+    fun consoleScanline(): Color = Color(consoleScanlineArgb())
 
     fun scrim(): Color = Color(scrimArgb())
 

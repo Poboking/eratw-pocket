@@ -72,7 +72,7 @@ class PortraitGridTest {
 
     @Test
     fun `G2 含 3xx 且 1 个角色块归 INTERACT`() {
-        // 标签两种印法都认：尾缀 摸屁股[310] 与前缀 [300]（前缀形态见 UiPrefs.leanOptions 的口径注）。
+        // 标签两种印法都认：尾缀 摸屁股[310] 与前缀 [300]（前缀形态见 LeanOptionFilter 的口径注）。
         val options = listOf(
             option("摸屁股[310]", 310L),
             option("[300] 睡觉", 300L),

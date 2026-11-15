@@ -1,0 +1,11 @@
+--- a/DIM.ERH
++++ b/DIM.ERH
+@@ -219,6 +219,7 @@
+ #DIM ソート項目, (簡易能力表示最大页数的番号 + 1) * 10
+ 
+-#DIM CONST MAXPANTS = 34
++;PANTS_TEMP 需覆盖胖次对象号 34/35（CSV/_Rename.csv 泳裤/特有泳裤），否则 衣服/PANTS.ERB:82 退衣越界
++#DIM CONST MAXPANTS = 36
+ #DIM CONST 胖次管理 = 100
+ #DIM CONST MAXBRA = 22
+ 

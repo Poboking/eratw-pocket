@@ -130,6 +130,8 @@ data class ModImportCopy(
     val artifactSaveFailedFormat: String,
     /** 写读往返校验失败（I8）：{0} 异常原话（原话是取证面，尾巴的标签是给报错页的）。 */
     val verifyWrittenFailedFormat: String,
+    /** Mod 运行总闸未开时的成功页状态说明（无占位符）。 */
+    val modRuntimeOffHint: String,
 
     // ---------------------------------------------------------------- 宿主响应链（SettingsActivity 的导入段）
     /** 单个 SAF 文件读不出：{0} 文件名或 uri 段。 */
@@ -209,6 +211,7 @@ data class ModImportCopy(
             identityFailedFallback = "补丁与 base 身份不符",
             artifactSaveFailedFormat = "补丁产物落盘失败：{0}",
             verifyWrittenFailedFormat = "{0}（不变量 I8）",
+            modRuntimeOffHint = "Mod 运行总闸当前未开，导入的内容要开启总闸并重开一局后才生效。",
             sourceReadFailedFormat = "{0}：读不出文件内容（可能已被移动或删除）",
             allReadsFailedFormat = "所选文件一个都读不出来：\n{0}",
             unexpectedFormat = "导入发生未预期异常：{0}: {1}",
@@ -264,6 +267,9 @@ data class ModImportCopy(
             identityFailedFallback = "The patch does not match the base build",
             artifactSaveFailedFormat = "Writing the patch artifact failed: {0}",
             verifyWrittenFailedFormat = "{0} (invariant I8)",
+            modRuntimeOffHint =
+                "The Mod runtime gate is off. The imported content takes effect only after you " +
+                    "enable the gate and start a new session.",
             sourceReadFailedFormat = "{0}: could not read the file contents (it may have been moved or deleted)",
             allReadsFailedFormat = "None of the selected files could be read:\n{0}",
             unexpectedFormat = "Unexpected error during import: {0}: {1}",
@@ -317,6 +323,7 @@ data class ModImportCopy(
             identityFailedFallback = "パッチが base と一致しません",
             artifactSaveFailedFormat = "パッチ成果物の書き込みに失敗：{0}",
             verifyWrittenFailedFormat = "{0}（不変条件 I8）",
+            modRuntimeOffHint = "Mod 実行の総スイッチが切のため、有効化して新しいセッションを始めると反映されます。",
             sourceReadFailedFormat = "{0}：ファイルの内容を読み込めませんでした（移動または削除された可能性があります）",
             allReadsFailedFormat = "選択されたファイルを1つも読み込めませんでした：\n{0}",
             unexpectedFormat = "導入中に予期しない例外が発生：{0}: {1}",

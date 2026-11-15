@@ -261,8 +261,9 @@ class CanvasContentInsetSingleSourceTest {
         assertTrue(code.contains("sourceWindowWidthScriptPx = windowWidthScriptPx"), "灌入必须存脚本 px 原值")
         assertTrue(code.contains("fun windowWidthScriptPx(): Int"), "交给 core 播种的同尺逆折算读口必须存在")
         assertTrue(
-            code.contains("val ratio = metrics.fontPixelSize.toFloat() / sourceFontPixelSize"),
-            "逆折算比 = 真机字号 / 脚本字号（与 CellMetrics.scriptPixels 同一把尺）",
+            code.contains("metrics.scriptPixelsInverse(layoutWidth, sourceFontPixelSize)"),
+            "逆折算必须走 CellMetrics.scriptPixelsInverse 单源入口（度量单源化 2026-11-13）——" +
+                "×k 与 ÷k 两向共用一把尺（与 CellMetrics.scriptPixels 同源），手写 ratio 禁入",
         )
         // 窗口宽/高的脚本 px 折算必须喂给 ScreenLayout.resolve 的三个新参数。
         assertTrue(
@@ -276,6 +277,44 @@ class CanvasContentInsetSingleSourceTest {
         assertTrue(
             code.contains("candidate.scriptPixels(sourceWindowWidthScriptPx, sourceFontPixelSize)"),
             "WindowX 脚本 px → 设备 px 必须走 CellMetrics.scriptPixels（同尺）",
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // 6) 留白（2026-11-14 圆屏适配）折算单点：不许在绘制/命中侧长出第二份留白算式
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `留白折算只发生在 resolveFor 一处`() {
+        // 剥注释后 `contentMarginFraction` 恰好 4 处：构造参数声明 1 处 + resolveFor 折算 3 处
+        // （判式两处 + 乘式一处）。多出来的每一处都是一个平行留白口径——黑边/居中必须只有一把尺。
+        val occurrences = Regex("""contentMarginFraction""").findAll(code).count()
+        assertEquals(4, occurrences, "contentMarginFraction 只许出现构造声明 + resolveFor 折算：实得 $occurrences")
+        val resolveFor = bodyOf("private fun resolveFor(")
+        assertTrue(
+            resolveFor.contains("contentMarginFraction.isFinite()"),
+            "折算入口必须先判非有限值（非法偏好不许把留白算成 NaN 尺寸）",
+        )
+        assertTrue(
+            resolveFor.contains(
+                "(contentWidth * contentMarginFraction" +
+                    ".coerceAtMost(MAX_CONTENT_MARGIN_FRACTION)).roundToInt()",
+            ),
+            "留白设备 px 只许在 resolveFor 按「物理内容宽 × 档位比例」折算（唯一真相源），上限走具名常量",
+        )
+    }
+
+    @Test
+    fun `resolveWithInset 把留白透传给解算点`() {
+        // resolveWithInset 是表达式体（无花括号体），与既有「窗口宽灌入」闸一样用全文 contains。
+        assertTrue(
+            code.contains("contentMarginPx = contentMarginPx"),
+            "留白必须作为 ScreenLayout.resolve 的一等输入（守护/居中在同一算式里消费）",
+        )
+        val resolveFor = bodyOf("private fun resolveFor(")
+        assertTrue(
+            resolveFor.contains("contentMarginPx = marginPx"),
+            "resolveFor 两处解算都必须喂同一份留白读数（不动点每轮恒定）",
         )
     }
 }

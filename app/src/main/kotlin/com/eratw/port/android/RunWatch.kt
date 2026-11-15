@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Debug
 import android.os.SystemClock
 import android.util.Log
+import com.eratw.port.core.host.BusyIndicator
 import java.io.File
 
 /**
@@ -163,6 +164,9 @@ internal object RunWatch {
             }
             if (dirty && !dirtyReported) {
                 dirtyReported = true
+                // MODERN-R11-R1SNAP S3：脏退出恢复路径按同一开关落一次 v1 运行时快照，
+                // 只写一次由 dirtyReported 保证；此时会话尚未装载，传 null 走 best-effort。
+                runCatching { CrashForensics.dumpRuntimeSnapshotIfEnabled(context, null) }
                 // 先认账再补报告：写 `consumed` 之后哪怕补报告这半截崩了，也不会每次冷启都重报。
                 if (!RunTrail.writeStateFile(stateFile(dir), RunTrail.consumedState(state))) {
                     Log.w(TAG, "脏退出认账失败（下一次冷启会再报一份）")
@@ -700,6 +704,16 @@ internal object RunTrail {
      */
     const val LONG_TURN_MS = 5_000L
 
+    /**
+     * 长页忙碌提示开始上屏的页时长（毫秒）：值唯一定义在 core 的
+     * [BusyIndicator.MIN_ELAPSED_MS]，本常量只是 app 侧可读的别名（不另立第二把尺）。
+     */
+    const val BUSY_INDICATOR_MIN_MS: Long = BusyIndicator.MIN_ELAPSED_MS
+
+    /** 页中检查点要不要把忙碌指示器推给渲染层：开关关 / 页还不到 1 s 都不推。 */
+    fun shouldShowBusyIndicator(pageElapsedMs: Long, enabled: Boolean): Boolean =
+        enabled && pageElapsedMs >= BUSY_INDICATOR_MIN_MS
+
     /** 同一页内两次钉发的最小间隔（毫秒）：让「还在卡、卡到第几秒」成为一条斜线而不是一个点。 */
     const val LONG_TURN_PIN_COOLDOWN_MS = 5_000L
 
@@ -898,6 +912,30 @@ internal object RunTrail {
     fun shouldReclaimForProcessFootprint(pssMiB: Long, budgetMiB: Long?): Boolean =
         budgetMiB != null && budgetMiB > 0L && pssMiB >= 0L &&
             pssMiB * 100L >= budgetMiB * PROCESS_FOOTPRINT_PERCENT
+
+    /**
+     * **切后台**相位专用的进程总量判式（OOM-C 波，2026-11-09）。
+     *
+     * 与前台那发的区别只有一个：预算取 [memoryLimiterBudgetMiB] 的 `visible = false` 档。
+     * Android 17 MemoryLimiter 的 notVisible 上限比 visible 严格得多（4 GB 机 1024 MiB
+     * 对 2048 MiB）；报告 `5783b90` 的 PSS≈1016 MiB 在前台只是 50%，切后台就是 99% 顶格。
+     * 而旧形状里这一相位**没有任何自救**：回合边界只在前台跑（VM 线程在转），后台等系统
+     * `onTrimMemory`，ROM 不发就直接按进程总量杀、连栈都没有。
+     *
+     * 触发线仍复用 [PROCESS_FOOTPRINT_PERCENT]，不新造常量；读数失败（PSS / RAM 为负）
+     * 与「该设备不适用 MemoryLimiter」（预算 null）一律恒 false —— 宁可不收，不拿拍出来的
+     * 数当系统压力，口径同 [shouldReclaimForProcessFootprint]。
+     *
+     * @param config 设备实读档位表（[MemoryLimiterConfig.readDevice]）；null = 回落 AOSP 硬表。
+     */
+    fun shouldReclaimForBackgroundFootprint(
+        pssMiB: Long,
+        totalRamMiB: Long,
+        config: List<MemoryLimiterConfig.LimitSet>? = null,
+    ): Boolean {
+        val budget = memoryLimiterBudgetMiB(totalRamMiB, visible = false, config = config)
+        return shouldReclaimForProcessFootprint(pssMiB, budget)
+    }
 
     /**
      * 系统压力档的冷却（毫秒）：与 [RELEASE_COOLDOWN_MS] 同值，但语义不同（这一档由**系统**

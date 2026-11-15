@@ -14,9 +14,11 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -35,7 +37,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.exclude
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -49,6 +57,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -74,6 +84,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
@@ -98,8 +109,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.text.font.Font
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -109,6 +118,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.eratw.port.core.host.ConsoleOption
+import com.eratw.port.core.host.OptionOrigin
 import com.eratw.port.core.host.PALETTE_MIN_SWATCH_RUN
 import com.eratw.port.core.host.paletteSwatchMask
 import com.eratw.port.android.portrait.PortraitShellContent
@@ -122,6 +132,7 @@ import com.eratw.port.android.ui.EratwButtonRow
 import com.eratw.port.android.ui.EratwDialogCard
 import com.eratw.port.android.ui.EratwFilledButton
 import com.eratw.port.android.ui.EratwInk
+import com.eratw.port.android.ui.EratwPixelFont
 import com.eratw.port.android.ui.EratwQuietButton
 import com.eratw.port.android.ui.EratwText
 import com.eratw.port.android.ui.EratwTextTone
@@ -201,6 +212,45 @@ class ShellState {
      * 从设置页回到游戏的第一帧就是新大小。
      */
     var railButtonSize by mutableStateOf(UiPrefs.DEFAULT_RAIL_BUTTON_SIZE)
+
+    /**
+     * 右侧选项栏布局模式（设置页「右栏布局」，持久化到 `UiPrefs`）。
+     *
+     * 只是壳层摆法（行内横滑/竖列折行/完全展开）：布局纯函数是
+     * [railLayoutOf]，引擎不认识它，改档不需要重开会话 —— [MainActivity] 在
+     * onCreate/onResume 把最新值镜像进来，回到游戏的第一帧就是新摆法。
+     */
+    var railLayout by mutableStateOf(UiPrefs.DEFAULT_RAIL_LAYOUT)
+
+    /**
+     * 每行最多按钮数（1..6，设置页「每行最多按钮数」，真源 `UiPrefs.railChipsPerRow`）。
+     * 三档布局模式通用：行内横滑档 = 超过它才滚动，竖列/完全展开 = 按它折行/定宽。
+     */
+    var railChipsPerRow by mutableStateOf(UiPrefs.DEFAULT_RAIL_CHIPS_PER_ROW)
+
+    /**
+     * 常用置顶的提交值有序列表（设置页「常用置顶管理」+ 右栏长按置顶，真源 `UiPrefs.railPinned`）。
+     *
+     * 常用区的显示规则（硬规则，代数在 [RailOptionRules.visiblePinnedOf]）：只显示
+     * **当前屏上存在同值按钮**的置顶项，标签用当前屏实时文案 —— 屏上没有就整条不出现。
+     */
+    var railPinned by mutableStateOf<List<String>>(emptyList())
+
+    /**
+     * 快捷宏（玩家自定义的 era 指令集串，真源 `UiPrefs.quickMacros`）。
+     *
+     * 右栏常用区的「快捷宏」小节按这张表逐枚全宽渲染（竖屏指令盘同理）；点一枚 =
+     * 「玩家打出这段指令集 + 回车」→ `submitInput(content, clickIntent = false)` →
+     * `GameHost.submit` → 引擎侧按 `\n` 分段逐段提交（`QueueInputSink.submit`）。
+     * 壳层不预切分、不预剥 `\e`（锚 `EmueraConsole.cs:1429-1438`）。
+     *
+     * 与置顶的差别：置顶是「把屏上的按钮钉到常驻区」（硬规则 = 屏上有同值按钮才显示），
+     * 宏是玩家自己写的串，**跨屏常驻**、不依赖当前屏候选。
+     */
+    var quickMacros by mutableStateOf<List<RailOptionRules.QuickMacro>>(emptyList())
+
+    /** 本屏被「右栏过滤」藏掉的枚数（计数行「已隐藏 {1}」的读数；0 = 不追加）。 */
+    var railHiddenCount by mutableStateOf(0)
 
     /**
      * 屏幕方向是否被锁住（右上角键盘旁的方向锁控制；会话级，不持久化）。
@@ -429,15 +479,20 @@ internal fun railMetricsForFontScale(metrics: RailMetrics, fontScale: Float): Ra
 
 /**
  * Horizontal-scroll baseline: three fixed-width buttons fill the rail.
- * This is not a per-row cap; ordinary rows scroll when they exceed three.
+ * This is not a per-row cap by itself; ordinary rows scroll when they exceed
+ * the per-row count in effect（缺省 3，玩家可在设置里调 1..6，真源 `UiPrefs.railChipsPerRow`）。
  */
 internal const val RAIL_MAX_CHIPS_PER_ROW = 3
 
 /**
- * 一行三枚时每枚的宽度（与 `weight(1f)` 的等分结果一致）。
- * 行内按钮间距是 [RAIL_ROW_SPACING]，三枚之间共两处 ⇒ 宽度 = (栏宽 - 两处间距) / 3。
+ * 一行 N 枚时每枚的宽度（N 枚 `weight(1f)` 的等分结果一致）。
+ * 行内按钮间距是 [RAIL_ROW_SPACING]，N 枚之间共 N-1 处 ⇒ 宽度 = (栏宽 - (N-1) 处间距) / N。
+ * 单参版本 = 缺省三枚（几何契约与设置页预览的基准档）。
  */
-internal fun railButtonWidth(railWidth: Dp): Dp = (railWidth - RAIL_ROW_SPACING * 2) / 3f
+internal fun railButtonWidth(railWidth: Dp, perRow: Int): Dp =
+    (railWidth - RAIL_ROW_SPACING * (perRow.coerceAtLeast(1) - 1)) / perRow.coerceAtLeast(1).toFloat()
+
+internal fun railButtonWidth(railWidth: Dp): Dp = railButtonWidth(railWidth, RAIL_MAX_CHIPS_PER_ROW)
 
 /**
  * 收起时整栏要平移的距离：必须盖住栏的**实际占地**（栏宽 + 右留白），否则收起后
@@ -450,11 +505,19 @@ private const val RAIL_BADGE_EDGE_DP = 2f
 
 /**
  * 角标要给标题让出的宽度：按序号**位数**算，长序号（存档页有 10000 这类）也不会压到
- * 标题尾字；上界取「一枚按钮宽的三分之一」—— 再让就不是截断标题，而是把标题吃光了。
+ * 标题尾字；上界取「**该行实际按钮宽**的三分之一」—— 再让就不是截断标题，而是把标题吃光了。
+ *
+ * [perRow] 是**这一行实际摆几枚**（1 = 整宽单列，如常用置顶/快捷宏；N = 均分或定宽）。旧实现
+ * 固定按「一行三枚」算上限，玩家把「每行最多按钮数」调到 5~6 后真按钮只有 35dp 左右，
+ * 而让位上限仍按 74dp 的三分之一算（≈24dp）⇒ 标题被挤到 3dp、只剩省略号（2026-11-11 复查）。
  */
-internal fun railBadgeReserve(digits: Int, metrics: RailMetrics): Dp =
+internal fun railBadgeReserve(
+    digits: Int,
+    metrics: RailMetrics,
+    perRow: Int = RAIL_MAX_CHIPS_PER_ROW,
+): Dp =
     ((RAIL_BADGE_EDGE_DP + metrics.badgeDigitWidthDp * digits.coerceAtLeast(1)).dp)
-        .coerceAtMost(railButtonWidth(metrics.railWidth) * 0.32f)
+        .coerceAtMost(railButtonWidth(metrics.railWidth, perRow) * 0.32f)
 
 /**
  * 右侧栏按钮的统一形状与内边距：选项按钮与「继续」脚钮共用一套，
@@ -486,15 +549,37 @@ internal const val PALETTE_CHIPS_PER_ROW = 8
 /** 一条游戏行至少要有这么多连续色块，才值得切成密集模式；低于此值仍按普通按钮排。 */
 internal const val PALETTE_MIN_CHIPS_PER_ROW = PALETTE_MIN_SWATCH_RUN
 
-/** Normal row keeps the whole game line and scrolls past three; palette rows use dense cells. */
+/**
+ * 右栏的一行：普通行（[paletteColumns] = null）或密集调色板行。
+ *
+ * 普通行两个摆法开关（布局模式由 [railLayoutOf] 按档折算进来，渲染端不重复判档）：
+ * - [stretch] = true：行内按钮 `weight(1f)` 均分栏宽；false：定宽格子
+ *   [railButtonWidth] 左起排（完全展开档的口径）。
+ * - [scrollable] = true：行内横向滚动（行内横滑档超过每行枚数的游戏行）。
+ */
 internal data class RailLayoutRow(
     val chips: List<ConsoleOption>,
     val paletteColumns: Int? = null,
+    val stretch: Boolean = true,
+    val scrollable: Boolean = false,
 )
 
-/** Group by game line, then split only palette runs into dense rows; ordinary segments stay whole. */
-internal fun railLayoutOf(chips: List<ConsoleOption>): List<RailLayoutRow> {
+/**
+ * 右栏布局纯函数：按游戏显示行分组（调色板 run 仍切成 8 列密集行，三档都一样），
+ * 普通段按 [mode] 摆：
+ * - [UiPrefs.RailLayoutMode.ROW_SCROLL]（缺省）：一条游戏行 = 一行，超过 [perRow] 枚横向滚动；
+ * - [UiPrefs.RailLayoutMode.COLUMN] 竖列：同一游戏行按 [perRow] 枚折行，行内仍均分，不横滑；
+ * - [UiPrefs.RailLayoutMode.EXPANDED] 完全展开：同样按 [perRow] 枚折行，格子定宽左起排不拉伸。
+ *
+ * 单参版本是兼容垫片（竖屏指令盘与既有测试的口径：行内横滑、每行 3）。
+ */
+internal fun railLayoutOf(
+    chips: List<ConsoleOption>,
+    mode: UiPrefs.RailLayoutMode,
+    perRow: Int,
+): List<RailLayoutRow> {
     if (chips.isEmpty()) return emptyList()
+    val effectivePerRow = perRow.coerceAtLeast(1)
     val out = ArrayList<RailLayoutRow>()
     val paletteMask = paletteSwatchMask(chips)
     var start = 0
@@ -502,23 +587,29 @@ internal fun railLayoutOf(chips: List<ConsoleOption>): List<RailLayoutRow> {
         val serial = chips[start].lineSerial
         var end = start
         while (end < chips.size && chips[end].lineSerial == serial) end++
-        appendRailLine(chips, paletteMask, start, end, out)
+        appendRailLine(chips, paletteMask, start, end, mode, effectivePerRow, out)
         start = end
     }
     return out
 }
 
+/** 兼容垫片：旧行为（行内横滑、每行 3 枚）——竖屏指令盘与既有测试走这里。 */
+internal fun railLayoutOf(chips: List<ConsoleOption>): List<RailLayoutRow> =
+    railLayoutOf(chips, UiPrefs.DEFAULT_RAIL_LAYOUT, RAIL_MAX_CHIPS_PER_ROW)
+
 /**
  * 只把同一游戏行里**连续 8 枚以上**色块识别为调色板，其余按钮无论有没有颜色都走普通行。
  *
  * 这样单个/少量彩色 `■`（普通开关、状态灯）不会被误判；调色板前后若还排着普通按钮，
- * 也只切出色块那一段，普通按钮仍按三列/两列/一枚排。
+ * 也只切出色块那一段，普通按钮仍按当前档的每行枚数排。
  */
 private fun appendRailLine(
     chips: List<ConsoleOption>,
     paletteMask: BooleanArray,
     start: Int,
     end: Int,
+    mode: UiPrefs.RailLayoutMode,
+    perRow: Int,
     out: MutableList<RailLayoutRow>,
 ) {
     var normalStart = start
@@ -531,7 +622,7 @@ private fun appendRailLine(
         var runEnd = i + 1
         while (runEnd < end && paletteMask[runEnd]) runEnd++
         if (runEnd - i >= PALETTE_MIN_CHIPS_PER_ROW) {
-            appendNormalRows(chips, normalStart, i, out)
+            appendNormalRows(chips, normalStart, i, mode, perRow, out)
             var paletteStart = i
             while (paletteStart < runEnd) {
                 val paletteEnd = minOf(paletteStart + PALETTE_CHIPS_PER_ROW, runEnd)
@@ -545,31 +636,230 @@ private fun appendRailLine(
         }
         i = runEnd
     }
-    appendNormalRows(chips, normalStart, end, out)
+    appendNormalRows(chips, normalStart, end, mode, perRow, out)
 }
 
 private fun appendNormalRows(
     chips: List<ConsoleOption>,
     start: Int,
     end: Int,
+    mode: UiPrefs.RailLayoutMode,
+    perRow: Int,
     out: MutableList<RailLayoutRow>,
 ) {
     if (start >= end) return
-    // 普通段恢复为「一条游戏显示行 = 一条 RailLayoutRow」；超过三枚由 UI 横向滚动。
-    // 不在这里按三枚拆行：玩家报的是选项没被识别，不是行内溢出。
-    out += RailLayoutRow(chips = chips.subList(start, end), paletteColumns = null)
+    when (mode) {
+        UiPrefs.RailLayoutMode.ROW_SCROLL -> {
+            // 行内横滑：一条游戏显示行 = 一条 RailLayoutRow；超过 perRow 枚由 UI 横向滚动。
+            // 不在这里按枚数拆行：玩家报的是选项没被识别，不是行内溢出。
+            out += RailLayoutRow(
+                chips = chips.subList(start, end),
+                scrollable = end - start > perRow,
+            )
+        }
+        UiPrefs.RailLayoutMode.COLUMN -> {
+            // 竖列：同一游戏行超过 perRow 枚就折到下一行，行内仍均分宽度，不横滑。
+            var i = start
+            while (i < end) {
+                val chunkEnd = minOf(i + perRow, end)
+                out += RailLayoutRow(chips = chips.subList(i, chunkEnd), stretch = true)
+                i = chunkEnd
+            }
+        }
+        UiPrefs.RailLayoutMode.EXPANDED -> {
+            // 完全展开：同样按 perRow 枚折行，格子定宽左起排、不拉伸，不横滑。
+            var i = start
+            while (i < end) {
+                val chunkEnd = minOf(i + perRow, end)
+                out += RailLayoutRow(chips = chips.subList(i, chunkEnd), stretch = false)
+                i = chunkEnd
+            }
+        }
+    }
 }
 
 /** 兼容旧消费点（竖屏指令盘 / 几何测试）：只要行内容，不要调色板列数元数据。 */
 internal fun railRowsOf(chips: List<ConsoleOption>): List<List<ConsoleOption>> =
     railLayoutOf(chips).map { it.chips }
 
-/** Ordinary rows: 1-3 buttons share width, >3 scroll with fixed width; palette rows draw dense cells. */
+/**
+ * 右栏按钮长按菜单的动作集（2026-11-11 自定义过滤 + 常用置顶接线）。
+ *
+ * - 置顶入口对**所有非色块**候选亮（`pinnableChips`，判据在 [RailOptionRules.pinMenuMaskOf]）；
+ *   已置顶的候选菜单里换「取消置顶」。**不要照 [RailOptionRules.pinnableMaskOf] 收窄**：
+ *   那条只收带编号指令（设置页历史候选的收录面），拿来当菜单判据会让 `[CONFIG]`、
+ *   `地图切换` 这类无编号按钮只弹出「从右栏隐藏」一项，像置顶被过滤项挤掉了。
+ * - 「从右栏隐藏」对每枚候选都亮（自定义过滤黑名单按标签记）。
+ * - 纯展示场景（设置页预览）传 null，候选不弹菜单、也没有长按手势。
+ */
+internal class RailChipMenuSpec(
+    val pinnedValues: Set<String>,
+    val pinnableChips: Set<ConsoleOption>,
+    val pinLabel: String,
+    val unpinLabel: String,
+    val hideLabel: String,
+    val onPin: (ConsoleOption) -> Unit,
+    val onUnpin: (ConsoleOption) -> Unit,
+    val onHide: (ConsoleOption) -> Unit,
+)
+
+/**
+ * 右栏的一枚候选按钮：短按提交、长按弹菜单（[menu] = null 时只有短按）。
+ *
+ * 菜单锚在按钮自己的布局节点上（DropdownMenu 以父 Box 定位），每枚候选各带一份
+ * `expanded` 状态 —— 未展开时只多一个空锚点，20+ 候选整屏也没有额外开销。
+ */
+@Composable
+private fun RailChipWithMenu(
+    chip: ConsoleOption,
+    metrics: RailMetrics,
+    enabled: Boolean,
+    menu: RailChipMenuSpec?,
+    onOption: (String) -> Unit,
+    /** 这一行实际摆几枚：角标让位的宽度上限按它算（见 [railBadgeReserve]）。 */
+    perRow: Int = RAIL_MAX_CHIPS_PER_ROW,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+) {
+    if (menu == null) {
+        OptionChipButton(
+            spec = OptionChipSpec(chip.label, chip.ordinal, chip.colorRgb.takeIf { !chip.isColorSwatch }),
+            metrics = metrics,
+            enabled = enabled,
+            perRow = perRow,
+            modifier = modifier,
+            onClick = { onOption(chip.submitValue) },
+        )
+        return
+    }
+    var menuOpen by remember { mutableStateOf(false) }
+    // 高度必须由外层 Box 自己给：`matchParentSize()` 的子件不参与父尺寸计算，
+    // 而这里唯一的另一个子件 DropdownMenu 是 Popup（未展开时零布局节点）——
+    // 若外层不给高，父 Box 会按 constraints.minHeight 定尺寸（=0），子件被
+    // `Constraints.fixed(h=0)` 压扁，按钮连背景带文字一起被 clip 掉，且 0 高节点
+    // 命中不到触摸（2026-11-11 复查发现的「右栏选项按钮全灭」根因）。
+    Box(modifier = modifier.height(metrics.buttonHeight)) {
+        OptionChipButton(
+            spec = OptionChipSpec(chip.label, chip.ordinal, chip.colorRgb.takeIf { !chip.isColorSwatch }),
+            metrics = metrics,
+            enabled = enabled,
+            perRow = perRow,
+            modifier = Modifier.fillMaxSize(),
+            onClick = { onOption(chip.submitValue) },
+            onLongClick = { menuOpen = true },
+        )
+        // 收起选项栏时菜单必须一起消失：Popup 既不跟 offset 平移、也不看 enabled，
+        // 少了这个 `&&` 会留下一个「悬在屏上、点了照样落盘」的幽灵菜单。
+        DropdownMenu(expanded = menuOpen && enabled, onDismissRequest = { menuOpen = false }) {
+            if (chip.submitValue in menu.pinnedValues) {
+                DropdownMenuItem(
+                    text = { Text(menu.unpinLabel) },
+                    onClick = {
+                        menuOpen = false
+                        menu.onUnpin(chip)
+                    },
+                )
+            } else if (chip in menu.pinnableChips) {
+                DropdownMenuItem(
+                    text = { Text(menu.pinLabel) },
+                    onClick = {
+                        menuOpen = false
+                        menu.onPin(chip)
+                    },
+                )
+            }
+            // 空标签候选（裸数字按钮）不许给「隐藏」项：黑名单按标签记，
+            // 空标签写不进去 ⇒ 点了什么也不会发生（还会白扫一遍）。
+            if (chip.label.isNotEmpty()) {
+                DropdownMenuItem(
+                    text = { Text(menu.hideLabel) },
+                    onClick = {
+                        menuOpen = false
+                        menu.onHide(chip)
+                    },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 常用区（右栏 LazyColumn 首项，2026-11-11）：小标题 + 置顶按钮全宽列 + 「快捷宏」小节。
+ *
+ * - 置顶：按当前屏实时文案画（硬规则见 [RailOptionRules.visiblePinnedOf]），屏上没有同值
+ *   按钮的置顶项整条不出现；
+ * - 快捷宏：玩家自定义的 era 指令集串，**跨屏常驻**、不依赖当前屏候选（
+ *   [RailOptionRules.QuickMacro]）——点一枚 = 打出一整串并回车，引擎侧分段连发。
+ *
+ * 两段任一非空时调用方才渲染整区（空区不占一行）；两段各自有空就各自不出小标题。
+ */
+@Composable
+internal fun PinnedRailSection(
+    pinnedChips: List<ConsoleOption>,
+    quickMacros: List<RailOptionRules.QuickMacro>,
+    headerLabel: String,
+    quickMacroHeader: String,
+    metrics: RailMetrics,
+    enabled: Boolean,
+    menu: RailChipMenuSpec?,
+    onOption: (String) -> Unit,
+    onQuickMacro: (RailOptionRules.QuickMacro) -> Unit,
+) {
+    if (pinnedChips.isNotEmpty()) {
+        Text(
+            text = headerLabel,
+            color = Color(0xFF9A9A9A),
+            fontSize = metrics.labelTextSize,
+            maxLines = 1,
+            modifier = Modifier.padding(start = 2.dp, bottom = 3.dp),
+        )
+        pinnedChips.forEach { chip ->
+            RailChipWithMenu(
+                chip = chip,
+                metrics = metrics,
+                enabled = enabled,
+                menu = menu,
+                // 常用区是整宽单列，一枚就占满一行。
+                perRow = 1,
+                onOption = onOption,
+                modifier = Modifier.fillMaxWidth().padding(bottom = RAIL_ROW_SPACING),
+            )
+        }
+    }
+    if (quickMacros.isNotEmpty()) {
+        // 宏按钮的视觉/交互只有一份实现（QuickMacroUi.kt）：横屏这里给整宽单列 +
+        // 右栏档位几何，竖屏指令盘给设计稿 token + N 列网格 —— 两套壳不各写一套。
+        QuickMacroSection(
+            header = quickMacroHeader,
+            macros = quickMacros,
+            columns = 1,
+            enabled = enabled,
+            // 真机侧的适配层：把档位几何 + 右栏配色喂给可复用件（uipreview 预览口直接用基本量）。
+            style = railQuickMacroStyle(
+                labelTextSize = metrics.labelTextSize,
+                buttonHeight = metrics.buttonHeight,
+                containerColor = Color(railContainerArgb(null)),
+                contentColor = Color(railContentArgb(null)),
+            ),
+            onQuickMacro = onQuickMacro,
+            // 置顶区在上面时留一道呼吸；只有宏没有置顶时顶格（不凭空多一条空白）。
+            topPadding = if (pinnedChips.isEmpty()) 0.dp else 6.dp,
+            modifier = Modifier.fillMaxWidth().padding(bottom = RAIL_ROW_SPACING),
+        )
+    }
+}
+
+/**
+ * 右栏的一行。摆法由 [RailLayoutRow] 的两个开关决定（[railLayoutOf] 按档折算）：
+ * 调色板行画密集色格；普通行在均分（weight）/定宽（stretch=false）与横滑（scrollable）
+ * 之间取一。每行枚数 [perRow] 只在**定宽**与**横滑定宽**两处进宽度公式。
+ */
 @Composable
 private fun OptionRailRow(
     row: RailLayoutRow,
     metrics: RailMetrics,
+    perRow: Int,
     enabled: Boolean,
+    menu: RailChipMenuSpec?,
     onOption: (String) -> Unit,
 ) {
     if (row.paletteColumns != null) {
@@ -582,25 +872,28 @@ private fun OptionRailRow(
         )
         return
     }
-    val overflow = row.chips.size > RAIL_MAX_CHIPS_PER_ROW
     val scroll = rememberScrollState()
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .then(if (overflow) Modifier.horizontalScroll(scroll) else Modifier),
+            .then(if (row.scrollable) Modifier.horizontalScroll(scroll) else Modifier),
         horizontalArrangement = Arrangement.spacedBy(RAIL_ROW_SPACING),
     ) {
         row.chips.forEach { chip ->
-            OptionChipButton(
-                spec = OptionChipSpec(chip.label, chip.ordinal, chip.colorRgb.takeIf { !chip.isColorSwatch }),
+            val chipModifier = when {
+                row.scrollable -> Modifier.width(railButtonWidth(metrics.railWidth, perRow))
+                row.stretch -> Modifier.weight(1f)
+                else -> Modifier.width(railButtonWidth(metrics.railWidth, perRow))
+            }
+            RailChipWithMenu(
+                chip = chip,
                 metrics = metrics,
                 enabled = enabled,
-                modifier = if (overflow) {
-                    Modifier.width(railButtonWidth(metrics.railWidth))
-                } else {
-                    Modifier.weight(1f)
-                },
-            ) { onOption(chip.submitValue) }
+                menu = menu,
+                perRow = perRow,
+                onOption = onOption,
+                modifier = chipModifier,
+            )
         }
     }
 }
@@ -630,10 +923,72 @@ internal fun RailSizePreview(
                 spec = OptionChipSpec(label, ordinal, null),
                 metrics = metrics,
                 modifier = Modifier.width(buttonWidth),
-            ) {}
+                onClick = {},
+            )
         }
     }
 }
+
+/**
+ * 设置页「右栏布局」的实物预览：吃的就是右栏那一条绘制通路（[railLayoutOf] 折行 +
+ * [OptionRailRow] 绘制）⇒ 滑到哪一档，屏上就是那一档的真摆法，不必回游戏试。
+ *
+ * 示例候选排成「一行 4 枚 + 一行 2 枚」是**故意的**：三档只在某一行的枚数**超过**每行枚数
+ * 时才分叉 —— 枚数不超时横滑不触发、竖列与横滑同形，行满时定宽又与 `weight(1f)` 等分同宽
+ * （[railButtonWidth] 的定义就是那个等分结果）。2026-11-11 玩家问「三档是不是没接进去」，
+ * 撞的就是这个几何重合，所以预览示例必须踩在分叉点上，否则三档画出来一个样。
+ *
+ * 栏宽按卡片可用宽夹一遍（[railMetricsFitting]，与真机右栏同一函数）：特大档 300dp
+ * 会顶出窄卡片，夹完看到的就是真机上实际拿到的宽度，不是名义宽度。
+ */
+@Composable
+internal fun RailLayoutPreview(
+    metrics: RailMetrics,
+    mode: UiPrefs.RailLayoutMode,
+    perRow: Int,
+    labels: List<Pair<String, Int>>,
+    modifier: Modifier = Modifier,
+) {
+    val chips = remember(labels) { railPreviewChips(labels) }
+    BoxWithConstraints(modifier.fillMaxWidth()) {
+        val shown = railMetricsFitting(metrics, maxWidth)
+        Column(
+            modifier = Modifier.width(shown.railWidth),
+            verticalArrangement = Arrangement.spacedBy(RAIL_ROW_SPACING),
+        ) {
+            railLayoutOf(chips, mode, perRow).forEach { row ->
+                OptionRailRow(
+                    row = row,
+                    metrics = shown,
+                    perRow = perRow,
+                    enabled = true,
+                    menu = null,
+                    onOption = { },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 预览用的假候选：前 [RAIL_PREVIEW_FIRST_LINE] 枚算一条游戏显示行，其余算第二条。
+ *
+ * 纯函数、无 Compose 依赖，`RailLayoutPreviewGateTest` 用它钉「三档的预览必须两两不同形」
+ * —— 这条判据一破，设置页就退回「选了看不出差别」的老问题。
+ */
+internal fun railPreviewChips(labels: List<Pair<String, Int>>): List<ConsoleOption> =
+    labels.mapIndexed { index, (label, ordinal) ->
+        ConsoleOption(
+            value = ordinal.toLong(),
+            label = label,
+            origin = OptionOrigin.HTML,
+            ordinal = ordinal,
+            lineSerial = if (index < RAIL_PREVIEW_FIRST_LINE) 10L else 20L,
+        )
+    }
+
+/** 预览第一条游戏显示行上的枚数：必须超过缺省每行枚数 3，见 [RailLayoutPreview]。 */
+internal const val RAIL_PREVIEW_FIRST_LINE: Int = 4
 
 /**
  * 选项栏底部「继续」脚钮是否出现 —— 只在 WAIT 系页面（`PRINTW` / `PRINTFORMW` /
@@ -816,8 +1171,10 @@ fun EratwTheme(content: @Composable () -> Unit) {
 /**
  * 游戏壳：画面（AndroidView）+ 可收起的右侧选项栏 + 自动隐藏输入条 + 设置入口。
  *
- * 分区布局（2026-10-22 真机收口结论）：控制台在上、底栏在下**各占一块**，绝不浮层
- * 覆盖正文；`safeDrawingPadding()` 处理刘海/挖孔（本机左侧有 82px 黑边）。
+ * 分区布局（2026-10-22 真机收口结论）：控制台在上、底栏在下**各占一块**；
+ * `WindowInsets.safeDrawing.exclude(ime)` 处理刘海/挖孔（本机左侧有 82px 黑边）。
+ * 输入条是底部覆盖层（2026-11-11 输入法慢弹根因）：只在展开时覆盖正文底边，
+ * 键盘 inset 只抬输入条自身，不进游戏列的测量 —— 否则 IME 动画会逐帧整屏重排。
  *
  * 2026-10-23 二次优化（负责人反馈）：
  * - 输入条默认隐藏，底部留小凸边；上滑/点凸边展开，提交或静置后自动收起（正文高度随之变化）；
@@ -848,6 +1205,20 @@ fun EratwShell(
     onRailToggle: () -> Unit = {},
     onOrientationLock: () -> Unit = {},
     onInputChanged: (String) -> Unit = {},
+    /**
+     * 右栏长按菜单三动作（2026-11-11 自定义过滤 + 常用置顶）：置顶 / 取消置顶 / 从右栏隐藏。
+     * 宿主（MainActivity）负责落 `UiPrefs` 并同步 [ShellState]；缺省空实现 = 菜单照弹、
+     * 动作无副作用（纯展示调用方才走缺省，游戏壳总是传真动作）。
+     */
+    onPinOption: (ConsoleOption) -> Unit = {},
+    onUnpinOption: (ConsoleOption) -> Unit = {},
+    onHideOption: (ConsoleOption) -> Unit = {},
+    /**
+     * 点一枚快捷宏（真源 [ShellState.quickMacros]）。宿主负责把它当**键盘输入**提交：
+     * `GameHost.submit(macro.content)`（= 原版「打出一整串 + 回车」，`changedByMouse: false`），
+     * 引擎侧按指令集语义分段连推。**不要**在这里预切分或预剥 `\e`。
+     */
+    onQuickMacro: (RailOptionRules.QuickMacro) -> Unit = {},
     /**
      * 竖屏三区壳开关（竖屏设计稿 §6 方向策略；调用侧 = MainActivity 按方向偏好在
      * 装配期定死，本 Activity 实例存续期内不翻转——旋转不重建，逻辑列宽构造期定死，
@@ -893,7 +1264,10 @@ fun EratwShell(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black)
-                .safeDrawingPadding(),
+                // 键盘/输入条不得改游戏列的测量尺寸：safeDrawing 含 IME，键盘每帧动画都会
+                // 缩短 AndroidView ⇒ ConsoleFeed.updateLayout(force) 整屏重展平/重绘。
+                // 实际 IME 抬升只作用于底部输入条覆盖层（见下方 AnimatedVisibility）。
+                .windowInsetsPadding(WindowInsets.safeDrawing.exclude(WindowInsets.ime)),
         ) {
             BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 val areaWidth = maxWidth
@@ -925,6 +1299,7 @@ fun EratwShell(
                         contentMaxHeight = maxHeight,
                         onSettings = onSettings,
                         onOption = onOption,
+                        onQuickMacro = onQuickMacro,
                         onInputChanged = onInputChanged,
                     )
                 } else {
@@ -973,11 +1348,37 @@ fun EratwShell(
                         animationSpec = tween(220),
                     )
 
-                    // One game line stays one visual row. Ordinary rows share width for 1-3
-                    // buttons and scroll horizontally beyond three; palette runs use dense rows.
+                    // 布局三模式（2026-11-11）：游戏行分组与调色板密集行三档都一样，普通段的
+                    // 摆法由 state.railLayout 折算进 rows（纯函数 railLayoutOf，几何测试钉契约）。
                     // Missing options were an extraction bug, not a row-overflow bug: do not
                     // hide extraction failures by wrapping rows.
-                    val railRows = remember(state.chips) { railLayoutOf(state.chips) }
+                    val railRows = remember(state.chips, state.railLayout, state.railChipsPerRow) {
+                        railLayoutOf(state.chips, state.railLayout, state.railChipsPerRow)
+                    }
+                    // 常用区（置顶 + 快捷宏）：置顶走硬规则 = 当前屏上有同值按钮才显示、
+                    // 标签用实时文案（RailOptionRules.visiblePinnedOf）；快捷宏是玩家自写的
+                    // 指令集串，跨屏常驻、不看当前屏候选。
+                    val visiblePinned = remember(state.chips, state.railPinned) {
+                        RailOptionRules.visiblePinnedOf(state.railPinned, state.chips)
+                    }
+                    val quickMacros = state.quickMacros
+                    // 长按菜单动作集：置顶对全部非色块候选亮（pinMenuMaskOf），与设置页
+                    // 历史候选的「带编号指令」判据（pinnableMaskOf）分开 —— 否则无编号按钮
+                    // 的菜单里只剩「从右栏隐藏」，看着像置顶入口被过滤项挤掉了。
+                    val chipMenu = RailChipMenuSpec(
+                        pinnedValues = state.railPinned.toSet(),
+                        pinnableChips = remember(state.chips) {
+                            val mask = RailOptionRules.pinMenuMaskOf(state.chips)
+                            state.chips.filterIndexed { i, _ -> mask[i] }.toSet()
+                        },
+                        pinLabel = shellCopy.railChipMenuPin,
+                        unpinLabel = shellCopy.railChipMenuUnpin,
+                        hideLabel = shellCopy.railChipMenuHide,
+                        onPin = onPinOption,
+                        onUnpin = onUnpinOption,
+                        onHide = onHideOption,
+                    )
+                    val commonSectionFirst = visiblePinned.isNotEmpty() || quickMacros.isNotEmpty()
                     Column(
                         modifier = Modifier
                             .align(Alignment.TopEnd)
@@ -986,13 +1387,33 @@ fun EratwShell(
                             .width(railMetrics.railWidth)
                             .fillMaxHeight(),
                     ) {
-                        if (state.chips.size > 10) {
+                        if (state.chips.size > 10 || state.railHiddenCount > 0) {
                             Text(
-                                text = shellCopy.fill(shellCopy.railCountFormat, state.chips.size),
+                                text = if (state.railHiddenCount > 0) {
+                                    shellCopy.fill(
+                                        shellCopy.railHiddenCountFormat,
+                                        state.chips.size,
+                                        state.railHiddenCount,
+                                    )
+                                } else {
+                                    shellCopy.fill(shellCopy.railCountFormat, state.chips.size)
+                                },
                                 color = Color(0xFF9A9A9A),
                                 fontSize = railMetrics.labelTextSize,
                                 maxLines = 1,
                                 modifier = Modifier.padding(start = 2.dp, bottom = 3.dp),
+                            )
+                        }
+                        // 空态占位：chips 空且常用区也空时，右栏是零内容的透明浮层 ——
+                        // 玩家收起再展开会以为「点了没反应」。竖盘早有同语义的 trayEmptyLine
+                        // 占位（收起态不隐藏整个盘），横栏对齐同一体验。
+                        if (railRows.isEmpty() && !commonSectionFirst) {
+                            Text(
+                                text = shellCopy.trayEmptyLine,
+                                color = Color(0xFF9A9A9A),
+                                fontSize = railMetrics.labelTextSize,
+                                maxLines = 1,
+                                modifier = Modifier.padding(start = 2.dp, top = 6.dp, bottom = 3.dp),
                             )
                         }
                         LazyColumn(
@@ -1003,14 +1424,43 @@ fun EratwShell(
                             // 28dp 底距沿用旧值：最后一行按钮要避开底边抓手（52×14dp）。
                             contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 28.dp),
                         ) {
-                            items(count = railRows.size) { i ->
-                                val row = railRows[i]
-                                OptionRailRow(
-                                    row = row,
-                                    metrics = railMetrics,
-                                    enabled = state.railVisible,
-                                    onOption = onOption,
-                                )
+                            items(
+                                count = railRows.size + if (commonSectionFirst) 1 else 0,
+                                // 稳定 key（2026-11-11 复查）：常用区随「屏上是否有置顶项」出现/消失，
+                                // 下标会整体位移；没有 key 时 LazyColumn 按槽位复用，行内
+                                // `rememberScrollState` 的横滑偏移与已展开的长按菜单会跟着错位到
+                                // 另一条游戏行上（「置顶/隐藏」作用到错的选项）。
+                                key = { i ->
+                                    if (commonSectionFirst && i == 0) {
+                                        "common"
+                                    } else {
+                                        "row-${i - if (commonSectionFirst) 1 else 0}"
+                                    }
+                                },
+                            ) { i ->
+                                if (commonSectionFirst && i == 0) {
+                                    PinnedRailSection(
+                                        pinnedChips = visiblePinned,
+                                        quickMacros = quickMacros,
+                                        headerLabel = shellCopy.railPinnedHeader,
+                                        quickMacroHeader = shellCopy.railQuickMacroHeader,
+                                        metrics = railMetrics,
+                                        enabled = state.railVisible,
+                                        menu = chipMenu,
+                                        onOption = onOption,
+                                        onQuickMacro = onQuickMacro,
+                                    )
+                                } else {
+                                    val row = railRows[i - if (commonSectionFirst) 1 else 0]
+                                    OptionRailRow(
+                                        row = row,
+                                        metrics = railMetrics,
+                                        perRow = state.railChipsPerRow,
+                                        enabled = state.railVisible,
+                                        menu = chipMenu,
+                                        onOption = onOption,
+                                    )
+                                }
                             }
                         }
                         // WAIT 系页面（PRINTW / PRINTFORMW / WAIT）屏上没有任何 [N]：
@@ -1076,24 +1526,41 @@ fun EratwShell(
                 }
             }
 
-            // 输入条只保留展开态（拖动条 + 输入框）；收起后不再占屏幕底边一整条，
-            // 改由右上角的键盘图标唤出（2026-10-23 负责人反馈：底部「上滑输入」黑条太大）。
-            AnimatedVisibility(
-                visible = state.inputVisible,
-                enter = slideInVertically { it } + fadeIn(tween(140)),
-                exit = slideOutVertically { it } + fadeOut(tween(120)),
-            ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    InputGrabBar(onDragDown = {
-                        state.inputVisible = false
-                        state.inputFocused = false
-                    })
-                    InputBar(
-                        state = state,
-                        onSubmit = onSubmit,
-                        onInputChanged = onInputChanged,
-                    )
-                }
+        }
+
+        // 输入条只保留展开态（拖动条 + 输入框）；收起后不再占屏幕底边一整条，
+        // 改由右上角的键盘图标唤出（2026-10-23 负责人反馈：底部「上滑输入」黑条太大）。
+        //
+        // **覆盖层而不是 Column 子项**（2026-11-11 输入法慢弹根因）：旧实现把输入条放在
+        // 游戏 Column 里，根又用 `safeDrawingPadding()`（`safeDrawing` 含 IME）⇒ 键盘
+        // 每帧动画都改变 Column 可用高 ⇒ `CanvasConsoleView.resizeFeedScreen` +
+        // `ConsoleFeed.updateLayout(force)` 对整屏快照重展平/重绘。一屏几十张内联图时，
+        // UI 线程被这条链占满，输入法弹出被拖成「极其卡顿、缓慢」。现在游戏列只吃
+        // 非 IME 的 safeDrawing，输入条自己是底部覆盖层，只按底部 safeDrawing（IME 与
+        // 导航栏并集）抬起；键盘动画只测量输入条自身，不再碰整块 console。
+        AnimatedVisibility(
+            visible = state.inputVisible,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .windowInsetsPadding(
+                    WindowInsets.safeDrawing.only(
+                        WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom,
+                    ),
+                ),
+            enter = slideInVertically { it } + fadeIn(tween(140)),
+            exit = slideOutVertically { it } + fadeOut(tween(120)),
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                InputGrabBar(onDragDown = {
+                    state.inputVisible = false
+                    state.inputFocused = false
+                })
+                InputBar(
+                    state = state,
+                    onSubmit = onSubmit,
+                    onInputChanged = onInputChanged,
+                )
             }
         }
 
@@ -1678,30 +2145,44 @@ private data class OptionChipSpec(
  *
  * 普通按钮只会用这一条通路：单行标题（超出省略号）占满按钮，序号退到右上角作浅绿小角标。
  * 原按钮有显式颜色时只染底色/自适应字色，不加左侧色块，也不进入调色板识别。
+ *
+ * 手势走**单条路**（2026-11-11）：`combinedClickable` 同时接短按与长按 —— 不能外面再套
+ * 一层 `pointerInput` 长按、里面留 Button 的短按，那会「长按松手又补一发短按」（两层
+ * 手势探测器互不知道对方消费了事件）。禁用态照 Button 的配色口径压暗，读屏仍是按钮。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun OptionChipButton(
     spec: OptionChipSpec,
     metrics: RailMetrics,
     enabled: Boolean = true,
+    /** 这一行实际摆几枚：只用于角标让位宽度的上限（见 [railBadgeReserve]）。 */
+    perRow: Int = RAIL_MAX_CHIPS_PER_ROW,
     modifier: Modifier = Modifier.fillMaxWidth(),
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
 ) {
     val containerColor = Color(railContainerArgb(spec.textColorRgb))
     val contentColor = Color(railContentArgb(spec.textColorRgb))
-    Button(
-        onClick = onClick,
-        enabled = enabled,
-        modifier = modifier.height(metrics.buttonHeight),
-        shape = RAIL_BUTTON_SHAPE,
-        contentPadding = RAIL_BUTTON_CONTENT_PADDING,
-        colors = chipButtonColors(containerColor, contentColor),
+    Box(
+        modifier = modifier
+            .height(metrics.buttonHeight)
+            .clip(RAIL_BUTTON_SHAPE)
+            .background(if (enabled) containerColor else containerColor.copy(alpha = DISABLED_ALPHA))
+            .combinedClickable(
+                enabled = enabled,
+                role = Role.Button,
+                onClick = onClick,
+                onLongClick = onLongClick,
+            ),
+        contentAlignment = Alignment.CenterStart,
     ) {
         OptionChipLabel(
             spec = spec,
             metrics = metrics,
-            contentColor = contentColor,
-            modifier = Modifier.fillMaxWidth(),
+            perRow = perRow,
+            contentColor = if (enabled) contentColor else COLOR_DISABLED_CONTENT,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
         )
     }
 }
@@ -1711,6 +2192,8 @@ private fun OptionChipButton(
 private fun OptionChipLabel(
     spec: OptionChipSpec,
     metrics: RailMetrics,
+    /** 这一行实际摆几枚：角标让位上限按它算（见 [railBadgeReserve]）。 */
+    perRow: Int = RAIL_MAX_CHIPS_PER_ROW,
     contentColor: Color,
     modifier: Modifier,
 ) {
@@ -1736,10 +2219,13 @@ private fun OptionChipLabel(
         val visibleLabel = spec.label.ifEmpty { spec.ordinal?.toString().orEmpty() }
         if (visibleLabel.isNotEmpty()) {
             val badgeReserve = cornerBadge?.let {
-                railBadgeReserve(it.toString().length, metrics)
+                railBadgeReserve(it.toString().length, metrics, perRow)
             } ?: 0.dp
             Text(
                 text = visibleLabel,
+                // 按钮体是 Box（非 Button/Surface），没有 LocalContentColor 可继承：
+                // 不点色就落回 Material3 默认的黑色字，压在深绿底+黑屏上等于看不见。
+                color = contentColor,
                 fontSize = metrics.labelTextSize,
                 maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
@@ -1751,16 +2237,6 @@ private fun OptionChipLabel(
         }
     }
 }
-
-/** 普通文字按钮的 Material3 配色；无颜色时逐字段等于改动前的 [railButtonColors]。 */
-@Composable
-private fun chipButtonColors(containerColor: Color, contentColor: Color) =
-    ButtonDefaults.buttonColors(
-        containerColor = containerColor,
-        contentColor = contentColor,
-        disabledContainerColor = containerColor.copy(alpha = DISABLED_ALPHA),
-        disabledContentColor = COLOR_DISABLED_CONTENT,
-    )
 
 /**
  * 密集调色板的一整行：**一个 Canvas 画 8 个色块**，而不是 8 个 Compose 可点击组件。
@@ -1998,7 +2474,7 @@ private fun PixelLoadingOverlay(state: ShellState) {
     val progress = state.progress
     val copy = PortraitShellCopy.of(UiPrefs.settingsLanguage(LocalContext.current))
     // 真点阵字体（Ark Pixel 12px 等宽 zh_hans，OFL-1.1，见 assets/licenses/）
-    val pixelFont = FontFamily(Font(R.font.ark_pixel))
+    val pixelFont = EratwPixelFont.family
     val blink = rememberInfiniteTransition(label = "pixel-blink")
     val pulse by blink.animateFloat(
         initialValue = 0f,

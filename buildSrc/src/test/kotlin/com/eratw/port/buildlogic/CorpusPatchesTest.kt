@@ -327,6 +327,189 @@ class CorpusPatchesTest {
         )
     }
 
+    // ---- 链式支持（同 target 顺序多补丁：bad == 前条 fixed） ------------------------------
+
+    /** 第二跳的起点：T-001 修过的 10 行（第 5 行去参）。 */
+    private val midLines: List<String>
+        get() = badLines.mapIndexed { i, line -> if (i == 4) "CALL K51_EGG_SPECIAL_EVENT()" else line }
+
+    /** 第二跳的终点：再在第 9 行前插一行注释。 */
+    private val finalLines: List<String>
+        get() = midLines.toMutableList().also { it.add(8, "\t;CB-008 式第二跳") }
+
+    private val midBytes: ByteArray get() = crlfBytes(midLines)
+    private val finalBytes: ByteArray get() = crlfBytes(finalLines)
+
+    /** 第二跳补丁：上下文取 mid（第 8/9 行在两跳之间逐字不变，故对 bad 也能命中 —— 这正是逐环校验存在的理由）。 */
+    private val patch2Text: String
+        get() = listOf(
+            "--- a/TGT.ERB",
+            "+++ b/TGT.ERB",
+            "@@ -8,2 +8,3 @@",
+            " \tCALLF ONCE(\"SpecialEvent\",0,51)",
+            "+\t;CB-008 式第二跳",
+            " IF CFLAG:51:K51_EGG_PROJECT_DAYS <= DAY",
+        ).joinToString("\n", postfix = "\n")
+
+    /** 两跳索引；[secondBad] 用来造断链，[headSkip] 登记链头的「不进入本链的版本」。 */
+    private fun chainIndexText(secondBad: String = sha(midBytes), headSkip: String? = null): String = buildList {
+        fun entry(id: String, patch: String, bad: String, fixed: String, skip: String? = null) {
+            add("  - id: $id")
+            add("    target: TGT.ERB")
+            add("    patch: $patch")
+            add("    bad-sha256: $bad")
+            add("    fixed-sha256: $fixed")
+            skip?.let { add("    skip-sha256: $it") }
+            add("    corpus: test-corpus")
+            add("    status: test")
+            add("    summary: test summary")
+            add("    evidence: test evidence")
+        }
+        add("patches:")
+        entry("T-001", "T-001.patch", sha(badBytes), sha(midBytes), headSkip)
+        entry("T-002", "T-002.patch", secondBad, sha(finalBytes))
+    }.joinToString("\n", postfix = "\n")
+
+    private fun Fixture.writeChainAssets(index: String = chainIndexText(), patchOne: String = patchText) {
+        File(patchesDir, "T-001.patch").writeText(patchOne)
+        File(patchesDir, "T-002.patch").writeText(patch2Text)
+        File(patchesDir, "index.yaml").writeText(index)
+    }
+
+    @Test
+    fun 链_同target两跳_顺序套用_两行留痕() {
+        val fx = fixture(targetBytes = badBytes)
+        fx.writeChainAssets()
+        val plan = fx.plan()
+        assertTrue(plan is CorpusPatchPlan.Staged)
+        plan as CorpusPatchPlan.Staged
+        // 两次套用（applyUnifiedDiff 各吃一次）：顺序与 index 的链序一致
+        assertEquals(listOf("T-001", "T-002"), plan.applied.map { it.id })
+        // 产物 = 两跳都生效后的字节
+        assertArrayEquals(finalBytes, File(plan.corpusRoot, "TGT.ERB").readBytes())
+        // 留痕两行（每跳一行，顺序与套用序一致）
+        assertEquals(
+            "corpus-patch T-001 TGT.ERB ${sha(badBytes)} ${sha(midBytes)}\n" +
+                "corpus-patch T-002 TGT.ERB ${sha(midBytes)} ${sha(finalBytes)}\n",
+            File(plan.stagingDir, CORPUS_PATCHES_MARKER).readText(),
+        )
+        // 铁律：真语料仍是链头病灶版原样（链中段的 mid 是合成态，真语料上本就不存在）
+        assertArrayEquals(badBytes, File(fx.corpusRoot, "TGT.ERB").readBytes())
+        assertEquals(2, fx.logger.lifecycles.count { it.contains("已应用") })
+    }
+
+    @Test
+    fun 链_终态整链跳过() {
+        val fx = fixture(targetBytes = finalBytes)
+        fx.writeChainAssets()
+        val plan = fx.plan()
+        assertTrue(plan is CorpusPatchPlan.None)
+        plan as CorpusPatchPlan.None
+        assertTrue(plan.reasons[0], plan.reasons[0].contains("T-001→T-002 不适用（已是修后版）"))
+        assertEquals(0, fx.stagingRoot.listFiles()!!.size)
+    }
+
+    @Test
+    fun 链_链头skip版_整链跳过且不建staging() {
+        // rust-full 全量基准用的 4.980 canonical 语料：不是 CB-006→CB-008 链的出包对象，
+        // 链头 skip-sha256 登记后整链跳过、真语料原样直编（specs/corpus-bugs.md §3 边界②）。
+        val other = crlfBytes(badLines + listOf("EXTRA_TRAILING"))
+        val fx = fixture(targetBytes = other)
+        fx.writeChainAssets(index = chainIndexText(headSkip = sha(other)))
+        val plan = fx.plan()
+        assertTrue(plan is CorpusPatchPlan.None)
+        plan as CorpusPatchPlan.None
+        assertTrue(
+            plan.reasons.single(),
+            plan.reasons.single().contains("T-001→T-002 不适用（已知无需补丁的版本）"),
+        )
+        assertEquals(0, fx.stagingRoot.listFiles()!!.size)
+        assertArrayEquals(other, File(fx.corpusRoot, "TGT.ERB").readBytes())
+    }
+
+    @Test
+    fun 链_链头skip缺席_同版本仍判未知漂移() {
+        // 反向证明：撤掉登记即回到「未知漂移判红」，skip 不是静默放行任意 sha 的白名单。
+        val other = crlfBytes(badLines + listOf("EXTRA_TRAILING"))
+        val fx = fixture(targetBytes = other)
+        fx.writeChainAssets(index = chainIndexText())
+        try {
+            fx.plan()
+            fail("链头没登记 skip 的未知 sha 必须判红")
+        } catch (e: GradleException) {
+            assertTrue(e.message!!, e.message!!.contains("未知漂移"))
+        }
+    }
+
+    @Test
+    fun 链_中间态续套_只套剩下的一跳() {
+        // 语料只套过前半（真实场景：别的分支先合了 CB-006，本分支只带 CB-008）
+        val fx = fixture(targetBytes = midBytes)
+        fx.writeChainAssets()
+        val plan = fx.plan()
+        assertTrue(plan is CorpusPatchPlan.Staged)
+        plan as CorpusPatchPlan.Staged
+        assertEquals(listOf("T-002"), plan.applied.map { it.id })
+        assertArrayEquals(finalBytes, File(plan.corpusRoot, "TGT.ERB").readBytes())
+        assertEquals(
+            "corpus-patch T-002 TGT.ERB ${sha(midBytes)} ${sha(finalBytes)}\n",
+            File(plan.stagingDir, CORPUS_PATCHES_MARKER).readText(),
+        )
+        // 铁律：真语料仍是「续套基准」原样（此处 = 中间态）
+        assertArrayEquals(midBytes, File(fx.corpusRoot, "TGT.ERB").readBytes())
+    }
+
+    @Test
+    fun 链_断链判红_点名两id() {
+        val fx = fixture(targetBytes = badBytes)
+        val drifted = crlfBytes(badLines + listOf("EXTRA_TRAILING"))
+        fx.writeChainAssets(index = chainIndexText(secondBad = sha(drifted)))
+        try {
+            fx.plan()
+            fail("同 target 两条不首尾相接必须判红")
+        } catch (e: GradleException) {
+            val m = e.message!!
+            assertTrue(m, m.contains("不成一条链"))
+            assertTrue(m, m.contains("T-001"))
+            assertTrue(m, m.contains("T-002"))
+        }
+    }
+
+    @Test
+    fun 链_逐环校验_同一物理文件跨root二次套用判红() {
+        // 同一物理文件（corpus 根 TGT.ERB 与 game 根 ERB/TGT.ERB 是同一个文件）被两条独立链各自认领：
+        // 第一条把 bad 套成 mid，第二条仍声称起点是 bad ⇒ 逐环校验必须拦住（否则第二条会静默套在 mid 上）。
+        val fx = fixture(targetBytes = badBytes)
+        File(fx.patchesDir, "T-001.patch").writeText(patchText)
+        // root=game 的 target 是「ERB/TGT.ERB」，补丁头必须与 index 的 target 逐字一致（applier 会校验）
+        File(fx.patchesDir, "T-002.patch").writeText(patch2Text.replace("TGT.ERB", "ERB/TGT.ERB"))
+        File(fx.patchesDir, "index.yaml").writeText(
+            buildList {
+                fun entry(id: String, patch: String, root: String?, bad: String, fixed: String) {
+                    add("  - id: $id")
+                    add("    target: " + (if (root == null) "TGT.ERB" else "ERB/TGT.ERB"))
+                    root?.let { add("    root: " + it) }
+                    add("    patch: " + patch)
+                    add("    bad-sha256: " + bad)
+                    add("    fixed-sha256: " + fixed)
+                    add("    corpus: test-corpus")
+                    add("    status: test")
+                    add("    summary: test summary")
+                    add("    evidence: test evidence")
+                }
+                add("patches:")
+                entry("T-001", "T-001.patch", null, sha(badBytes), sha(midBytes))
+                entry("T-002", "T-002.patch", "game", sha(badBytes), sha(finalBytes))
+            }.joinToString("\n", postfix = "\n"),
+        )
+        try {
+            fx.plan()
+            fail("同一物理文件的第二条补丁必须被逐环 sha 校验拦住")
+        } catch (e: GradleException) {
+            assertTrue(e.message!!, e.message!!.contains("套用前 staging"))
+        }
+    }
+
     // ---- root=game（游戏根目标：CSV/_Rename.csv 这类与 ERB 平级的随包数据） -------------
 
     @Test
@@ -421,6 +604,41 @@ class CorpusPatchesTest {
         } catch (e: GradleException) {
             assertTrue(e.message!!, e.message!!.contains("游戏根目标缺席"))
         }
+    }
+
+    @Test
+    fun 出包面_foreignCorpus_整表不适用且撤掉缺席判红() {
+        // 第三方游戏根（ENGC-6 构建期通道）：显式声明后 root=game 补丁整表不适用，
+        // 连「游戏根目标缺席」那道红也不发 —— 否则别的 era 游戏根本出不了完整资产包。
+        // 上一用例（出包面_游戏根目标缺席判红）证明缺省口径的护栏没被这次改动削弱。
+        val fx = fixture(targetBytes = null)
+        fx.writeAssets(patch = gamePatchText, index = indexText(target = gameTargetRel, root = "game"))
+        val out = planGameRootPatches(
+            fx.corpusRoot.parentFile, fx.patchesDir, fx.logger, foreignCorpus = true,
+        )
+        assertEquals(emptyMap<String, ByteArray>(), out)
+        assertTrue(
+            fx.logger.lifecycles.joinToString("\n"),
+            fx.logger.lifecycles.any { it.contains("foreign-corpus") && it.contains("整表不适用") },
+        )
+    }
+
+    @Test
+    fun 编译面_foreignCorpus_连index在场都不要求() {
+        // 严格口径下缺 index.yaml 是判红（机制资产必须随仓）；显式 foreign-corpus 时整表不适用，
+        // 连资产目录都不消费 ⇒ 编译面与 staging 面吃同一个声明，不留半截适用。
+        val fx = fixture(targetBytes = badBytes)
+        val plan = planCorpusPatches(
+            corpusRoot = fx.corpusRoot,
+            patchesDir = fx.patchesDir,
+            stagingRoot = fx.stagingRoot,
+            logger = fx.logger,
+            foreignCorpus = true,
+        )
+        assertTrue("foreign-corpus 必须整表跳过，实际 $plan", plan is CorpusPatchPlan.None)
+        val reasons = (plan as CorpusPatchPlan.None).reasons
+        assertTrue(reasons.single(), reasons.single().contains("整表不适用"))
+        assertEquals(0, fx.stagingRoot.listFiles()!!.size)
     }
 
     @Test

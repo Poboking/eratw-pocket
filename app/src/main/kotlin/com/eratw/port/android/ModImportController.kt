@@ -1,16 +1,16 @@
 package com.eratw.port.android
 
-import com.eratw.port.core.code.ErbcWriter
+import com.eratw.port.core.compile.ConstantKeywordResolver
 import com.eratw.port.core.compile.PatchCompiler
 import com.eratw.port.core.data.csv.GameDataLoader
+import com.eratw.port.core.data.csv.UserKeywordTables
 import com.eratw.port.core.frontend.sizeConsts
 import com.eratw.port.core.loader.BootMetadata
 import com.eratw.port.core.loader.ModPatchLoader
 import com.eratw.port.core.loader.ProgramLoader
-import com.eratw.port.core.patch.PatchArtifacts
-import com.eratw.port.core.patch.PatchBaseSnapshot
-import com.eratw.port.core.patch.PatchHeader
-import com.eratw.port.core.patch.PatchIdentityMismatchException
+import com.eratw.port.core.mod.ErbModuleContainer
+import com.eratw.port.core.mod.PatchImportTranscoder
+import com.eratw.port.core.patch.ManifestCodec
 import com.eratw.port.core.stmt.SymbolTable
 import com.eratw.port.core.vars.DimParseConfig
 import com.eratw.port.core.vars.DimParser
@@ -112,9 +112,9 @@ fun interface BaseCompileContextSource {
 object ProductionBaseCompileContextSource : BaseCompileContextSource {
 
     override fun read(gameRoot: File): BaseCompileContext {
-        val dir = File(gameRoot, GameHost.ARTIFACT_DIR)
-        val programFile = File(dir, GameHost.PROGRAM_FILE)
-        val metaFile = File(dir, GameHost.META_FILE)
+        val dir = File(gameRoot, LoadPipeline.ARTIFACT_DIR)
+        val programFile = File(dir, LoadPipeline.PROGRAM_FILE)
+        val metaFile = File(dir, LoadPipeline.META_FILE)
         if (!programFile.isFile) {
             throw IOException("游戏产物缺失：${programFile.absolutePath}（先完成随包解包才能导入补丁）")
         }
@@ -137,7 +137,7 @@ object ProductionBaseCompileContextSource : BaseCompileContextSource {
     }
 
     /**
-     * 文件 SHA-256（64 位小写十六进制，[PatchArtifacts.sha256Hex] 的流式变体）：
+     * 文件 SHA-256（64 位小写十六进制，[com.eratw.port.core.patch.PatchArtifacts.sha256Hex] 的流式变体）：
      * 1 MiB 缓冲逐块喂，328 MB 的产物不整份进堆。
      */
     fun fileSha256Hex(file: File): String {
@@ -178,7 +178,7 @@ enum class ModImportFailureKind {
 
 /** 导入成功详情（UI 成功态与测试断言面）。 */
 data class ImportedPatchDetail(
-    /** 落盘的补丁产物名（mods 目录里，含 `.patch` 扩展名）。 */
+    /** 落盘的模块容器文件名（`mods/rt2/<packageId>.erbm`）。 */
     val patchFileName: String,
     /** 补丁新增函数数。 */
     val functionCount: Int,
@@ -190,6 +190,11 @@ data class ImportedPatchDetail(
     val sourceFileNames: List<String>,
     /** 编译期非致命告警（C1 的 level 1 语义；不影响成败）。 */
     val parseWarnings: List<String>,
+    /**
+     * Mod 运行总闸未开时的状态说明（M2-4 裁定 7）：非 null 时成功页追加一行，
+     * 说明「导入内容要开启总闸后、重开一局才生效」。
+     */
+    val modRuntimeOffHint: String? = null,
 )
 
 /** 导入结果（[ModImportController.import] 的唯一出口；失败不抛，折成 [Failed] 上屏）。 */
@@ -216,15 +221,19 @@ sealed interface ModImportOutcome {
  * 全部发生在 [import]（用户点击导入后的后台线程动作）里。[SettingsActivity] 的导入动作
  * （R7-D1 任务①起的宿主）与 [com.eratw.port.android.GameHost] 的装载链之外，任何启动
  * 路径（[com.eratw.port.android.MainActivity] 的 onCreate / startGameOrDemo）不得引用
- * 本类与 [PatchCompiler]——游戏装载仍然只读既有产物（`erbc.v1` 与 `mods`），
- * 补丁经 [com.eratw.port.core.loader.ModPatchLoader] 在会话装配期拼接（零编译）。
+ * 本类与 [PatchCompiler]——M2-4 起导入链**进口即转码**：窗口补丁编译产物经
+ * [PatchImportTranscoder] 转成零基线 Module（`mods/rt2/<packageId>.erbm`）与 RT2
+ * manifest（同目录单向配对），运行期只走模块链（[ModChainAssembly] → linker → plan
+ * → 会话）；`kojo-imports.patch` 并集产物随窗口模型退役。L5 起存量旧 `.patch` 在 ⑤′
+ * 相位用盘上留档源二次进入本链转成同形三件套，成功且读回校验通过后才删旧档
+ * （[LegacyPatchMigrator]，CONTRACT-RT2-M2LEGACY）。
  *
  * ## 全或无（不变量 I5）
  *
- * 补丁产物的落盘是最后一步：编译失败 / 身份预检失败都不落 `.patch`（源 `.ERB`
- * 照契约顺序先落盘留档，那是编译输入，不是产物）。已存在的同名旧产物不会被半途
- * 覆盖——落盘失败时临时文件已清理，旧产物原样保留（下次装载回退到旧补丁，
- * 行为可预期）。
+ * 本次导入产物落盘与读回校验是主流程的最后一步：编译失败 / 转码拒绝 / 编码失败都不落
+ * 产物（源 `.ERB` 照契约顺序先落盘留档，那是编译输入，不是产物）。容器与 manifest 各自走
+ * tmp+rename；落盘失败时临时文件已清理，同名旧产物原样保留。其后的 ⑤′ 存量迁移是
+ * fail-closed 的独立相位：失败只保留旧 `.patch` 并上警告，绝不回退本次导入的 [ModImportOutcome.Imported]。
  *
  * ## 三态失败（契约 C5 出口判据①）
  *
@@ -232,8 +241,8 @@ sealed interface ModImportOutcome {
  * 1. 源文件落盘（[ModStore.save]）→ STORAGE；
  * 2. base 上下文读取（[BaseCompileContextSource.read]）→ STORAGE；
  * 3. 编译（[PatchCompiler.compile] 的 [PatchCompiler.PatchCompileException] / require）→ COMPILE；
- * 4. 身份预检（[com.eratw.port.core.patch.PatchArtifacts.checkAgainst]，I3）→ IDENTITY；
- * 5. 产物落盘 + 写读往返校验（I8）→ STORAGE（往返不一致同样归 STORAGE：那是落盘损坏）。
+ * 4. 转码（[PatchImportTranscoder.transcode] 的 require）→ COMPILE；
+ * 5. 容器 / manifest 编码与落盘 + 写读往返校验 → COMPILE / STORAGE / IDENTITY。
  *
  * 未预料的异常走 [ModImportFailureKind.UNEXPECTED]（带异常类名，禁静默）。
  *
@@ -248,15 +257,27 @@ class ModImportController(
 ) {
 
     /**
-     * 执行一次导入：排序 → 源落盘 → 读 base 上下文 → 编译 → 身份预检 → 产物落盘。
-     * 任何失败都折成 [ModImportOutcome.Failed]（不向上抛；调用方是 Android 线程，
-     * 拿到结果直接渲染）。
+     * 执行一次导入：排序 → 源落盘 → 读 base 上下文 → 编译 → 身份预检 → 产物落盘
+     * → ⑤′ 存量 `.patch` 迁移（删除相位）。主链任何失败都折成 [ModImportOutcome.Failed]
+     * （不向上抛；调用方是 Android 线程，拿到结果直接渲染）；⑤′ 迁移失败是独立相位，
+     * 只保留旧档并上警告，不回退本次导入成功（[LegacyPatchMigrator]）。
      *
      * [copy] 是壳层在起线程前取好的当前语言文案表（照 `UpdateCopy` 的口径：纯层不碰
      * SharedPreferences，语言随调用进线程）；缺省只为所有权外的既有单测留（对拍
      * [ModImportCopy.ZH]，消息逐字同形）。
      */
-    fun import(files: List<PickedModFile>, copy: ModImportCopy = ModImportCopy.ZH): ModImportOutcome {
+    fun import(
+        files: List<PickedModFile>,
+        copy: ModImportCopy = ModImportCopy.ZH,
+        /** 调用方（UI 线程）读好的 Mod 运行总闸状态；仅用于成功页状态说明。 */
+        modRuntimeEnabled: Boolean = true,
+        /**
+         * 存量 `.patch` 迁移相位的递归闸：迁移器二次进入本链时置 false，防止无限递归与
+         * 重复删除。生产调用恒缺省 true（导入期自动迁移）；只有 [LegacyPatchMigrator] 的
+         * `writePackage` 回调显式传 false。见 ⑤′ 段（CONTRACT-RT2-M2LEGACY）。
+         */
+        legacyMigrationEnabled: Boolean = true,
+    ): ModImportOutcome {
         if (files.isEmpty()) {
             return ModImportOutcome.Failed(ModImportFailureKind.STORAGE, copy.noFilesPicked)
         }
@@ -332,54 +353,36 @@ class ModImportController(
             return failed(ModImportFailureKind.STORAGE, copy.fill(copy.readBaseFailedFormat, detailText(e)), e)
         }
 
-        // ---- ③ 编译（I6 四闸在这里抛 PatchCompileException，消息带函数名 + 文件:行）----
-        // 并集重编（2026-11 多包导入实测）：补丁窗口恒锚定裸 base 产物（I3），而装载器把
-        // 第二份窗口同样锚裸 base 的 .patch 叠到第一份之后时，窗口对齐闸必炸——「导了 A
-        // 再导 B」整轮回退。设备端唯一正确的形态是 **mods 里全部留档源 + 本次新源一次性
-        // 编成一张补丁**：留档 .ERB 是真相（源在，随时可重编），产物只此一份 UNION_PATCH。
-        // 装载序 = 文件名序（与 ModStore.compareNames 同源）；本次新源同盘名覆盖旧留档
-        // （重导=更新），旧 per-import 产物在落新产物前清理。
-        val archiveNames = modStore.modsDir.listFiles()?.map { it.name }.orEmpty()
-            // 并集把留档的 .ERB 与 .ERH 都算进来：留档才是真相，产物必须能从留档源整体重算。
-            .filter { ModStore.hasErbExtension(it) || ModStore.hasErhExtension(it) }
-            .toHashSet()
-        val unionNames = LinkedHashSet<String>()
-        for (f in deduped) unionNames.add(f.diskName)
-        unionNames.addAll(archiveNames)
-        val archived = HashMap<String, PickedModFile>()
-        for (name in unionNames) {
-            if (deduped.any { it.diskName == name }) continue
-            val bytes = try {
-                Files.readAllBytes(File(modStore.modsDir, name).toPath())
-            } catch (e: Exception) {
-                return failed(
-                    ModImportFailureKind.STORAGE,
-                    copy.fill(copy.readArchivedFailedFormat, name, detailText(e)),
-                    e,
-                )
-            }
-            archived[name] = PickedModFile(name, bytes)
-        }
-        val unionSources = sortSourceFiles(unionNames.map { f ->
-            deduped.firstOrNull { it.diskName == f } ?: archived.getValue(f)
-        })
+        // ---- ③ 编译（M2-4 裁定 2：只编本次导入的源，留档源不再拉进并集）----
+        // 每次导入独立成包；同一源集合重导 = 同 packageId = 原地替换。多口上包组合
+        // 由链接期 LinkOrder 解决（era-arch-v61u.md:75「不再需要源码」）。
+        val importSources = deduped
         // entry 跨源回退（B4，2026-11 整包导入实测）：排序第一的文件可能整文件在
         // [SKIPSTART] 块内（群友整合包的 M_KOJO_K16_5_IMAGE.ERB 排最前、全文件被跳过，
         // PatchCompiler 同样不编译它）——按装载序找第一个能提供 @ 函数头的源；全部为空
         // 才报 COMPILE。旧实现只看第一个文件，整包在「入口函数不存在」上死。
-        val entry = unionSources.firstNotNullOfOrNull { firstFunctionNameOf(it.text) }
+        val entry = importSources.firstNotNullOfOrNull { firstFunctionNameOf(it.text) }
             ?: return ModImportOutcome.Failed(
                 ModImportFailureKind.COMPILE,
-                copy.fill(copy.noEntryFunctionFormat, unionSources.size),
+                copy.fill(copy.noEntryFunctionFormat, importSources.size),
             )
         // 侧车灌装告警（R7-D3 P0：global-dims 容忍模式的失败条目明细）在 try 内赋值、
         // 块外并入 parseWarnings——I7 口径：告警不拦截导入，但必须可上屏可定位。
         var symbolWarnings: List<String> = emptyList()
         var renameWarnings: List<String> = emptyList()
         val result = try {
-            val symbolBuild = buildPatchSymbolTable(base.metadata, base.csvDir)
+            // 生效配置一口取定：`useERD` 决定补丁编译的折叠面是否含 ERD 表
+            // （与全量编译 CorpusCompile 的 `ConfigKey.UseERD` 门同源）。
+            val deviceConfig = com.eratw.port.core.config.ConfigStore()
+            com.eratw.port.core.config.EmueraConfigParser.loadChainFromDisk(gameRoot.toPath(), deviceConfig)
+            val effective = com.eratw.port.core.config.EffectiveConfig.of(deviceConfig)
+            val symbolBuild = buildPatchSymbolTable(
+                base.metadata,
+                base.csvDir,
+                useERD = effective.bool(com.eratw.port.core.config.ConfigKey.UseERD),
+            )
             symbolWarnings = symbolBuild.warnings
-            val sources = unionSources.map { PatchCompiler.SourceFile(relPath = it.displayName, text = it.text) }
+            val sources = importSources.map { PatchCompiler.SourceFile(relPath = it.displayName, text = it.text) }
             // `[[替换名]]` 字典与全量编译同源（CSV/_Rename.csv）：口上包大量写
             // `CASE [[比基尼套装]]`，不喂字典则 `[[` 漏到词法器撞 LexicalAnalyzer.cs:809-813
             // 的 RenameDic==null 分支，整包解析失败（2026-11 蕾米莉亚包实测）。
@@ -388,9 +391,14 @@ class ModImportController(
             // `UseRenameFile && RenameDic != null` 决定应用）——开关关时喂字典反而是
             // 偏离原版。开关开而文件缺席保持 null 并留痕（原版 PrintError MissingRename，
             // Process.cs:270-273；后续 `[[` 撞词法器与原版同形）。
-            val store = com.eratw.port.core.config.ConfigStore()
-            com.eratw.port.core.config.EmueraConfigParser.loadChainFromDisk(gameRoot.toPath(), store)
-            val useRename = com.eratw.port.core.config.EffectiveConfig.of(store).useRenameFile
+            val useRename = effective.useRenameFile
+            // 同名非事件函数重复定义的装载期告警门（U8-② / L26）：原版门 =
+            // `!label.IsEvent && Config.WarnNormalFunctionOverloading`（spec: ErbLoader.cs:466；
+            // 键缺省 false，spec: ConfigData.cs:99），4.981 出厂 emuera.config 第 48 行是
+            // `DUPLICATED FUNCTIONS WARNING:YES` ⇒ 出厂行为不变；玩家关掉开关后，导入报告
+            // 不再刷「同名覆盖」告警（覆盖语义不变，仍是后定义者生效）。
+            val warnDuplicateFunctions =
+                effective.bool(com.eratw.port.core.config.ConfigKey.WarnNormalFunctionOverloading)
             val renameDic = if (useRename) RenameDictionary.load(base.csvDir?.toPath()) else null
             if (useRename && renameDic == null && base.csvDir != null) {
                 renameWarnings = listOf(
@@ -398,7 +406,17 @@ class ModImportController(
                         "（原版 PrintError MissingRename，spec: Process.cs:270-273）",
                 )
             }
-            PatchCompiler(base.metadata, base.baseCounts, symbolBuild.table, renameDic = renameDic)
+            PatchCompiler(
+                base.metadata,
+                base.baseCounts,
+                symbolBuild.table,
+                renameDic = renameDic,
+                // 常量关键字下标解析期折成整数（原版装载期 Restructure 同相位）；
+                // 不喂则补丁里 `M_CFLAG:LOCAL:…` 退回运行期按名查盘上 CSV。
+                constantKeywordLookup = symbolBuild.keywordLookup,
+                // 同名非事件函数重复定义告警按玩家配置门控（出厂 YES ⇒ 行为不变）。
+                warnNormalFunctionOverloading = warnDuplicateFunctions,
+            )
                 .compile(sources, entry)
         } catch (e: PatchCompiler.PatchCompileException) {
             return failed(ModImportFailureKind.COMPILE, e.message ?: copy.compileFailedFallback, e)
@@ -413,62 +431,103 @@ class ModImportController(
             )
         }
 
-        // ---- ④ 补丁产物（头 + 内嵌 .erbc）+ I3 身份预检 ----
-        // 写头走 PatchCompiler.headerOf（E1 权威口径）：privateDims 随 result 透传进
-        // 可选段 private-dims——C5 导入链从此产出带私有 #DIM 载体的补丁（R7-E1 收官）。
+        // ---- ④ 进口即转码：窗口补丁 → 零基线 Module + RT2 manifest（M2-4 裁定 1）----
+        // 产物经既有生产装配路消费（mods/rt2 单向配对 → ModChainAssembly → linker →
+        // plan → GameSession），运行期单管线；不再写 kojo-imports.patch。
         val program = result.program
         val baseCounts = base.baseCounts
-        // 入口取**编译实际生效**的那一个（PatchCompiler 的入口回退面）：头字段要与产物一致。
-        val header = PatchCompiler.headerOf(result, baseCounts, base.baseSha256, result.entryFunction)
-        val artifact = try {
-            // 补丁体 = 一份完整 .erbc（窗口编码，ModPatchLoader 的 decode 口径）；I8 的
-            // 「写完立刻读回」左移到构造期：of 内部先做容器级校验（ErbcReader.probe）。
-            PatchArtifacts.of(header, ErbcWriter.encode(program))
+        val packageId = packageIdFor(deduped.map { it.diskName })
+        val transcoded = try {
+            PatchImportTranscoder.transcode(
+                result,
+                baseCounts,
+                base.metadata.functions.associate { it.index to it.key },
+                packageId,
+            )
+        } catch (e: IllegalArgumentException) {
+            return failed(ModImportFailureKind.COMPILE, e.message ?: copy.compileFailedFallback, e)
+        } catch (e: Exception) {
+            return failed(
+                ModImportFailureKind.UNEXPECTED,
+                copy.fill(copy.compileUnexpectedFormat, e::class.simpleName ?: "null", e.message ?: "null"),
+                e,
+            )
+        }
+        val erbmBytes = try {
+            ErbModuleContainer.encode(transcoded.module)
         } catch (e: Exception) {
             return failed(ModImportFailureKind.COMPILE, copy.fill(copy.artifactEncodeFailedFormat, detailText(e)), e)
         }
-        try {
-            artifact.checkAgainst(PatchBaseSnapshot(baseCounts.instructionCount, baseCounts.functionCount,
-                baseCounts.statementCount, baseCounts.stringCount, baseCounts.longCount, baseCounts.exprCount,
-                base.baseSha256))
-        } catch (e: PatchIdentityMismatchException) {
-            return failed(ModImportFailureKind.IDENTITY, e.message ?: copy.identityFailedFallback, e)
+        val manifestBytes = try {
+            ManifestCodec.encode(transcoded.descriptor)
+        } catch (e: Exception) {
+            return failed(ModImportFailureKind.COMPILE, copy.fill(copy.artifactEncodeFailedFormat, detailText(e)), e)
         }
 
-        // ---- ⑤ 产物落盘（.patch，与 ModPatchLoader 的扫描扩展名逐字对齐）+ I8 读回校验 ----
-        // 并集产物名恒定（UNION_PATCH_NAME）：一张 mods 只养一张设备端补丁，重导=整张替换。
-        // 与本链留档源同名的旧 per-import 产物（`<盘名>.patch`，上一版按「首个源名」各落
-        // 一张）在这里清掉——它们与并集产物窗口重叠，并存必撞装载器窗口对齐闸（整轮回退）。
-        // 判定只认「盘名逐字等于某个留档 .ERB 的产物」；玩家手工放进 mods 的其它 .patch
-        // 一概不删（装载侧由 I3/窗口闸裁决，回退清单会点名，玩家能自行处置）。
-        val patchName = UNION_PATCH_NAME
+        // ---- ⑤ 产物落盘（mods/rt2 单向配对）+ 读回校验 ----
+        // 同集合重导 = 同 packageId = 同名文件原地替换；异集合并存为不同包。
+        // 旧 .patch 的退役不再在这一步直接删（历史实现把删除塞在落盘 try 里、读回校验之前）；
+        // 移到下面的 ⑤′ 迁移相位：用盘上留档源重走本链产出同形三件套，成功且读回校验通过
+        // 之后才删，失败则旧档原样保留、逐条警告、本次导入照常成功（L5 / RT2-M2LEGACY）。
+        val rt2Dir = File(modStore.modsDir, ModRuntimeAssembly.RT2_MANIFEST_DIR_NAME)
+        val erbmName = packageId + ModPackageInventory.MODULE_EXTENSION
+        val manifestName = packageId + ModPackageInventory.MANIFEST_EXTENSION
+        val sourcesName = packageId + ModPackageInventory.SOURCES_EXTENSION
+        val sourcesBytes = ModPackageInventory.sourcesBytes(deduped.map { it.diskName })
         try {
-            val unionDiskNames = unionSources.map { it.diskName }.toHashSet()
-            for (stale in modStore.modsDir.listFiles().orEmpty()) {
-                if (!stale.isFile || stale.name == patchName ||
-                    !ModPatchLoader.hasPatchExtension(stale.name)
-                ) continue
-                val sourceName = stale.name.removeSuffix(ModPatchLoader.PATCH_EXTENSION) + ModStore.ERB_EXTENSION
-                if (unionDiskNames.contains(sourceName)) stale.delete()
-            }
-            savePatchArtifact(modStore.modsDir, patchName, artifact.write())
+            // 写序（RT2 MODGC 裁定 4）：provenance 先 ⇒ 任一步崩溃时 GC 拿到的是「已声明
+            // 源名单」，半成品判据（缺容器/manifest）仍成立，不会因缺 provenance 而漏清。
+            saveArtifact(rt2Dir, sourcesName, sourcesBytes)
+            saveArtifact(rt2Dir, manifestName, manifestBytes)
+            saveArtifact(rt2Dir, erbmName, erbmBytes)
         } catch (e: Exception) {
             return failed(ModImportFailureKind.STORAGE, copy.fill(copy.artifactSaveFailedFormat, detailText(e)), e)
         }
         try {
-            verifyWrittenArtifact(File(modStore.modsDir, patchName), header)
+            verifyWrittenPackage(rt2Dir, packageId, sourcesBytes)
         } catch (e: Exception) {
             return failed(ModImportFailureKind.IDENTITY, copy.fill(copy.verifyWrittenFailedFormat, detailText(e)), e)
         }
 
+        // ---- ⑤′ 存量 .patch 迁移（删除相位后移，L5 / CONTRACT-RT2-M2LEGACY）----
+        // 旧并集补丁 kojo-imports.patch 与旧 per-import .patch 只在「迁移成功 + 三件套读回
+        // 校验通过」后删。迁移器枚举盘上留档源（真相源，绝不读 .patch 内容），经 writePackage
+        // 回调二次进入本 import 整条编译→转码→落盘链（legacyMigrationEnabled = false 防递归），
+        // 产出独立 packageId 的同形三件套——零第二份编译/转码实现。无存量 .patch ⇒ NoLegacy，
+        // 本段完全零副作用（逐字节零变化）。失败告警并入 parseWarnings，不拦截本次导入。
+        val migrationWarnings = ArrayList<String>()
+        if (legacyMigrationEnabled) {
+            val migration = LegacyPatchMigrator.migrate(
+                modsDir = modStore.modsDir,
+                importDiskNames = deduped.map { it.diskName }.toHashSet(),
+                copy = copy,
+                writePackage = { legacySources ->
+                    val picked = legacySources.map { PickedModFile(it.diskName, it.bytes) }
+                    when (val inner = import(picked, copy, modRuntimeEnabled, legacyMigrationEnabled = false)) {
+                        is ModImportOutcome.Imported -> MigrationWriteOutcome.Ok(
+                            inner.detail.patchFileName.removeSuffix(ModPackageInventory.MODULE_EXTENSION),
+                        )
+                        is ModImportOutcome.Failed -> MigrationWriteOutcome.Err(inner.message)
+                    }
+                },
+            )
+            when (migration) {
+                is MigrationResult.Migrated -> for (stale in migration.stalePatches) stale.delete()
+                is MigrationResult.Kept -> migrationWarnings += migration.warnings
+                MigrationResult.NoLegacy -> Unit
+            }
+        }
+
         return ModImportOutcome.Imported(
             ImportedPatchDetail(
-                patchFileName = patchName,
+                patchFileName = erbmName,
                 functionCount = program.functions.size,
                 instructionCount = program.instructionCount - baseCounts.instructionCount,
-                entryFunction = header.entryFunction,
+                entryFunction = result.entryFunction,
                 sourceFileNames = deduped.map { it.displayName },
-                parseWarnings = result.parseWarnings + symbolWarnings + dedupWarnings + renameWarnings,
+                parseWarnings = result.parseWarnings + symbolWarnings + dedupWarnings +
+                    renameWarnings + migrationWarnings,
+                modRuntimeOffHint = if (modRuntimeEnabled) null else copy.modRuntimeOffHint,
             ),
         )
     }
@@ -567,7 +626,12 @@ class ModImportController(
      * 这些条目跳过 = 补丁里引用它们得到「未定义变量」的**明确失败**（方向安全，与
      * 静默错值相反）；失败条目逐条进告警（I7：文件:行 + 原文），不再一条失败整链死。
      */
-    internal fun buildPatchSymbolTable(metadata: BootMetadata, csvDir: File?): SymbolTableBuild {
+    internal fun buildPatchSymbolTable(
+        metadata: BootMetadata,
+        csvDir: File?,
+        /** `ConfigKey.UseERD`：与全量编译同门（关 ⇒ 折叠面不含 ERD 表，只折系统名表）。 */
+        useERD: Boolean = true,
+    ): SymbolTableBuild {
         val sym = SymbolTable()
         // ERH `#DIM CONST` 的**名字**先进符号表（侧车 const / str-const 两段就是它们折叠后的
         // 值表）：原版解析期靠 nameDic 认出「这是个常量」，口上里 `CASE 桜花道的鳥居`、
@@ -582,13 +646,13 @@ class ModImportController(
         for (name in dimCfg.strConstants.keys) {
             sym.declareVariable(name, OperandType.STR, 0, isCharacterData = false, isConst = true)
         }
-        if (csvDir != null) {
-            val data = GameDataLoader.load(csvDir.toPath())
-            if (data != null) {
-                for (def in data.registry.all()) {
-                    val info = def.toVarInfo()
-                    sym.declareVariable(info.name, info.operandType, info.dimension, info.isCharacterData, info.isConst)
-                }
+        // 常量关键字折叠的数据面：设备端与全量编译同源（CSV 目录 + ERB 下的 ERD 表），
+        // 只是这里按设备现盘装载，不再吃编译机快照。
+        val gameData = csvDir?.let { GameDataLoader.load(it.toPath()) }
+        if (gameData != null) {
+            for (def in gameData.registry.all()) {
+                val info = def.toVarInfo()
+                sym.declareVariable(info.name, info.operandType, info.dimension, info.isCharacterData, info.isConst)
             }
         }
         val consts = sizeConsts(dimCfg.macros, dimCfg.intConstants)
@@ -654,11 +718,30 @@ class ModImportController(
             if (m.isEvent || m.isMethod || m.key in methodKeys) continue
             sym.declareFunction(m.key, OperandType.INT)
         }
-        return SymbolTableBuild(sym, warnings)
+        // 解析期常量关键字折叠面（`VariableStrArgTerm.cs:57-69`）：常量字符串下标必须在这里
+        // 折成整数，否则补丁运行期按名查盘上 CSV——盘上表旧/半截就抛「…csv 中未定义关键字」。
+        // 数据面缺（CSV 读不到）时保持 null：回退成旧的运行期查表，报错语义不变。
+        val keywordLookup: ((String, Int, String) -> Long?)? = gameData?.let { data ->
+            val gameRootForFold = csvDir?.parentFile?.toPath()
+            val systemNames = data.registry.all().mapTo(HashSet()) { it.name.uppercase() }
+            val erdTables = if (useERD && gameRootForFold != null) {
+                runCatching { UserKeywordTables.foldSnapshot(gameRootForFold, systemNames) }
+                    .getOrDefault(emptyMap())
+            } else {
+                emptyMap()
+            }
+            ConstantKeywordResolver(data.registry, erdTables + data.registry.systemKeywordTables())::resolve
+        }
+        return SymbolTableBuild(sym, warnings, keywordLookup)
     }
 
     /** [buildPatchSymbolTable] 的出口：符号表 + 侧车灌装告警（并入导入结果 `parseWarnings`）。 */
-    internal data class SymbolTableBuild(val table: SymbolTable, val warnings: List<String>)
+    internal data class SymbolTableBuild(
+        val table: SymbolTable,
+        val warnings: List<String>,
+        /** 常量关键字的解析期折叠闭包；null = 数据面缺，回退运行期查表。 */
+        val keywordLookup: ((String, Int, String) -> Long?)? = null,
+    )
 
     /**
      * mods 目录里的补丁产物名（静态清单，报告页用；文件名序，[ModStore.compareNames]）。
@@ -676,16 +759,16 @@ class ModImportController(
     // ------------------------------------------------------------------
 
     /**
-     * 原子落盘一份补丁产物：同目录 `.tmp` → fsync → rename（镜像 [ModStore] 的原子性
-     * 口径）。目标已存在（重导同名源）= 整份替换；任何失败都清理临时文件，`mods/` 里
-     * 不会出现半截产物。
+     * 原子落盘一份导入产物：同目录 `.tmp` → fsync → rename（镜像 [ModStore] 的原子性
+     * 口径）。目标已存在（同集合重导 = 同 packageId）= 整份替换；任何失败都清理临时
+     * 文件，目录里不会出现半截产物。
      */
-    private fun savePatchArtifact(modsDir: File, name: String, bytes: ByteArray) {
-        if (!modsDir.isDirectory && !modsDir.mkdirs() && !modsDir.isDirectory) {
-            throw IOException("无法创建 mods 目录：${modsDir.absolutePath}")
+    private fun saveArtifact(dir: File, name: String, bytes: ByteArray) {
+        if (!dir.isDirectory && !dir.mkdirs() && !dir.isDirectory) {
+            throw IOException("无法创建目录：${dir.absolutePath}")
         }
-        val target = File(modsDir, name)
-        val tmp = File(modsDir, "$name.${System.nanoTime()}.tmp")
+        val target = File(dir, name)
+        val tmp = File(dir, "$name.${System.nanoTime()}.tmp")
         try {
             FileOutputStream(tmp).use { out ->
                 out.write(bytes)
@@ -694,9 +777,9 @@ class ModImportController(
             }
             if (!tmp.renameTo(target)) {
                 if (target.exists() && !target.delete()) {
-                    throw IOException("无法替换既有补丁产物：${target.name}")
+                    throw IOException("无法替换既有导入产物：${target.name}")
                 }
-                if (!tmp.renameTo(target)) throw IOException("无法落盘补丁产物：${target.name}")
+                if (!tmp.renameTo(target)) throw IOException("无法落盘导入产物：${target.name}")
             }
         } catch (e: IOException) {
             tmp.delete()
@@ -708,51 +791,49 @@ class ModImportController(
     }
 
     /**
-     * 写读往返校验（不变量 I8 的落盘侧）：读回刚写的字节，头字段逐项比对刚写入的
-     * [header]（六计数 + sha + compiler + 补丁五计数 + entry）。读不出 / 解不开 / 字段
-     * 不符都在这里抛（调用方折成 IDENTITY 失败上屏）——写坏了却没人读是最隐蔽的坑。
+     * 写读往返校验：容器走真 [ErbModuleContainer.decode]（摘要 + 记录区全量校验），
+     * manifest 走真 [ManifestCodec.decode]，provenance 按字节对账；三者 packageId/内容
+     * 必须与本次派生值一致。读不出 / 解不开 / 对不上都在这里抛（调用方折成 IDENTITY 失败上屏）。
+     *
+     * 文件名从 packageId + [ModPackageInventory] 的扩展名现场派生：与落盘侧同源，
+     * 不在参数里重复三份名字。
      */
-    private fun verifyWrittenArtifact(target: File, header: PatchHeader) {
-        val bytes = try {
-            Files.readAllBytes(target.toPath())
-        } catch (e: IOException) {
-            throw IOException("补丁产物落盘后读不回来：${target.name}（${e.message ?: e::class.simpleName}）", e)
+    private fun verifyWrittenPackage(dir: File, packageId: String, sourcesBytes: ByteArray) {
+        val erbmName = packageId + ModPackageInventory.MODULE_EXTENSION
+        val manifestName = packageId + ModPackageInventory.MANIFEST_EXTENSION
+        val sourcesName = packageId + ModPackageInventory.SOURCES_EXTENSION
+        val module = readBackOrThrow(File(dir, erbmName), "模块容器", ErbModuleContainer::decode)
+        check(module.packageId == packageId) {
+            "模块容器 packageId 不符：期望 $packageId，实为 ${module.packageId}（$erbmName）"
         }
-        val readBack = try {
-            PatchArtifacts.read(bytes)
-        } catch (e: Exception) {
-            throw IllegalStateException("补丁产物读回解析失败：${target.name}（${e.message ?: e::class.simpleName}）", e)
+        val descriptor = readBackOrThrow(File(dir, manifestName), "manifest", ManifestCodec::decode)
+        check(descriptor.packageId == packageId) {
+            "manifest packageId 不符：期望 $packageId，实为 ${descriptor.packageId}（$manifestName）"
         }
-        val h = readBack.header
-        fun mismatch(field: String, expected: Any, actual: Any): Boolean = expected != actual
-        val problems = buildList {
-            if (mismatch("base-instructions", header.baseInstructionCount, h.baseInstructionCount)) add("base-instructions")
-            if (mismatch("base-functions", header.baseFunctionCount, h.baseFunctionCount)) add("base-functions")
-            if (mismatch("base-statements", header.baseStatementCount, h.baseStatementCount)) add("base-statements")
-            if (mismatch("base-strings", header.baseStringCount, h.baseStringCount)) add("base-strings")
-            if (mismatch("base-longs", header.baseLongCount, h.baseLongCount)) add("base-longs")
-            if (mismatch("base-exprs", header.baseExprCount, h.baseExprCount)) add("base-exprs")
-            if (mismatch("base-sha256", header.baseSha256, h.baseSha256)) add("base-sha256")
-            if (mismatch("compiler", header.compiler, h.compiler)) add("compiler")
-            if (mismatch("patch-functions", header.patchFunctionCount, h.patchFunctionCount)) add("patch-functions")
-            if (mismatch("patch-statements", header.patchStatementCount, h.patchStatementCount)) add("patch-statements")
-            if (mismatch("patch-strings", header.patchStringCount, h.patchStringCount)) add("patch-strings")
-            if (mismatch("patch-longs", header.patchLongCount, h.patchLongCount)) add("patch-longs")
-            if (mismatch("patch-exprs", header.patchExprCount, h.patchExprCount)) add("patch-exprs")
-            if (mismatch("entry-function", header.entryFunction, h.entryFunction)) add("entry-function")
-        }
-        if (problems.isNotEmpty()) {
-            throw IllegalStateException("补丁产物落盘内容与预期不符（字段 ${problems.joinToString("、")} 期望/实际不一致）：${target.name}")
+        val sourcesReadBack = readBackOrThrow(File(dir, sourcesName), "provenance") { it }
+        check(sourcesReadBack.contentEquals(sourcesBytes)) {
+            "provenance 内容与本次留档源名单不符：$sourcesName"
         }
     }
 
     /**
-     * 异常原话段（`message ?: 类名`，控制器失败消息统一取法）：异常没有消息也没有类名的
-     * 罕见形态按原字符串模板的渲染结果补成 "null"，保证收口前后逐字同形。原话本身是
-     * 取证面（core 抛出的 detailMessage 保持原样不进文案表），只有外层的句子模板走
-     * [ModImportCopy]。
+     * 包身份稳定派生（M2-4 裁定 3）：[ModPackageInventory.PACKAGE_ID_PREFIX] +
+     * sha256(排序后 diskName 列表 join '\n') 前 8 位十六进制。同集合重导 = 同 packageId =
+     * 原地替换；稳定身份键归 M1-4，本函数不承担跨包身份语义。
      */
-    private fun detailText(e: Throwable): String = e.message ?: e::class.simpleName ?: "null"
+    internal fun packageIdFor(diskNames: List<String>): String {
+        val joined = diskNames
+            .sortedWith { a, b -> ModStore.compareNames(a, b) }
+            .joinToString("\n")
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(joined.toByteArray(Charsets.UTF_8))
+        val hex = StringBuilder(PACKAGE_ID_BYTES * HEX_CHARS_PER_BYTE)
+        for (i in 0 until PACKAGE_ID_BYTES) {
+            val v = digest[i].toInt() and BYTE_MASK
+            hex.append(PACKAGE_ID_HEX[v ushr NIBBLE_BITS]).append(PACKAGE_ID_HEX[v and NIBBLE_MASK])
+        }
+        return ModPackageInventory.PACKAGE_ID_PREFIX + hex
+    }
 
     /** 失败的统一收口：消息上屏（I7 可定位），异常只进日志面（由调用方决定是否记 logcat）。 */
     private fun failed(kind: ModImportFailureKind, message: String, cause: Throwable): ModImportOutcome.Failed {
@@ -770,8 +851,44 @@ class ModImportController(
          * 留档 .ERB + 本次新源一次性并集重编（= 原版 PC「全部口上一起装载」的设备端等价形）。
          */
         const val UNION_PATCH_NAME: String = "kojo-imports" + ModPatchLoader.PATCH_EXTENSION
+
+        /** packageId 十六进制小写表（与 SHA-256 摘要前 4 字节同源）。 */
+        private const val PACKAGE_ID_HEX: String = "0123456789abcdef"
+
+        /** packageId 取摘要前几字节（裁定 3：8 位十六进制 = 4 字节）。 */
+        private const val PACKAGE_ID_BYTES: Int = 4
+
+        /** 每字节两位十六进制字符。 */
+        private const val HEX_CHARS_PER_BYTE: Int = 2
+
+        /** 单字节取数值的掩码。 */
+        private const val BYTE_MASK: Int = 0xFF
+
+        /** 低半字节掩码（`v and 0x0F`）。 */
+        private const val NIBBLE_MASK: Int = 0x0F
+
+        /** 高半字节右移位数。 */
+        private const val NIBBLE_BITS: Int = 4
     }
 }
+
+/**
+ * 异常原话段（`message ?: 类名`，控制器失败消息统一取法）：异常没有消息也没有类名的
+ * 罕见形态按原字符串模板的渲染结果补成 "null"，保证收口前后逐字同形。原话本身是
+ * 取证面（core 抛出的 detailMessage 保持原样不进文案表），只有外层的句子模板走
+ * [ModImportCopy]。
+ */
+private fun detailText(e: Throwable): String = e.message ?: e::class.simpleName ?: "null"
+
+/** 读回并解码一件刚落盘的产物；IO / 解码异常统一折成点名该文件的 [IOException]。 */
+private fun <T> readBackOrThrow(file: File, label: String, decode: (ByteArray) -> T): T =
+    try {
+        decode(Files.readAllBytes(file.toPath()))
+    } catch (e: IOException) {
+        throw IOException("$label 落盘后读回失败：${file.name}（${detailText(e)}）", e)
+    } catch (e: IllegalArgumentException) {
+        throw IOException("$label 落盘后读回失败：${file.name}（${detailText(e)}）", e)
+    }
 
 /**
  * 口上源文本的解码口：严格 UTF-8 试解，解不动回落 CP932。

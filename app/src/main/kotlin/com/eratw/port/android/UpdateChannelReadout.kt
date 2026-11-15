@@ -169,6 +169,8 @@ object UpdateChannelReadout {
      * @param notes 那次留下的原话（成功 = 发布那边的提醒，连不上 = 每条地址的失败原因）
      * @param noteCount 原话的真实条数（可能大于 [notes] 的长度，因为存的时候截过）
      * @param stagedDataVersion 已下载、等下次启动应用的数据包版本；小于等于 0 = 没有
+     * @param stagedApkPath 已核对可装的整包（[UpdateManager.handedOffApk]）的盘上路径；空串 = 没有。
+     *   通知是会丢的（权限/渠道/被划掉），这个状态必须活在读数里，设置页据它出「安装已下载的更新」按钮。
      */
     class Snapshot(
         val mirrorCount: Int = 0,
@@ -181,6 +183,7 @@ object UpdateChannelReadout {
         val currentVersionCode: Long = -1L,
         val installedDataVersion: Long = 0L,
         val stagedDataVersion: Long = 0L,
+        val stagedApkPath: String = "",
         val skippedVersionCode: Long = UpdateUiText.NO_SKIPPED_VERSION,
         val autoChannelWanted: Boolean = true,
         val nowMillis: Long = 0L,
@@ -200,10 +203,13 @@ object UpdateChannelReadout {
      *
      * @param playerLines 玩家面分行现状（零基础措辞，无地址、无裸版本号）
      * @param techLines 展开层：地址原文、本机版本读数、毫秒读数、发布那边的原话
+     * @param stagedApkPath 已核对可装的整包路径（随 5 秒轮询刷新）；空串 = 没有，
+     *   设置页据此出「安装已下载的更新」按钮 —— 通知丢了状态也还在。
      */
     class Readout(
         val playerLines: List<String>,
         val techLines: List<String>,
+        val stagedApkPath: String = "",
     ) {
         /** 展开入口要不要出现：没有技术细节就不给一个点了没动静的入口。 */
         val hasTechDetail: Boolean get() = techLines.isNotEmpty()
@@ -268,6 +274,9 @@ object UpdateChannelReadout {
         player.add(canCheckLine(copy, s))
         player.add(checkLine(copy, s))
         player.add(stagedLine(copy, s))
+        // 已核对可装的整包也要有玩家面一行：状态活在读数里，不是只活在通知栏那条会丢的通知上。
+        // 路径本身不进正文（玩家面措辞无地址无术语），按钮的动作面在设置页 LaunchCard。
+        s.stagedApkPath.takeIf { it.isNotEmpty() }?.let { player.add(copy.stagedApkLine) }
         UpdateUiText.skippedVersionNote(copy, s.skippedVersionCode)?.let { player.add(it) }
         // U5 P2-12：下载真的在跑时补一行「正在下载」，玩家不必退出设置页去翻通知栏。
         // 不在跑（或缺读数）就一个字都不加 —— 既有三行现状的形状不许被它挤歪。
@@ -283,7 +292,7 @@ object UpdateChannelReadout {
         tech.addAll(timeLines(copy, s))
         if (s.noteCount > s.notes.size) tech.add(copy.fill(copy.techDroppedNotesLineFormat, s.noteCount - s.notes.size))
         tech.addAll(s.notes)
-        return Readout(player, tech)
+        return Readout(player, tech, s.stagedApkPath)
     }
 
     /** 第一行：这条通道现在能不能查、查了会不会自己下载。 */
@@ -317,7 +326,8 @@ object UpdateChannelReadout {
      * 三种语言同一口径（词在 [UpdateCopy]，「不许谎报」这条判据在这儿）。
      */
     private fun stagedLine(copy: UpdateCopy, s: Snapshot): String =
-        if (s.stagedDataVersion > 0L) copy.fill(copy.stagedYesLineFormat, s.stagedDataVersion)
+        // 数据包的内部版本号不进玩家面（玩家没有可对它做的事），只给「有、什么时候生效」。
+        if (s.stagedDataVersion > 0L) copy.stagedYesLineFormat
         else copy.stagedNoLine
 
     /** 正在下载那一行：词在 [UpdateCopy.downloadingLineFormat]，正文复用 [UpdateProgressText.progressText]。 */

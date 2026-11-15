@@ -1,0 +1,46 @@
+--- a/ステータス計算関連/SOURCE/SOURCE_1.ERB
++++ b/ステータス計算関連/SOURCE/SOURCE_1.ERB
+@@ -439,9 +439,10 @@
+ SIF CFLAG:ARG:约会中
+ 	TIMES LOCAL , 1.30
+ 	
+ ;ABL:親密をみる
++;CB-017：好意 source 的正反馈倍率封顶——親密项按官方消费锚 MIN(親密,15)（コマンド関連/COMF/外出系/NASIKUZUSI.ERB:582-592 多处）、好感度项按评级天花板 50000（COMMON.ERB CALC_RANK MAX_50000 的 Ex 档，MIN 后衔接处倍率恰为 ×11）。原式在重做 DLC 的亲密补正（イベント関連/EVENTTURNEND.ERB:26，SQRT(信赖度)/8 无上限）把亲密推到 100+ 级后，親密项 ×6（124 级 ×7.2）、受動 ×10.7（124 级 ×13.6）、好感度项 ×101（好感 50 万）叠加无衰减，单回合好意以百万~千万计（玩家报红「随便一个选项就加几千万/B级跳SS」）。欲望项不封：欲望无补正通道、升级消耗走正常量级 JUEL:欲情
+ IF LOCAL < 100000
+-	LOCAL = LOCAL * (ABL:ARG:親密 * 5 + 100) / 100
++	LOCAL = LOCAL * (MIN(ABL:ARG:親密, 15) * 5 + 100) / 100
+ ELSEIF LOCAL < 100000000
+-	LOCAL = LOCAL / 100 * (ABL:ARG:親密 * 5 + 100)
++	LOCAL = LOCAL / 100 * (MIN(ABL:ARG:親密, 15) * 5 + 100)
+ ENDIF
+@@ -475,13 +476,13 @@
+ ELSEIF CFLAG:ARG:2 <= 500000
+ 	IF LOCAL < 100000
+-		LOCAL = LOCAL * (CFLAG:ARG:2 / 50 + 100) / 100
++		LOCAL = LOCAL * (MIN(CFLAG:ARG:2, 50000) / 50 + 100) / 100
+ 	ELSEIF LOCAL < 10000000
+-		LOCAL = LOCAL / 100 * (CFLAG:ARG:2 / 50 + 100)
++		LOCAL = LOCAL / 100 * (MIN(CFLAG:ARG:2, 50000) / 50 + 100)
+ 	ELSEIF LOCAL < 100000000
+ 		IF CFLAG:ARG:2 <= 50000
+-			LOCAL = LOCAL / 100 * (CFLAG:ARG:2 / 50 + 100)
++			LOCAL = LOCAL / 100 * (MIN(CFLAG:ARG:2, 50000) / 50 + 100)
+ 		ELSE
+ 			LOCAL = 1000000000
+ 		ENDIF
+ 	ENDIF
+ ENDIF
+@@ -645,10 +646,11 @@
+ LOCAL = SOURCE:ARG:受動
+ ;对方主導
+ SIF ARG != MASTER && CFLAG:ARG:诶嘿嘿 == 2
+ 	TIMES LOCAL, 0.50
+ ;ABL:親密をみる
++;CB-017：受動的同款正反馈封顶（親密项 ×(親密*10+70)/100 在 100 级时 ×10.7），口径同上，封 MIN(親密,15)
+ IF LOCAL < 100000
+-	LOCAL = LOCAL * (ABL:ARG:親密 * 10 + 70) / 100
++	LOCAL = LOCAL * (MIN(ABL:ARG:親密, 15) * 10 + 70) / 100
+ ELSEIF LOCAL < 100000000
+-	LOCAL = LOCAL / 100 * (ABL:ARG:親密 * 10 + 70)
++	LOCAL = LOCAL / 100 * (MIN(ABL:ARG:親密, 15) * 10 + 70)
+ ENDIF

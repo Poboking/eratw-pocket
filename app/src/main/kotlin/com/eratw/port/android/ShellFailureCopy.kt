@@ -77,6 +77,14 @@ data class ShellFailureCopy(
     val consoleNotLaidOut: String,
     /** 首启解包失败：{0} 异常原话（前缀 [failurePrefix] 由调用点拼）。 */
     val unpackFailedFormat: String,
+    /**
+     * 构建期引擎印章非法：{0} 原样值（超长由调用点截断）与解析理由。
+     *
+     * 这一族只可能由**出包通道**造出来（未知档 / 换档漏改引擎串 / 手改产物），玩家侧
+     * 无法触发，但失败屏仍要按三语给出一句能转述的话（D13：设置页不暴露档位，失败面
+     * 是唯一会见到「引擎档」字样的地方）。
+     */
+    val engineStampInvalidFormat: String,
     /** 脚本错误终局（会话保留）：{0} 脚本原话。 */
     val scriptAbortFormat: String,
     /** 状态机终局：{0} 停在哪个态、{1} 阻塞原话、{2} 证据原话。 */
@@ -129,6 +137,14 @@ data class ShellFailureCopy(
     val progressLandedFormat: String,
     /** 清点还没出数时的占位行。 */
     val progressCounting: String,
+    /** 装载分段明细：解码脚本产物（CONTRACT-BOOTPHASE）。 */
+    val loadPhaseProgramLine: String,
+    /** 装载分段明细：读取元数据侧车。 */
+    val loadPhaseMetaLine: String,
+    /** 装载分段明细：装配游戏会话。 */
+    val loadPhaseSessionLine: String,
+    /** 装载分段明细：进入标题脚本。 */
+    val loadPhaseStartingLine: String,
     /** 清点读数：一条都没有。 */
     val inventoryNone: String,
     /** 清点读数：{0} 条目数、{1} MiB 数。 */
@@ -250,6 +266,8 @@ data class ShellFailureCopy(
                     "换一台内存更大的手机，或者点下面的「少占内存再试」再试一次 —— 它装得更慢、占得更少。",
             consoleNotLaidOut = "控制台尚未布局，无法确定列宽",
             unpackFailedFormat = "首启解包失败：{0}",
+            engineStampInvalidFormat =
+                "启动失败：引擎档印章无效（{0}）。请重新安装官方安装包；若仍失败请把这句话反馈给开发者。",
             scriptAbortFormat = "脚本错误中止本回合：{0}",
             stateMachineHaltFormat = "系统状态机停在 {0}：{1}（{2}）",
             stateMachineUnknownBlocker = "未知阻塞",
@@ -277,6 +295,10 @@ data class ShellFailureCopy(
             progressUnpackedFormat = "已解包 {0}/{1} 条（{2}）",
             progressLandedFormat = "已落盘：{0}",
             progressCounting = "正在盘点随包数据…",
+            loadPhaseProgramLine = "正在装载脚本与资源…",
+            loadPhaseMetaLine = "正在读取游戏数据…",
+            loadPhaseSessionLine = "正在准备游戏会话…",
+            loadPhaseStartingLine = "正在启动游戏…",
             inventoryNone = "(没有随包条目)",
             inventorySummaryFormat = "{0} 个条目 / {1} MiB",
             finalTitleLagFormat = "落盘 {0} 追不上 APK 随包 {1}：随包缺件或条目被压缩",
@@ -285,9 +307,9 @@ data class ShellFailureCopy(
             spaceShortFormat = "启动失败：存储空间不足，还需写入 {0} MiB，请清理存储后重试。",
             startupFaultFormat = "启动失败：{0}{1}。存档在盘上，不会丢失；可先重试，若仍然失败请把这句话反馈给开发者。",
             hintNotRunning = "游戏未运行，无法提交",
-            displaySizeDialogTitle = "显示大小已更改",
+            displaySizeDialogTitle = "显示设置已更改",
             displaySizeDialogBody =
-                "字号、列数与「窗口宽窄变化时重新排版」都要重开一局才生效。现在重开吗？未存档的进度会丢失。",
+                "字号、列数、画面左右留白与「窗口宽窄变化时重新排版」都要重开一局才生效。现在重开吗？未存档的进度会丢失。",
             orientationDialogTitle = "屏幕方向已更改",
             orientationPortrait = "竖屏",
             orientationLandscape = "横屏",
@@ -344,6 +366,9 @@ data class ShellFailureCopy(
                     "more - it loads slower and uses less.",
             consoleNotLaidOut = "The console is not laid out yet; column width cannot be determined",
             unpackFailedFormat = "first-launch unpacking failed: {0}",
+            engineStampInvalidFormat =
+                "Startup failed: the engine profile stamp is invalid ({0}). " +
+                    "Please reinstall the official package; if it still fails, report this sentence to the developer.",
             scriptAbortFormat = "A script error ended this turn: {0}",
             stateMachineHaltFormat = "The system state machine stopped at {0}: {1} ({2})",
             stateMachineUnknownBlocker = "unknown blocker",
@@ -377,6 +402,10 @@ data class ShellFailureCopy(
             progressUnpackedFormat = "Unpacked {0}/{1} entries ({2})",
             progressLandedFormat = "On disk: {0}",
             progressCounting = "Counting bundled data...",
+            loadPhaseProgramLine = "Loading scripts and resources...",
+            loadPhaseMetaLine = "Reading game data...",
+            loadPhaseSessionLine = "Preparing the game session...",
+            loadPhaseStartingLine = "Starting the game...",
             inventoryNone = "(no bundled entries)",
             inventorySummaryFormat = "{0} entries / {1} MiB",
             finalTitleLagFormat = "On disk {0} lags the bundled APK {1}: entries are missing or compressed",
@@ -388,10 +417,10 @@ data class ShellFailureCopy(
             startupFaultFormat = "Startup failed: {0}{1}. Saves are on disk and are not lost; try again first, " +
                 "and if it still fails, please report this sentence to the developer.",
             hintNotRunning = "The game is not running; cannot submit",
-            displaySizeDialogTitle = "Display size changed",
+            displaySizeDialogTitle = "Display settings changed",
             displaySizeDialogBody =
-                "Font size, column count and \"reflow when the window resizes\" only take effect after " +
-                    "restarting the game. Restart now? Unsaved progress will be lost.",
+                "Font size, column count, screen side margins and \"reflow when the window resizes\" " +
+                    "only take effect after restarting the game. Restart now? Unsaved progress will be lost.",
             orientationDialogTitle = "Screen orientation changed",
             orientationPortrait = "portrait",
             orientationLandscape = "landscape",
@@ -453,6 +482,9 @@ data class ShellFailureCopy(
                     "より遅く、より少ないメモリで読み込みます。",
             consoleNotLaidOut = "コンソールがまだレイアウトされておらず、列幅を確定できません",
             unpackFailedFormat = "初回展開に失敗しました：{0}",
+            engineStampInvalidFormat =
+                "起動に失敗しました：エンジン構成の印章が無効です（{0}）。公式パッケージを" +
+                    "再インストールしてください。それでも失敗する場合はこの文を開発者へお知らせください。",
             scriptAbortFormat = "スクリプトエラーでこのターンを中断しました：{0}",
             stateMachineHaltFormat = "システム状態機械が {0} で停止しました：{1}（{2}）",
             stateMachineUnknownBlocker = "未知のブロッカー",
@@ -487,6 +519,10 @@ data class ShellFailureCopy(
             progressUnpackedFormat = "展開済み {0}/{1} 件（{2}）",
             progressLandedFormat = "書き込み済み：{0}",
             progressCounting = "同梱データを集計しています…",
+            loadPhaseProgramLine = "スクリプトとリソースを読み込んでいます…",
+            loadPhaseMetaLine = "ゲームデータを読み込んでいます…",
+            loadPhaseSessionLine = "ゲームセッションを準備しています…",
+            loadPhaseStartingLine = "ゲームを起動しています…",
             inventoryNone = "（同梱エントリなし）",
             inventorySummaryFormat = "{0} 件 / {1} MiB",
             finalTitleLagFormat = "書き込み {0} が APK 同梱 {1} に追いつきません：同梱欠けか圧縮エントリです",
@@ -501,10 +537,10 @@ data class ShellFailureCopy(
                 "起動に失敗しました：{0}{1}。セーブはディスク上にあり、消えません。まずは再試行し、" +
                     "それでも失敗する場合はこの文を開発者へお知らせください。",
             hintNotRunning = "ゲームが起動していないため、送信できません",
-            displaySizeDialogTitle = "表示サイズが変更されました",
+            displaySizeDialogTitle = "表示設定が変更されました",
             displaySizeDialogBody =
-                "文字サイズ・列数・「ウィンドウ幅変化時に再整形」はゲームを再起動しないと反映されません。" +
-                    "今すぐ再起動しますか？未保存の進行状況は失われます。",
+                "文字サイズ・列数・画面左右の余白・「ウィンドウ幅変化時に再整形」はゲームを再起動しないと" +
+                    "反映されません。今すぐ再起動しますか？未保存の進行状況は失われます。",
             orientationDialogTitle = "画面の向きが変更されました",
             orientationPortrait = "縦画面",
             orientationLandscape = "横画面",

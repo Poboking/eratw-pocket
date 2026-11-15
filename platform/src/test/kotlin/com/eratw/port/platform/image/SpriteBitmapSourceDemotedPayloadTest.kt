@@ -81,12 +81,17 @@ class SpriteBitmapSourceDemotedPayloadTest {
         )
         assertTrue("降级支必须直接 native 解 PNG，不落 IntArray", branch.contains("BitmapFactory.decodeByteArray("))
         assertTrue(
-            "解码口径必须与 core 的直通 ARGB 同源（inPremultiplied=false + inScaled=false）",
+            "绘制句柄必须解成真预乘位图（BitmapFactory 解码时做直通→预乘换算）",
+            branch.contains("BitmapImageDecoder.renderDecodeOptions()"),
+        )
+        assertFalse(
+            "不许把抽像素数组的直通口径（inPremultiplied=false）当绘制句柄用",
             branch.contains("BitmapImageDecoder.pixelArrayDecodeOptions()"),
         )
-        assertTrue(
-            "翻回 premul 元数据才与常规支 createBitmap(IntArray) 逐字同构，缺了会跳色",
-            branch.contains("setPremultiplied(true)"),
+        assertFalse(
+            "不许只翻标志不翻数据：对直通存底的位图 setPremultiplied 是谎报，" +
+                "Skia 按预乘消费会把半透明层放大 1/a（真机 0x6BF89C95 → 0x6BFFFFFF）",
+            branch.contains("setPremultiplied"),
         )
     }
 

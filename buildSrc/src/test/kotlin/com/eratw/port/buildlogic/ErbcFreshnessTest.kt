@@ -48,7 +48,8 @@ class ErbcFreshnessTest {
     private var seq = 0
 
     /**
-     * 造自洽夹具：repoRoot（Version.kt + 另一个 .kt）、corpusRoot（含带空格路径与子目录）、
+     * 造自洽夹具：repoRoot（双根：core-vm 的 Version.kt + 另一个 .kt、erbcc 的 Main.kt）、
+     * corpusRoot（含带空格路径与子目录）、
      * erbcDir（manifest + program.erbc）。manifestOverrides 键值对按 `key value` 覆写对应行，
      * 值为 null 时整行删除（测「缺行」分支）。
      */
@@ -65,6 +66,12 @@ class ErbcFreshnessTest {
         File(repo, "core-vm/src/main/kotlin/com/eratw/port/core/Extra.kt").apply {
             parentFile.mkdirs()
             writeText("package com.eratw.port.core\n\nobject Extra\n")
+        }
+        // compilerDigestOf 现在要求双根都在（MODERN-R12-DIG）：erbcc 驱动根也给一个最小文件，
+        // 否则夹具自算 digest 这一步就会「找不到编译器源码树」。
+        File(repo, "tools/erbcc/src/main/kotlin/com/eratw/port/erbcc/Main.kt").apply {
+            parentFile.mkdirs()
+            writeText("package com.eratw.port.erbcc\n\nfun erbccEntry()\n")
         }
 
         val corpus = tmp.newFolder("corpus-${seq++}")
@@ -98,7 +105,7 @@ class ErbcFreshnessTest {
             "erbcc 9.9.9-test",
             "build-mode full",
             "compiler-digest $digest",
-            "compiler-sources 2",
+            "compiler-sources 3",
             "artifact erbc.v1/program.erbc ${programFile.length()} ${sha256Of(programFile)}",
             "corpus-root ${corpus.absolutePath}",
             "source-files ${sources.size}",
@@ -344,6 +351,73 @@ class ErbcFreshnessTest {
         assertHardAndSoft(fx, "语料改过但没重编")
     }
 
+    /** 同一 target 多笔补丁的链式夹具：磁盘=链头病灶版，清单=链尾修后版，留痕逐条给出。 */
+    private fun chainFixture(
+        bad: ByteArray,
+        final: ByteArray,
+        traces: List<String>,
+        manifestSourceSha: String? = null,
+    ): Fixture {
+        val finalSha = MessageDigest.getInstance("SHA-256").digest(final).hexLower()
+        val fx = fixture(
+            corpusExtra = mapOf("K51.ERB" to bad),
+            manifestOverrides = mapOf(
+                "source-files" to "4",
+                "source K51.ERB" to "${final.size} ${manifestSourceSha ?: finalSha}",
+            ),
+        )
+        File(fx.erbcDir, "manifest.txt").appendText(traces.joinToString("\n", postfix = "\n"))
+        return fx
+    }
+
+    @Test
+    fun `语料补丁_同target链式两笔_逐环对账放行`() {
+        val bad = "病灶版内容\n".toByteArray()
+        val mid = "第一笔修后\n".toByteArray()
+        val final = "第二笔修后更长\n".toByteArray()
+        val sha = { b: ByteArray -> MessageDigest.getInstance("SHA-256").digest(b).hexLower() }
+        val fx = chainFixture(
+            bad, final,
+            listOf(
+                "corpus-patch CB-006 K51.ERB ${sha(bad)} ${sha(mid)}",
+                "corpus-patch CB-008 K51.ERB ${sha(mid)} ${sha(final)}",
+            ),
+        )
+        val result = verify(fx, hard = true)
+        assertNotNull(result)
+        assertTrue(result!!.contains("对账放行 1 个目标"))
+        assertTrue(fx.logger.warnings.none { it.contains("语料改过但没重编") })
+    }
+
+    @Test
+    fun `语料补丁_链式断口_照旧拒`() {
+        val bad = "病灶版内容\n".toByteArray()
+        val mid = "第一笔修后\n".toByteArray()
+        val final = "第二笔修后更长\n".toByteArray()
+        val sha = { b: ByteArray -> MessageDigest.getInstance("SHA-256").digest(b).hexLower() }
+        // 只留链尾那一环：磁盘是链头 bad，接不上任何 badSha ⇒ 不许豁免
+        val fx = chainFixture(bad, final, listOf("corpus-patch CB-008 K51.ERB ${sha(mid)} ${sha(final)}"))
+        assertHardAndSoft(fx, "语料改过但没重编")
+    }
+
+    @Test
+    fun `语料补丁_链尾sha与清单脱节_照旧拒`() {
+        val bad = "病灶版内容\n".toByteArray()
+        val mid = "第一笔修后\n".toByteArray()
+        val final = "第二笔修后更长\n".toByteArray()
+        val otherSha = MessageDigest.getInstance("SHA-256").digest("别的产物\n".toByteArray()).hexLower()
+        val sha = { b: ByteArray -> MessageDigest.getInstance("SHA-256").digest(b).hexLower() }
+        val fx = chainFixture(
+            bad, final,
+            listOf(
+                "corpus-patch CB-006 K51.ERB ${sha(bad)} ${sha(mid)}",
+                "corpus-patch CB-008 K51.ERB ${sha(mid)} ${sha(final)}",
+            ),
+            manifestSourceSha = otherSha,
+        )
+        assertHardAndSoft(fx, "语料改过但没重编")
+    }
+
     /** 同一处破坏：hard 必须 [GradleException]，soft 必须返 null 且带告警。 */
     private fun assertHardAndSoft(fx: Fixture, msgPart: String? = null) {
         try {
@@ -394,7 +468,11 @@ class ErbcFreshnessTest {
     @Test
     fun `compilerDigestOf 与手工框架一致且与创建顺序无关`() {
         val repo = tmp.newFolder("repo-digest-${seq++}")
-        // 故意乱序创建，验证函数内部按相对路径字典序喂哈希
+        // 故意乱序创建（erbcc 根先建），验证函数内部按相对路径字典序**合流后**喂哈希
+        // （MODERN-R12-DIG：两根合流后全局排序，core-vm 前缀整体先于 tools/erbcc 前缀）
+        File(repo, "tools/erbcc/src/main/kotlin/z/Z.kt").apply { parentFile.mkdirs() }.writeText("Z")
+        File(repo, "tools/erbcc/src/main/kotlin/y/Y.kt").apply { parentFile.mkdirs() }.writeText("Y")
+        File(repo, "tools/erbcc/src/main/kotlin/y/Y.txt").apply { parentFile.mkdirs() }.writeText("非 kt 不进摘要")
         File(repo, "core-vm/src/main/kotlin/b/B.kt").apply { parentFile.mkdirs() }.writeText("B")
         File(repo, "core-vm/src/main/kotlin/a/A.kt").apply { parentFile.mkdirs() }.writeText("A")
         File(repo, "core-vm/src/main/kotlin/a/A.txt").apply { parentFile.mkdirs() }.writeText("非 kt 不进摘要")
@@ -403,6 +481,8 @@ class ErbcFreshnessTest {
         listOf(
             "core-vm/src/main/kotlin/a/A.kt" to "A".toByteArray(),
             "core-vm/src/main/kotlin/b/B.kt" to "B".toByteArray(),
+            "tools/erbcc/src/main/kotlin/y/Y.kt" to "Y".toByteArray(),
+            "tools/erbcc/src/main/kotlin/z/Z.kt" to "Z".toByteArray(),
         ).forEach { (rel, bytes) ->
             val relBytes = rel.toByteArray(Charsets.UTF_8)
             digest.update(ByteBuffer.allocate(4).putInt(relBytes.size).array())
@@ -412,18 +492,32 @@ class ErbcFreshnessTest {
         }
         val (actual, count) = compilerDigestOf(repo)
         assertEquals(digest.digest().hexLower(), actual)
-        assertEquals(2, count)
+        assertEquals(4, count)
     }
 
     @Test
     fun `compilerDigestOf 空树即抛`() {
         val repo = tmp.newFolder("repo-empty-${seq++}")
         File(repo, "core-vm/src/main/kotlin").mkdirs()
+        File(repo, "tools/erbcc/src/main/kotlin").mkdirs()
         try {
             compilerDigestOf(repo)
             fail("应当抛")
         } catch (e: GradleException) {
             assertTrue(e.message!!.contains("没有 .kt 文件"))
+        }
+    }
+
+    @Test
+    fun `compilerDigestOf 缺 erbcc 根即抛不许静默降级单根`() {
+        val repo = tmp.newFolder("repo-half-${seq++}")
+        File(repo, "core-vm/src/main/kotlin/core/C.kt").apply { parentFile.mkdirs() }.writeText("C")
+        try {
+            compilerDigestOf(repo)
+            fail("应当抛")
+        } catch (e: GradleException) {
+            assertTrue(e.message!!.contains("找不到编译器源码树"))
+            assertTrue("错误要点名缺的是 erbcc 根：${e.message}", e.message!!.contains("erbcc"))
         }
     }
 

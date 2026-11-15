@@ -6,18 +6,27 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * `C-WINDOW-NARROW-REGRESS@1` 的 **app 侧接线哨兵**（与 [GameHostMeasureWireTest] 同族：
+ * `C-WINDOW-EXPLICIT-WIRE@1` 的 **app 侧接线哨兵**（与 [GameHostMeasureWireTest] 同族：
  * `GameHost` 挂在 Android 运行时上，app 的 JVM 单测面没有 Robolectric，实例化不了，
  * 所以用源码面钉装配形状 —— 代码形状骗不了 grep）。
  *
- * 0.2.43 玩家回归「幻想乡之主改好感页 CFLAG_DEBUG 行582 除数为0」的根因是
- * [GameHost.applyBootFontMetrics] 把 `emuera.config` 的 `WINDOW WIDTH`（旧盘上会回落到
- * `ConfigSpec` 裸缺省 760）当**版面输入**灌进 View，令列数从 136+ 掉到 80，
- * `MAXWIDTH()/90` 变 0。修法是断开这条反向输入：`WindowX` 在 Android 上是版面解算的
- * **输出**（由 [CanvasConsoleView.windowWidthScriptPx] 反折后播回 core），不是输入。
+ * 窗口宽（`WindowX`）在 Android 上走过两个极端，玩家各吃到一个回归：
  *
- * 定量链钉在 render 侧的 `ScreenLayoutWindowNarrowingRegressTest`；本用例只负责钉住
- * 「生产装配面不会再把配置宽灌回去」，防有人照着 0664085e 的旧 KDoc 改回来。
+ * * 0.2.43（`0664085e`）**无条件**把 `effective.windowX` 灌进 View：旧盘上 `WINDOW WIDTH`
+ *   缺键时读到引擎裸缺省 760，列数从 136+ 掉到 80，`DEBUG.ERB:582` 的 `MAXWIDTH()/90`
+ *   除零（`C-WINDOW-NARROW-REGRESS@1`）。定量链钉在 render 侧的
+ *   `ScreenLayoutWindowNarrowingRegressTest`。
+ * * 0.2.44 起（`8f0f40b90`）**全断**反向输入（恒传 `(0, 0)`）：除零是断了，但
+ *   「设置页调窗口宽度」也成了死功能 —— 屏上一格不动（2026-11-10 玩家反馈
+ *   「调窗口宽度的功能好像又失效了」）。
+ *
+ * 两个方向错的是同一件事：**裸缺省不是玩家输入，显式写下的非缺省值才是**。根修口径两道闸：
+ * `applyChainTo` 的 `ConfigChainLoad.touchedKeys` 记着「哪些键被三层链真正写过」——没写的盘
+ * 保持 `0` = 未接线（满宽解算）；盘上「键在位、值 760」还有第二种来源（设置页写盘侧
+ * `EmueraConfigWriter.mergeInto` 的「补全缺键」把裸缺省追加进旧盘），与玩家显式 760 不可区分，
+ * 而 760 折算恒 ≈81 列、任何设备都落除零区 ⇒ 值等于引擎裸缺省同样不算窗口请求。
+ * 两闸皆过才灌 `effective.windowX`（原版「按配置开窗」，`MainWindow.cs:687-688`）。
+ * 本用例钉住这条**判值因果**，防有人再往任一个极端改回去。
  */
 class BootWindowLayoutPolicyTest {
 
@@ -43,8 +52,7 @@ class BootWindowLayoutPolicyTest {
 
     /**
      * 紧邻函数的 KDoc 段（文档注释在声明**之前**，函数体切片刻意不含它：
-     * KDoc 里为讲清回归会引用旧调用串，混进函数体切片会让「不得灌回配置宽」的
-     * assertFalse 假红）。
+     * KDoc 里为讲清回归会引用旧调用串，混进函数体切片会让 assertFalse 假红）。
      */
     private fun bootDoc(): String {
         val src = sourceOf("GameHost.kt")
@@ -52,26 +60,54 @@ class BootWindowLayoutPolicyTest {
         assertTrue("GameHost 必须保留启动期字号/行高灌注函数", fn >= 0)
         val docStart = src.lastIndexOf("/**", startIndex = fn)
         assertTrue("applyBootFontMetrics 必须有 KDoc 交代窗口宽的因果方向", docStart >= 0)
-        assertTrue("KDoc 必须紧邻该函数（不要拿别处注释蒙混）", fn - docStart < 8000)
+        assertTrue("KDoc 必须紧邻该函数（不要拿别处注释蒙混）", fn - docStart < 12000)
         return src.substring(docStart, fn)
     }
 
     @Test
-    fun `启动期不把 emuera_config 的窗口宽灌进 View`() {
+    fun `窗口宽按显式非缺省值接线而不是无条件灌或全断`() {
         val body = bootFunction()
         assertTrue(
-            "必须显式以 (0, 0) 走「未接线」语义：ScreenLayout 按物理内容宽满宽解算，" +
-                "与 0.2.42 逐像素相同，MAXWIDTH() 才不会掉到 90 以下",
-            body.contains("view.applySourceWindowMetrics(0, 0)"),
+            "在位闸必须是「链上显式写过」（ConfigChainLoad.touchedKeys）：缺键盘的裸缺省读数出局 —— " +
+                "无条件灌 effective.windowX 会复原 0.2.43 的 CFLAG_DEBUG 行582 除零" +
+                "（旧盘 WINDOW WIDTH 缺省 760 → 80 列 → MAXWIDTH()/90 = 0）",
+            body.contains("ConfigKey.WindowX in chain.touchedKeys"),
+        )
+        assertTrue(
+            "裸缺省闸必须有：盘上「键在位、值 760」有三种不可区分来源（玩家显式 / 写盘侧补全缺键追加 / " +
+                "出包根原文），而 760 折算恒 ≈81 列、任何设备都落 DEBUG.ERB /90 除零区 ⇒ 一律不算窗口请求",
+            body.contains("effective.windowX != bareDefaultWidth"),
+        )
+        assertTrue(
+            "裸缺省值必须取自 ConfigSpec 注册表（跟引擎缺省同源，不许手抄 760 常量）",
+            body.contains("ConfigSpecTable.specOf(ConfigKey.WindowX)"),
+        )
+        assertTrue(
+            "灌给 View 的宽度必须是两道闸的输出（写过且非缺省 → effective.windowX；否则 0 未接线）",
+            body.contains("view.applySourceWindowMetrics(wiredWidth, 0)"),
         )
         assertFalse(
-            "把 effective.windowX 灌回 View 会复原 0.2.43 的 CFLAG_DEBUG 行582 除零" +
+            "无条件灌 effective.windowX 会复原 0.2.43 的 CFLAG_DEBUG 行582 除零" +
                 "（旧盘 WINDOW WIDTH 缺省 760 → 80 列 → MAXWIDTH()/90 = 0）",
             body.contains("applySourceWindowMetrics(effective.windowX"),
         )
+        assertFalse(
+            "恒传 (0, 0) 的全断形态是「调窗口宽度失效」的病灶本身（2026-11-10 玩家回归），不得回归",
+            body.contains("view.applySourceWindowMetrics(0, 0)"),
+        )
         assertTrue(
-            "字号/行高仍须由生效配置灌注（这是本函数保留的唯一职责）",
+            "字号/行高仍须由生效配置灌注（这是本函数保留的另一职责）",
             body.contains("view.applySourceFontMetrics(effective.fontSize, effective.lineHeight)"),
+        )
+    }
+
+    @Test
+    fun `窗口高保持不接线`() {
+        val body = bootFunction()
+        // 第二实参恒 0（WindowY 不接线，纵向观感零变化 —— 用户裁定保持）。
+        assertTrue(
+            "WindowY 实参必须保持字面 0（不接线），窗口高的接线是另一条因果，不随本次修复顺带打开",
+            body.contains("applySourceWindowMetrics(wiredWidth, 0)"),
         )
     }
 
@@ -79,7 +115,7 @@ class BootWindowLayoutPolicyTest {
     fun `版面宽反折播种链仍保留`() {
         val src = sourceOf("GameHost.kt")
         assertTrue(
-            "断开反向输入不等于删掉正向回填：View 的版面宽仍要按同尺折成脚本 px 交给 core",
+            "接线/满宽之后都要正向回填：View 的版面宽仍要按同尺折成脚本 px 交给 core",
             src.contains("windowWidthScriptPx = view.windowWidthScriptPx().toLong(),"),
         )
         assertTrue(
@@ -95,9 +131,18 @@ class BootWindowLayoutPolicyTest {
     @Test
     fun `回归成因写在代码里而不是只留一句 TODO`() {
         val doc = bootDoc()
-        // 下一个人要改这段时，必须看得见定量后果；这也是 C-WINDOW-NARROW-REGRESS 的取证面。
+        // 下一个人要改这段时，必须看得见两段回归的定量后果；这是 C-WINDOW-NARROW-REGRESS
+        // 与 C-WINDOW-EXPLICIT-WIRE 两案共用的取证面。
         assertTrue("KDoc 必须点名 0.2.43 回归", doc.contains("0.2.43"))
         assertTrue("KDoc 必须点名 MAXWIDTH()/90 的除零", doc.contains("MAXWIDTH()/90"))
         assertTrue("KDoc 必须点名 DEBUG.ERB 行582", doc.contains("DEBUG.ERB") && doc.contains("582"))
+        assertTrue(
+            "KDoc 必须点名 2026-11-10 的「调窗口宽度失效」回归（本次修复的对象）",
+            doc.contains("调窗口宽度"),
+        )
+        assertTrue(
+            "KDoc 必须写明两道闸的判值因果：在位闸（touchedKeys）+ 裸缺省闸（写盘侧补全缺键的伪造 760）",
+            doc.contains("touchedKeys") && doc.contains("mergeInto"),
+        )
     }
 }

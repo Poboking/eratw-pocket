@@ -1375,7 +1375,15 @@ def erbc_pack_gate(game_root: str, erbc_dir: str, index_entries: dict,
         corpus_root = os.path.join(game_root, "ERB")
         patch_by_rel = {}
         for pid, prel, bad_sha, fixed_sha in patches:
-            patch_by_rel.setdefault(prel, (pid, bad_sha, fixed_sha))
+            # 同一文件可能串着多条编译期补丁（CB-006 → CB-008）：磁盘 = 链头坏版、
+            # 清单 = 链尾修后版。旧写法 setdefault 只留第一条，会把链式补丁误判成
+            # 「源文件已改动但产物未重编」（2026-11-11 发版实踩，APK 侧 CMP-66 已放行）。
+            chain = patch_by_rel.get(prel)
+            if chain is None:
+                patch_by_rel[prel] = {"first_bad": bad_sha, "last_fixed": fixed_sha, "ids": [pid]}
+            else:
+                chain["last_fixed"] = fixed_sha
+                chain["ids"].append(pid)
         recorded = set()
         reconciled = []
         for rel, size, want in sources:
@@ -1389,9 +1397,9 @@ def erbc_pack_gate(game_root: str, erbc_dir: str, index_entries: dict,
             # 留痕行一致 → 按已应用放行（真语料只读，补丁只在编译期 staging 副本生效，
             # 磁盘慢一步是预期形状；口径 = ErbcFreshness.kt:314-324 的 patchReconciled）。
             trace = patch_by_rel.get(rel)
-            if (trace is not None and want.lower() == trace[2].lower()
-                    and sha256_of(src).lower() == trace[1].lower()):
-                reconciled.append(f"{rel}（{trace[0]}）")
+            if (trace is not None and want.lower() == trace["last_fixed"].lower()
+                    and sha256_of(src).lower() == trace["first_bad"].lower()):
+                reconciled.append(f"{rel}（{'+'.join(trace['ids'])}）")
                 continue
             got_size = os.path.getsize(src)
             if got_size != size or sha256_of(src).lower() != want.lower():

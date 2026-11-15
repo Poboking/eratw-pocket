@@ -7,9 +7,19 @@ import android.util.Log
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.eratw.port.core.host.LineBufferConsoleSink
+import com.eratw.port.core.proc.GameSession
+import com.eratw.port.core.snapshot.RuntimeSnapshot
+import com.eratw.port.core.snapshot.RuntimeSnapshotAutoDump
+import com.eratw.port.core.snapshot.RuntimeSnapshotSections
+import com.eratw.port.core.vars.VariableStore
 import java.io.File
 import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 崩溃取证族（wave/eng-p13-crashmove · A-1 第一刀）：整段从 [MainActivity] **原样搬入** ——
@@ -184,7 +194,57 @@ internal object CrashForensics {
         // 这一发**不会被豁免掉**：豁免窗口只放开磁盘读写（`allowThreadDiskWrites` 那一档），
         // 网络照旧被 detectNetwork 记一行 —— 故意的：崩溃线程上同步等 3 秒网络本来就值得被看见。
         runCatching { ErrorReportUploader.uploadPendingSyncForCrash(context) }
+        runCatching { dumpRuntimeSnapshotIfEnabled(context, crashHostProvider?.invoke()?.debugSession()) }
         return reported
+    }
+
+    // ------------------------------------------------------------------
+    // 运行时快照自动落盘（MODERN-R11-R1SNAP S3，缺省关）
+    // ------------------------------------------------------------------
+
+    /** 开关在 object 构造期读一次；缺省 false 时下面整条路径零副作用。 */
+    private val snapshotAutoDumpEnabled: Boolean = RuntimeSnapshotAutoDump.enabled()
+
+    /** 进程内快照序号（同一毫秒两次触发也给出不同文件名）。 */
+    private val snapshotSeq = AtomicLong(0)
+
+    /** 注入 events 节的尾部条数（取一个够读的因果链尾巴）。 */
+    private const val SNAPSHOT_EVENT_TAIL = 128
+
+    /**
+     * 按开关落一份 v1 运行时快照到 [ErrorReportCollector.reportDir]：
+     * `snapshot-<时间戳>-<序号>.rtsnap.gz`。
+     *
+     * 关态立即返回、零副作用；开态全程 runCatching：无会话、采集异常、写盘失败一律静默
+     * 返回 null，绝不改变调用方的崩溃或恢复出口。16 MiB 上限与超限截断记 `truncated`
+     * 由 [RuntimeSnapshot.encodeWithin] 一并完成，不另写第二种截断。
+     *
+     * @param session 当前会话；拿不到传 null 时用空变量池与空显示面 best-effort，事件尾仍注入。
+     */
+    internal fun dumpRuntimeSnapshotIfEnabled(context: Context, session: GameSession?): File? {
+        if (!snapshotAutoDumpEnabled) return null
+        return runCatching {
+            val store = session?.store ?: VariableStore()
+            val console = session?.console ?: LineBufferConsoleSink()
+            val events = EventJournal.tailLines(SNAPSHOT_EVENT_TAIL)
+            val sections = RuntimeSnapshotSections.collect(store, console, events = events)
+            val createdAt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).format(Date())
+            val snapshot = RuntimeSnapshot.Snapshot(
+                RuntimeSnapshot.Header(createdAt = createdAt, saveIdentity = "runtime"),
+                sections,
+            )
+            val bytes = RuntimeSnapshot.encodeWithin(snapshot, RuntimeSnapshot.DEFAULT_MAX_BYTES)
+            val dir = ErrorReportCollector.reportDir(context)
+            if (!dir.isDirectory) dir.mkdirs()
+            val name = "snapshot-${System.currentTimeMillis()}-${snapshotSeq.incrementAndGet()}.rtsnap.gz"
+            val target = File(dir, name)
+            val tmp = File(dir, "$name.tmp")
+            FileOutputStream(tmp).use { it.write(bytes) }
+            if (tmp.renameTo(target)) target else {
+                tmp.delete()
+                null
+            }
+        }.getOrNull()
     }
 
     /**

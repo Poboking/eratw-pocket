@@ -1,0 +1,10 @@
+--- a/CHARALIST_DT/TEMP_CHARA_LIST_BY_DT.ERB
++++ b/CHARALIST_DT/TEMP_CHARA_LIST_BY_DT.ERB
+@@ -1184,3 +1184,7 @@
+ 	IF RESULT
+ 		;如果上述函数返回非0，则表单有更改
++		;移动列组后，放弃正在创建的筛选器（因为列会看不见）
++		L_FILTER_TARGET_TEMP = 
++		L_FILTER_OPR_TEMP = 
++		L_FILTER_NUMBER_TEMP = 
+ 		GOTO RELOAD_DT

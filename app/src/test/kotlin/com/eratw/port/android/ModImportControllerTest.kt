@@ -9,7 +9,11 @@ import com.eratw.port.core.expr.OperandType
 import com.eratw.port.core.lexer.LogicalLineReader
 import com.eratw.port.core.loader.BootMetadata
 import com.eratw.port.core.loader.ModPatchLoader
-import com.eratw.port.core.patch.PatchArtifacts
+import com.eratw.port.core.mod.ErbModuleContainer
+import com.eratw.port.core.mod.ModChainAssembler
+import com.eratw.port.core.mod.ModChainRuntimePlan
+import com.eratw.port.core.patch.ManifestCodec
+import com.eratw.port.core.patch.ManifestSource
 import com.eratw.port.core.proc.FuncMeta
 import com.eratw.port.core.stmt.FuncLabelStmt
 import com.eratw.port.core.stmt.LineParser
@@ -112,34 +116,60 @@ class ModImportControllerTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `编译成功——源留档且产物落盘为 patch 并能被装载器读回`() {
+    fun `编译成功——源留档且产物为 erbm 容器与 manifest 并能读回`() {
         val tmp = tempDir()
         val controller = controllerIn(tmp, contextOf())
         val outcome = controller.import(listOf(PickedModFile("KOJO_PATCH.ERB", patchSource.toByteArray(Charsets.UTF_8))))
 
         val detail = (outcome as? ModImportOutcome.Imported)?.detail
             ?: throw AssertionError("导入应成功，实为 $outcome")
-        assertEquals(ModImportController.UNION_PATCH_NAME, detail.patchFileName)
+        val packageId = controller.packageIdFor(listOf("KOJO_PATCH.ERB"))
+        assertEquals("$packageId.erbm", detail.patchFileName)
         assertEquals("补丁只定义 B_HELLO 一个函数", 1, detail.functionCount)
         assertEquals("B_HELLO", detail.entryFunction)
         assertEquals(listOf("KOJO_PATCH.ERB"), detail.sourceFileNames)
 
         val mods = File(tmp, "mods")
         assertTrue("源 .ERB 应留档在 mods", File(mods, "KOJO_PATCH.ERB").isFile)
-        val artifactFile = File(mods, ModImportController.UNION_PATCH_NAME)
-        assertTrue("补丁产物应落盘为 .patch", artifactFile.isFile)
-
-        // 读回：结构合法 + 头字段与导入上下文逐项一致（I3 的六计数 + sha + entry）。
-        val readBack = PatchArtifacts.read(artifactFile.readBytes())
-        assertEquals(miniBaseCounts().instructionCount, readBack.header.baseInstructionCount)
-        assertEquals(miniBaseCounts().functionCount, readBack.header.baseFunctionCount)
-        assertEquals(BASE_SHA, readBack.header.baseSha256)
-        assertEquals("B_HELLO", readBack.header.entryFunction)
-        assertTrue("补丁体（内嵌 .erbc）非空", readBack.bodySize > 0)
+        val rt2 = File(mods, "rt2")
+        val sources = File(rt2, "$packageId.sources")
+        assertTrue("provenance 侧车应随产物落盘", sources.isFile)
+        assertEquals("provenance 逐行记留档源（末尾换行）", "KOJO_PATCH.ERB\n", sources.readText(Charsets.UTF_8))
+        val module = ErbModuleContainer.decode(File(rt2, "$packageId.erbm").readBytes())
+        assertEquals(packageId, module.packageId)
+        assertEquals("零基线模块", 0, module.program.functionBase)
+        assertEquals(listOf("B_HELLO"), module.functions.map { it.key })
+        val descriptor = ManifestCodec.decode(File(rt2, "$packageId.manifest").readBytes())
+        assertEquals(packageId, descriptor.packageId)
+        assertEquals("跨 base 调用进导入表", listOf("A_ONE"), descriptor.externalCalls)
+        assertFalse("并集补丁必须退役", File(mods, ModImportController.UNION_PATCH_NAME).exists())
     }
 
     @Test
-    fun `端到端——导入产物能被 ModPatchLoader 装载（C5 与 C4 口径对齐）`() {
+    fun `provenance 记录留档源且 GC 判定源在场整套保留`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        val outcome = controller.import(listOf(PickedModFile("KOJO_PATCH.ERB", patchSource.toByteArray(Charsets.UTF_8))))
+        assertTrue("导入应成功，实为 $outcome", outcome is ModImportOutcome.Imported)
+
+        val packageId = controller.packageIdFor(listOf("KOJO_PATCH.ERB"))
+        val mods = File(tmp, "mods")
+        val rt2 = File(mods, "rt2")
+        assertEquals(
+            "provenance 读回 = 本次留档源（排序口径与 packageIdFor 同源）",
+            listOf("KOJO_PATCH.ERB"),
+            ModPackageInventory.storedSourceNames(rt2, packageId),
+        )
+
+        ModPackageInventory.gcOrphans(rt2, mods)
+
+        for (name in ModPackageInventory.memberNames(packageId)) {
+            assertTrue("源仍在 mods/ ⇒ $name 不得被 GC", File(rt2, name).isFile)
+        }
+    }
+
+    @Test
+    fun `端到端——导入产物经模块链装配可达新增函数且旧补丁装载器为空`() {
         val tmp = tempDir()
         val baseProgram = compileMiniBase()
         val counts = PatchCompiler.BaseCounts(
@@ -154,15 +184,29 @@ class ModImportControllerTest {
         val outcome = controller.import(listOf(PickedModFile("KOJO_PATCH.ERB", patchSource.toByteArray(Charsets.UTF_8))))
         assertTrue("导入应成功，实为 $outcome", outcome is ModImportOutcome.Imported)
 
-        // 装载器（C4）只认 .patch：目录里的源 .ERB 被扩展名过滤，产物被读回、
-        // I3 身份对同一 sha 通过、补丁函数追加在 base 之后（装载序恒为最后的钉子）。
+        // 生产装配路：磁盘容器 + manifest → ModChainAssembler → plan；新增函数在链接产物里。
+        val packageId = controller.packageIdFor(listOf("KOJO_PATCH.ERB"))
+        val rt2 = File(File(tmp, "mods"), "rt2")
+        val module = ErbModuleContainer.decode(File(rt2, "$packageId.erbm").readBytes())
+        val descriptor = ManifestCodec.decode(File(rt2, "$packageId.manifest").readBytes())
+        val baseMetas = miniMetadata().functions.take(baseProgram.functions.size)
+        val chain = ModChainAssembler.assemble(
+            listOf(ManifestSource("$packageId.manifest", ManifestCodec.encode(descriptor))),
+            listOf(module.toCompiledModule()),
+            baseProgram,
+            baseMetas,
+        )
+        val plan = ModChainRuntimePlan.of(chain)
+            ?: throw AssertionError("容器在场必须走非旁路装配")
+        assertTrue(
+            "模块新增函数必须进入链接产物",
+            plan.program.functions.any { it.name == "B_HELLO" },
+        )
+
+        // 旧轨：mods 根不再有 .patch，ModPatchLoader 装载为空（运行期单管线）。
         val loaded = ModPatchLoader.load(File(tmp, "mods").toPath(), baseProgram, BASE_SHA)
-        assertFalse("合法补丁不应触发回退（I5）", loaded.rolledBack)
-        assertEquals(1, loaded.loadedPatches.size)
-        assertEquals(ModImportController.UNION_PATCH_NAME, loaded.loadedPatches[0].name)
-        assertEquals(1, loaded.loadedPatches[0].functionCount)
-        assertTrue("补丁段指令数 > 0", loaded.loadedPatches[0].patchInstructionCount > 0)
-        assertEquals("函数表 = base + 补丁尾段", baseProgram.functions.size + 1, loaded.program.functions.size)
+        assertFalse("无补丁不应触发回退", loaded.rolledBack)
+        assertEquals(0, loaded.loadedPatches.size)
     }
 
     // ------------------------------------------------------------------
@@ -200,6 +244,46 @@ class ModImportControllerTest {
             ?: throw AssertionError("base 同名函数必须被拒绝，实为 $outcome")
         assertEquals(ModImportFailureKind.COMPILE, failed.kind)
         assertTrue("要点名撞名函数：${failed.message}", failed.message.contains("A_ONE"))
+    }
+
+    @Test
+    fun `重复定义告警按配置门控——DUPLICATED FUNCTIONS WARNING 关时零告警开时一条`() {
+        // U8-② / L26：设备侧预扫必须读玩家的 `DUPLICATED FUNCTIONS WARNING`（原版门 =
+        // `!label.IsEvent && Config.WarnNormalFunctionOverloading`，spec: ErbLoader.cs:466；
+        // 键缺省 false，spec: ConfigData.cs:99）。出厂 emuera.config 第 48 行 = YES
+        // ⇒ 行为不变；关掉后导入报告不再刷同名覆盖告警（覆盖语义照旧后定义者生效）。
+        val dupSource = "@B_ONE\nPRINTL FIRST\nRETURN 0\n\n@B_ONE\nPRINTL SECOND\nRETURN 0\n"
+
+        fun importWithConfig(configText: String?): ModImportOutcome.Imported {
+            val tmp = tempDir()
+            if (configText != null) File(tmp, "emuera.config").writeText(configText, Charsets.UTF_8)
+            val outcome = controllerIn(tmp, contextOf())
+                .import(listOf(PickedModFile("DUP_PATCH.ERB", dupSource.toByteArray(Charsets.UTF_8))))
+            return outcome as? ModImportOutcome.Imported
+                ?: throw AssertionError("同名覆盖导入应成功，实为 $outcome")
+        }
+
+        val off = importWithConfig("DUPLICATED FUNCTIONS WARNING:NO\n")
+        assertTrue(
+            "关掉开关后同名覆盖必须零告警，实际: ${off.detail.parseWarnings}",
+            off.detail.parseWarnings.none { it.contains("后定义者生效") },
+        )
+        assertEquals("覆盖语义不变：只留后定义者一个函数", 1, off.detail.functionCount)
+
+        val on = importWithConfig("DUPLICATED FUNCTIONS WARNING:YES\n")
+        assertTrue(
+            "开启时同批源必须出一条同名覆盖告警，实际: ${on.detail.parseWarnings}",
+            on.detail.parseWarnings.any { it.contains("B_ONE") && it.contains("后定义者生效") },
+        )
+        assertEquals(1, on.detail.functionCount)
+
+        // 缺 emuera.config ⇒ 配置链按缺省 NO（spec: ConfigData.cs:99）⇒ 静默：
+        // 证明读的是配置链本身而不是硬编码。
+        val absent = importWithConfig(null)
+        assertTrue(
+            "无配置文件时按缺省 NO 静默，实际: ${absent.detail.parseWarnings}",
+            absent.detail.parseWarnings.none { it.contains("后定义者生效") },
+        )
     }
 
     @Test
@@ -258,21 +342,33 @@ class ModImportControllerTest {
     }
 
     @Test
-    fun `产物名恒为并集产物——与装载序无关，扩展名口径对齐装载器`() {
+    fun `包身份稳定派生——同集合重导同名替换、异集合并存两包`() {
         val tmp = tempDir()
         val controller = controllerIn(tmp, contextOf())
-        // 补丁窗口只能锚定裸 base 产物：第二张同样锚裸 base 的补丁接不上装载器的窗口对齐闸
-        // ⇒ 设备端产物必须只有一张（全部留档源并集重编），产物名因此与「首个源」脱钩。
-        assertEquals(ModImportController.UNION_PATCH_NAME, "kojo-imports.patch")
+        fun importOne(name: String, source: String): ImportedPatchDetail {
+            val outcome = controllerIn(tmp, contextOf())
+                .import(listOf(PickedModFile(name, source.toByteArray(Charsets.UTF_8))))
+            return (outcome as? ModImportOutcome.Imported)?.detail
+                ?: throw AssertionError("导入应成功，实为 $outcome")
+        }
+        val one = importOne("zz.ERB", patchSource)
         assertTrue(
-            "并集产物名必须走装载器的扩展名权威口径（扫描面才认它）",
-            ModPatchLoader.hasPatchExtension(ModImportController.UNION_PATCH_NAME),
+            "包名 = kojo- + sha256(排序后盘名) 前 8 位：${one.patchFileName}",
+            Regex("kojo-[0-9a-f]{8}\\.erbm").matches(one.patchFileName),
         )
-        val outcome = controller.import(listOf(PickedModFile("zz.ERB", patchSource.toByteArray(Charsets.UTF_8))))
-        val detail = (outcome as? ModImportOutcome.Imported)?.detail
-            ?: throw AssertionError("导入应成功，实为 $outcome")
-        assertEquals(ModImportController.UNION_PATCH_NAME, detail.patchFileName)
-        assertTrue(File(File(tmp, "mods"), ModImportController.UNION_PATCH_NAME).isFile)
+        // 同集合重导：同 packageId、同名文件原地替换。
+        val again = importOne("zz.ERB", patchSource)
+        assertEquals(one.patchFileName, again.patchFileName)
+        // 异集合：另一个包，与前一包并存。
+        val other = importOne("yy.ERB", "@B_OTHER\nRETURN 0\n")
+        assertTrue("异集合必须派生出不同 packageId", other.patchFileName != one.patchFileName)
+        val rt2 = File(File(tmp, "mods"), "rt2")
+        assertTrue(File(rt2, one.patchFileName).isFile)
+        assertTrue(File(rt2, other.patchFileName).isFile)
+        assertFalse(
+            "并集补丁退役",
+            File(File(tmp, "mods"), ModImportController.UNION_PATCH_NAME).exists(),
+        )
     }
 
     @Test
@@ -499,8 +595,9 @@ class ModImportControllerTest {
         assertTrue(File(mods, "A_FIRST.ERB").isFile)
         assertTrue(File(mods, "HEADER.ERH").isFile)
         assertFalse("readme.txt 不落盘", File(mods, "readme.txt").exists())
-        assertTrue(File(mods, ModImportController.UNION_PATCH_NAME).isFile)
-        assertEquals(ModImportController.UNION_PATCH_NAME, detail.patchFileName)
+        assertTrue(File(File(mods, "rt2"), detail.patchFileName).isFile)
+        assertTrue(File(File(mods, "rt2"), detail.patchFileName.removeSuffix(".erbm") + ".manifest").isFile)
+        assertFalse("并集补丁退役", File(mods, ModImportController.UNION_PATCH_NAME).exists())
     }
 
     @Test
@@ -648,7 +745,7 @@ class ModImportControllerTest {
             patchSource,
             File(File(tmp, "mods"), "patch.ERB").readText(),
         )
-        assertEquals(ModImportController.UNION_PATCH_NAME, detail.patchFileName)
+        assertTrue(detail.patchFileName.endsWith(".erbm"))
     }
 
     @Test
@@ -665,7 +762,7 @@ class ModImportControllerTest {
         val detail = (outcome as? ModImportOutcome.Imported)?.detail
             ?: throw AssertionError("混合导入应成功，实为 $outcome")
         assertEquals(listOf("B_MID.ERB", "Z_LAST.ERB"), detail.sourceFileNames)
-        assertEquals("产物名恒为并集产物", ModImportController.UNION_PATCH_NAME, detail.patchFileName)
+        assertTrue("产物为模块容器", detail.patchFileName.endsWith(".erbm"))
     }
 
     @Test
@@ -694,9 +791,9 @@ class ModImportControllerTest {
     }
 
     @Test
-    fun `二次导入=并集重编，旧 per-import 产物被清理`() {
-        // 留档源是真相：第二次导入把「已留档 + 本次新源」一次编成一张补丁（两张同窗口的
-        // 产物在装载侧接不上，结构性不能并存）。
+    fun `二次导入=独立成包，旧 per-import 产物与并集补丁被清理`() {
+        // M2-4 裁定 2：每次导入独立成包（不再并集重编）；旧版产物（<源主名>.patch 与
+        // kojo-imports.patch）在本链下一次导入时退役，留档源仍在（重导的根据）。
         val tmp = tempDir()
         val first = PickedModFile("K16_A.ERB", patchSource.toByteArray(Charsets.UTF_8))
         val second = PickedModFile("K16_B.ERB", "@B_TWO\nCALL A_ONE(1)\nRETURN 0\n".toByteArray(Charsets.UTF_8))
@@ -707,14 +804,18 @@ class ModImportControllerTest {
         val d1 = (one as? ModImportOutcome.Imported)?.detail ?: throw AssertionError("第一次导入应成功: $one")
         assertEquals(1, d1.functionCount)
 
-        // 模拟旧版产物名（首个源主名 + .patch）：新实现必须把它清掉，只留并集那一张。
+        // 模拟旧版产物（per-import + 并集）：新实现必须清掉它们。
         File(mods, "K16_A.patch").writeBytes(byteArrayOf(0))
+        File(mods, ModImportController.UNION_PATCH_NAME).writeBytes(byteArrayOf(0))
         val two = controllerIn(tmp, contextOf()).import(listOf(second))
         val d2 = (two as? ModImportOutcome.Imported)?.detail ?: throw AssertionError("第二次导入应成功: $two")
-        assertEquals("并集重编应包含两张源的全部函数", 2, d2.functionCount)
+        assertEquals("本次导入独立成包（不并集重编）", 1, d2.functionCount)
         assertEquals("sourceFileNames 只列本次导入的源", listOf("K16_B.ERB"), d2.sourceFileNames)
-        assertFalse("旧形态产物必须清理（否则装载侧撞窗口闸）", File(mods, "K16_A.patch").exists())
-        assertTrue(File(mods, ModImportController.UNION_PATCH_NAME).isFile)
+        assertFalse("旧 per-import 产物必须清理", File(mods, "K16_A.patch").exists())
+        assertFalse("并集补丁必须清理", File(mods, ModImportController.UNION_PATCH_NAME).exists())
+        val rt2 = File(mods, "rt2")
+        assertTrue("第一包保留（异集合并存）", File(rt2, d1.patchFileName).isFile)
+        assertTrue("第二包落盘", File(rt2, d2.patchFileName).isFile)
         // 留档源仍在（可再次重编的根据）。
         assertTrue(File(mods, "K16_A.ERB").isFile && File(mods, "K16_B.ERB").isFile)
     }

@@ -287,9 +287,7 @@ object UpdateUi {
                 result.fetchProblems.isNotEmpty() ->
                     toast(activity, UpdateUiText.checkFailedReport(copy, addressCount, result.fetchProblems, result.warnings.size))
                 else -> {
-                    val current = runCatching { UpdateManager.currentVersionCode(activity) }.getOrDefault(-1L)
-                    val data = runCatching { UpdateManager.installedDataVersion(gameRoot) }.getOrDefault(0L)
-                    toast(activity, UpdateUiText.upToDateReport(copy, current, data, result.warnings.size))
+                    toast(activity, UpdateUiText.upToDateReport(copy, result.warnings.size))
                 }
             }
         }
@@ -389,6 +387,8 @@ object UpdateUi {
             currentVersionCode = runCatching { UpdateManager.currentVersionCode(activity) }.getOrDefault(-1L),
             installedDataVersion = runCatching { UpdateManager.installedDataVersion(gameRoot) }.getOrDefault(0L),
             stagedDataVersion = runCatching { UpdateManager.stagedBundle(activity) }.getOrNull()?.version ?: 0L,
+            // 已核对可装的整包（下载完成拍就登记，不等玩家点通知）：设置页据此出「安装已下载的更新」按钮。
+            stagedApkPath = runCatching { UpdateManager.handedOffApk(activity)?.absolutePath }.getOrNull().orEmpty(),
             skippedVersionCode = runCatching { UiPrefs.updateSkippedVersionCode(activity) }.getOrDefault(0L),
             autoChannelWanted = runCatching { UiPrefs.autoUpdateEnabled(activity) }.getOrDefault(true),
             nowMillis = System.currentTimeMillis(),
@@ -484,7 +484,7 @@ object UpdateUi {
                     setNeutralButton(copy.dialogNeverButton) { _, _ ->
                         UpdateTelemetryWiring.offerAction(activity, UpdateTelemetry.ACTION_SKIP, telemetryOfferVersion)
                         val saved = runCatching { UiPrefs.setUpdateSkippedVersionCode(activity, skipCode) }
-                        if (saved.isSuccess) toast(activity, UpdateUiText.skippedToast(copy, skipCode))
+                        if (saved.isSuccess) toast(activity, UpdateUiText.skippedToast(copy))
                         else Log.w(TAG, "跳过版本写不进去，本次不拦提醒")
                     }
                 }
@@ -686,22 +686,31 @@ object UpdateUi {
     // ------------------------------------------------------------------
 
     /**
-     * 通知到底看不看得见（P2-10 收口）：应用级开关 **加** 进度渠道级开关。
+     * 通知到底看不看得见（P2-10 收口）：应用级开关 **加** 渠道级开关。
      *
-     * 为什么必须看渠道：玩家可以在系统设置里只关掉「更新下载进度」这一条渠道，那时
-     * `areNotificationsEnabled()` 仍是 true，而进度通知根本不会出现 —— 壳层若据此说
+     * [channel] 指明判**哪条**渠道，判据必须与实际发送面配对 —— 进度通知发
+     * [UpdateDownloadService.CHANNEL_PROGRESS]（缺省，保持既有调用点语义），完成/失败/
+     * 取消等结果通知发 [UpdateDownloadService.CHANNEL_RESULT]。判错对象会出现
+     * 「判说可见、系统却按渠道丢弃」的真·零触达窗：结果通知发不出、自动直装又不触发、
+     * 也没有补救 Toast —— 下载完成到安装之间就此断链。
+     *
+     * 为什么必须看渠道：玩家可以在系统设置里只关掉某一条渠道，那时
+     * `areNotificationsEnabled()` 仍是 true，而该渠道的通知根本不会出现 —— 壳层若据此说
      * 「点这条通知」，就是把玩家往一条看不见的路上引。
      *
      * 读数取不到（旧系统没有渠道概念 / 通知服务都拿不出来）时**不许反过来谎报看不见**：
      * 与 [UpdateDownloadService] 原口径一致 —— 宁可少发一条补救 Toast，也不许对玩家说瞎话。
      */
-    fun notificationsVisible(context: Context): Boolean = runCatching {
+    fun notificationsVisible(
+        context: Context,
+        channel: String = UpdateDownloadService.CHANNEL_PROGRESS,
+    ): Boolean = runCatching {
         val manager = notificationManager(context) ?: return false
         val appLevel = if (Build.VERSION.SDK_INT >= 24) manager.areNotificationsEnabled() else true
         if (!appLevel) return false
         if (Build.VERSION.SDK_INT >= 26) {
-            val progress = manager.getNotificationChannel(UpdateDownloadService.CHANNEL_PROGRESS)
-            if (progress != null && progress.importance == NotificationManager.IMPORTANCE_NONE) return false
+            val target = manager.getNotificationChannel(channel)
+            if (target != null && target.importance == NotificationManager.IMPORTANCE_NONE) return false
         }
         true
     }.getOrDefault(true)

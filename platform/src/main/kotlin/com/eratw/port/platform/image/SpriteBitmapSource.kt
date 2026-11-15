@@ -806,16 +806,65 @@ class SpriteBitmapSource(
     /**
      * `<img>` 没写 `width` 时按纵横比推宽所需的基图目标尺寸（`ASprite.DestBaseSize`）。
      *
+     * **只查 SpritePool**（MODERN-R11-DIVW）：原版 `ConsoleImagePart` 的构造期
+     * `AppContents.GetSprite(ResourceName)`（`ConsoleImagePart.cs:60-66`）读的是
+     * `imageDictionary`（`AppContents.cs:39-51`），miss 就按 `AltText` 文本计宽
+     * （`:104-115` 的 `SetWidth`）；而 `imageDictionary` 的成员 = CSV 声明
+     * （`AppContents.cs:157-161`）与运行时 `SPRITECREATE`（`:84-88` / `:101-105`），
+     * **不来自文件系统扫盘**。此前本函数在池 miss 后还会读盘量尺寸（`resourceNameSize`），
+     * 使「池里没有、盘上有」的名字按图宽入表而 core 侧按文本宽计 ⇒ 两链列位漂；
+     * 现在两端都只认注册表，盘上有文件也不再改变宽度。像素解码与绘制面的文件路径
+     * （`frameOf` / `bitmapOf` 的 file 支）不受影响。
+     *
      * 位布局约定见 [packDestSize]：高 16 位 = 宽、低 16 位 = 高。宽 ≥ 0x8000 时打包
      * 结果是负 Int——解包侧（render/adapter/HtmlRunFlatten.kt:332-333）用
      * `base ushr 16`（无符号右移）取宽、`base and 0xFFFF` 取高，不受符号影响；
      * 该 round-trip 由 SpriteBitmapSourcePackTest 钉死 0x7FFF/0x8000/0xFFFF 边界。
      */
     override fun destSize(resource: String): Int? {
-        val sprite = aux.peek<SpritePool>(SLOT_SPRITE)?.find(resource)
-        if (sprite != null) return packDestSize(sprite.width, sprite.height)
-        val size = files.resourceNameSize(resource) ?: return null
-        return packDestSize(size[0], size[1])
+        val sprite = aux.peek<SpritePool>(SLOT_SPRITE)?.find(resource) ?: return null
+        return packDestSize(sprite.width, sprite.height)
+    }
+
+    /**
+     * 「帧此刻可用」的**只读探针**（MODERN-R12-WIRE，[HtmlRunFlatten.ImageSizeSource.frameAvailable]
+     * 的生产实现；缺帧行宽判据唯一名下 = core `CellWidth.imgWidthPxOrNull` 的文档表，本覆写只供数、
+     * 不判宽）。
+     *
+     * ## 只读纪律（契约 §0 / §2.2）
+     *
+     * 本覆写**不调** [frameOf] / [spriteFrame] / [bitmapOf] —— 解码副作用（[submitDecodeRequest]
+     * 入队、`decodeFileByPath` 的同步解码、`GraphicsBuffer.pixels` 的惰性落地）只在那三处；
+     * 本探针只读 `SpritePool` 的注册字段与 `GraphicsBuffer` 的 surface 宽高读数，与 [destSize]
+     * 同一张表、同一条查表原语（`find` 的 uppercase 键串是共用面，除此之外零分配）。
+     * VM 折行/排版线程与 UI 线程调用都零解码、零入队、零负缓存写入 —— 不把 [frameOf] 的
+     * 惰性解码副作用带进排版线程（对照类 KDoc 的三线程约定）。
+     *
+     * ## 注册态判据（三支）
+     *
+     * - 查无 sprite ⇒ **true**：缺帧面不归本探针判 —— 图元 miss 面在 [destSize] 已先落
+     *   AltText 单出口（四个消费面都是「尺寸命中后才问帧」，此支在判据上不可达）；答 true =
+     *   未判定旧读数，防调用方跳过尺寸判时把「文件层、绘制时才解码」的图误判成缺帧。
+     * - 动画（`frames != null`）⇒ **帧表非空**：空表 = 原版 `totaltime <= 0` 恒无帧
+     *   （SpriteAnime.cs:92-95 同界；`SpriteAnimeTimeline.delaysOf` 把每帧 delay 夹到 >=1，
+     *   非空表 `frameAt` 必出合法下标）——空表是唯一**永久**无帧的注册形态。
+     * - 静态 ⇒ **`Sprite.isCreated`**：SpriteG = `buffer.isCreated`（surface 宽高读数，
+     *   GCREATE 前 / GDISPOSE 后为 false，与画侧 `bitmapOf` 的 null 支同判据）；SpriteF/CSV
+     *   父图（id < 0）= 登记期事实恒 true，与 `SPRITECREATED` 同源。
+     *
+     * ## 不判的三类（答 true = 接线前旧读数；瞬态形态登记 TODO(verify)）
+     *
+     * 位图解不出（decode 失败 / OOM）；动画**当前帧** srcW=0（SPRITEANIMEADDFRAME 显式登记的
+     * 「在表里、不画」合法态）与帧缓冲被 GDISPOSE —— 判「当前帧」需要动画时钟，而
+     * `animeClocks` 的 getOrPut 是状态变更（提前起表会改动画起点）、`delaysOf` 每调分配
+     * IntArray，都违反零副作用/零分配纪律，探针不碰时钟。这三类探针答 true，不比接线前更差；
+     * 真机像素对账随交付 TODO(verify) 登记。
+     */
+    override fun frameAvailable(resource: String): Boolean {
+        val sprite = aux.peek<SpritePool>(SLOT_SPRITE)?.find(resource) ?: return true
+        val frames = sprite.frames
+        if (frames != null) return frames.isNotEmpty()
+        return sprite.isCreated
     }
 
     /** DevTools img 命令：文件层定位（sprite 表 miss 时的兜底文件）。 */
@@ -1095,15 +1144,23 @@ class SpriteBitmapSource(
                 demotedCache.remove(buffer.id)
                 return null
             }
-            // `pixelArrayDecodeOptions()` 的 `inPremultiplied = false` 保证解出来的是 PNG 里的
-            // **直通** ARGB（与 `GraphicsBuffer` 的 `0xAARRGGBB` 布局逐字相同）；随后的
-            // `setPremultiplied(true)` 只翻 alpha 元数据、不动像素 —— 与常规支
-            // `Bitmap.createBitmap(IntArray, ...)` 的产物（直通值 + premul 标志）逐字同构，
-            // 降级前后画面不许变暗/变亮。缺失这一步会让半透明层在降级瞬间跳色。
+            // 这张位图是**绘制句柄**（`Frame.bitmap` → `Canvas.drawBitmap`），不是像素数组源，
+            // 所以必须解成**真预乘**位图：`renderDecodeOptions()` 的 `inPremultiplied = true`
+            // 让 BitmapFactory 在解码时就把 PNG 的直通 RGBA 换算成预乘存底，与常规支
+            // `Bitmap.createBitmap(IntArray, ...)` 的产物同构。
+            //
+            // 0.2.44 的旧写法是「`pixelArrayDecodeOptions()`（直通存底）+ `setPremultiplied(true)`」，
+            // 注释当时给的理由是「只翻 alpha 元数据、不动像素」—— 那句话本身就是病灶：
+            // 标志位翻了、数据没翻 ⇒ 位图对 Skia 谎称自己是预乘的，而存的是直通值。
+            // Skia 按预乘消费 ⇒ 半透明像素被当成「已经乘过 alpha」直接叠加，贡献被放大 1/a 倍。
+            // 真机实测（vivo V2199A / SDK 34，600×600 合成画布取图）：正确像素 0x6BF89C95
+            // → 旧路径读回 0x6BFFFFFF（R/G/B 全被打满），常规支 createBitmap 读回 0x6BF89B96。
+            // 屏上形态 = 半透明特效层（照れ/吐息/汗画布）整层发白；脸图 alpha≈0 处存的是
+            // RGB=255,255,255，谎报预乘后这些低 alpha 像素被当成高亮白 ⇒ 脸周白框。
             val bitmap = try {
                 BitmapFactory.decodeByteArray(
-                    demotedPng, 0, demotedPng.size, BitmapImageDecoder.pixelArrayDecodeOptions(),
-                )?.also { it.setPremultiplied(true) }
+                    demotedPng, 0, demotedPng.size, BitmapImageDecoder.renderDecodeOptions(),
+                )
             } catch (t: OutOfMemoryError) {
                 Log.w(TAG, "gid=${buffer.id} 降级 PNG 落 native 位图 OOM，跳过本帧")
                 null

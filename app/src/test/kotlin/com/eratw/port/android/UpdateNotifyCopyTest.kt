@@ -29,7 +29,7 @@ class UpdateNotifyCopyTest {
     private val han = Regex("[\\u4e00-\\u9fff]")
     private val slot = Regex("[{](\\d+)[}]")
 
-    /** U3b 追加进表的 54 条（名字点出来，改名/漏档/只补一种语言都要在这里红）。 */
+    /** U3b 追加进表的 56 条（名字点出来，改名/漏档/只补一种语言都要在这里红）。 */
     private val u3bKeys: List<Pair<String, kotlin.reflect.KProperty1<UpdateCopy, String>>> = listOf(
         "progressNoTotalFormat" to UpdateCopy::progressNoTotalFormat,
         "progressLineFormat" to UpdateCopy::progressLineFormat,
@@ -85,6 +85,8 @@ class UpdateNotifyCopyTest {
         "noNotifyBarStartFailedFormat" to UpdateCopy::noNotifyBarStartFailedFormat,
         "apkMissingToast" to UpdateCopy::apkMissingToast,
         "installerOpenFailedFormat" to UpdateCopy::installerOpenFailedFormat,
+        "stagedApkLine" to UpdateCopy::stagedApkLine,
+        "installStagedApk" to UpdateCopy::installStagedApk,
     )
 
     // ------------------------------------------------------------------
@@ -109,9 +111,11 @@ class UpdateNotifyCopyTest {
         // （techDataArtifactLineFormat + dataKind*/dataDisk*/dataItemsNone，三档同加，只进展开层）⇒ 144 → 152。
         // U13（2026-11-05 坏基线拒装记账）把挡板说明的 2 条新键收进表
         // （techRejectedFallbackLineFormat / techRejectedSkipLineFormat，三档同加，只进展开层）⇒ 152 → 154。
-        // 对账走共享形状闸（T-3 抽取）；本测试的键清单是 U3b 子集（54 条），与总数的关系在这钉。
-        assertEquals("U3b 追加的键数变了（现有 54 条）", 54, u3bKeys.size)
-        CopyShapeGate.assertKeyCount("UpdateCopy", copies, u3bKeys.toMap(), expectedPerCopy = 154)
+        // 2026-11-15 「下载完无反应」修复把已核对整包的读数行与安装按钮 2 条新键收进表
+        // （stagedApkLine / installStagedApk，三档同加）⇒ 154 → 156。
+        // 对账走共享形状闸（T-3 抽取）；本测试的键清单是 U3b 子集（56 条），与总数的关系在这钉。
+        assertEquals("U3b 追加的键数变了（现有 56 条）", 56, u3bKeys.size)
+        CopyShapeGate.assertKeyCount("UpdateCopy", copies, u3bKeys.toMap(), expectedPerCopy = 156)
     }
 
     @Test
@@ -126,7 +130,7 @@ class UpdateNotifyCopyTest {
     }
 
     @Test
-    fun `U3b 的 54 条在三语各自非空并且两两不同`() {
+    fun `U3b 的 56 条在三语各自非空并且两两不同`() {
         CopyShapeGate.assertNonEmptyAndDistinct(copies, u3bKeys.toMap())
     }
 
@@ -405,7 +409,15 @@ class UpdateNotifyCopyTest {
         val apkBranch = service.substringAfter("UpdateDownloadKind.Apk -> {")
             .substringBefore("UpdateDownloadKind.Assets -> {")
         assertTrue("看不见通知时必须真的把包交给安装器：$apkBranch", apkBranch.contains("installJustDownloaded(file)"))
-        assertTrue("看得见通知时仍走通知点击那条路：$apkBranch", apkBranch.contains("if (notifyVisible)"))
+        // 2026-11-15 判据归位：完成/失败/取消是结果通知（CHANNEL_RESULT），判据不能再查进度渠道 ——
+        // 查错渠道会出现「判说可见、系统按渠道丢弃」的零触达窗（通知没了、直装不触发、Toast 也没有）。
+        assertTrue("看得见通知时仍走通知点击那条路：$apkBranch", apkBranch.contains("if (resultVisible)"))
+        assertTrue(
+            "结果通知的可见性判据必须查结果渠道（判成进度渠道 = 判说可见、系统按渠道丢弃）",
+            service.contains(
+                "val resultVisible = notificationsVisible(UpdateDownloadService.CHANNEL_RESULT)",
+            ),
+        )
         assertTrue("通知看不见时的正文要明说「已经直接交给安装器」", apkBranch.contains("apkDoneText(copy, false)"))
         assertTrue(
             "整套入口必须复用 UpdateManager.launchInstaller（不另造一套安装器调用）",

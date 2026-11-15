@@ -148,6 +148,37 @@ class BitmapImageDecoder(
             }
 
         /**
+         * 「画上 Canvas 用」的解码选项（单一来源；`SpriteBitmapSource` 的降级取图支用这一份）。
+         *
+         * 与 [pixelArrayDecodeOptions] 的唯一差别是 `inPremultiplied = true`，因为两者的
+         * **消费者不同**：
+         * - 像素阵列口径的位图只喂 [Bitmap.getPixels]、随即 recycle，要文件直通值；
+         * - 本口径的位图是**绘制句柄**，消费者是 Skia（`Canvas.drawBitmap`），而 Skia 的
+         *   混合公式假定源是**预乘**的（`dst = src + dst×(1−a)`）。
+         *
+         * ## 为什么不能「解成直通再 `setPremultiplied(true)`」
+         *
+         * 那个写法只翻 alpha 元数据、**不动像素**，等于让位图对 Skia 谎称自己是预乘的。
+         * Skia 于是把直通值当「已经乘过 alpha」直接叠加 ⇒ 半透明像素的贡献被放大 1/a 倍。
+         * 真机实测（vivo V2199A / SDK 34，600×600 合成画布经 PNG 降级往返）：
+         * 正确像素 `0x6BF89C95` 读回 `0x6BFFFFFF`（R/G/B 全被打满）；而走
+         * `Bitmap.createBitmap(IntArray, …)` 的常规支读回 `0x6BF89B96`（±2 预乘舍入）。
+         * 屏上形态 = 半透明特效层（照れ/吐息/汗画布）整层发白，脸图 `alpha≈0` 处存的
+         * `RGB=255,255,255` 更会在低 alpha 上被当成高亮白，绕着眼睛出现白框。
+         *
+         * 让 BitmapFactory 在解码时完成直通→预乘换算，产出的位图与常规支
+         * `Bitmap.createBitmap(IntArray, …)`（同一份直通像素 + 预乘存底）逐字同构，
+         * 降级前后画面不变。
+         */
+        internal fun renderDecodeOptions(): BitmapFactory.Options =
+            BitmapFactory.Options().apply {
+                inScaled = false
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+                inDither = false
+                inPremultiplied = true
+            }
+
+        /**
          * 像素落地的预检判式（判定面与 Android 面分开：本函数纯 JVM，
          * 定向单测用 `eratw.preflight.*` 两条性质复刻真机贴顶挡位，见 [PixelPreflight]）。
          *

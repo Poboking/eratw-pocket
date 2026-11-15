@@ -25,6 +25,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
 import com.eratw.port.android.PortraitShellCopy
+import com.eratw.port.android.QuickMacroSection
+import com.eratw.port.android.portraitQuickMacroStyle
+import com.eratw.port.android.RailOptionRules
 import com.eratw.port.android.UiPrefs
 import com.eratw.port.android.railRowsOf
 import com.eratw.port.core.host.ConsoleOption
@@ -164,6 +167,10 @@ internal fun trayPeekOptions(chips: List<ConsoleOption>): List<ConsoleOption> {
  * @param lastCommandText 上回指令原文（同上；空串也算解析成立，显示空值）
  * @param onOption 点按钮 → 提交该候选的 [ConsoleOption.submitValue]（提交路径与
  *   横屏右栏同一条，见 [com.eratw.port.android.ShellUi] 的 rail 回调口径）
+ * @param quickMacros 快捷宏（玩家自定义的 era 指令集串，真源 `ShellState.quickMacros`）。
+ *   横屏走右栏常用区、竖屏走本盘顶常驻小节——两套壳同一份数据源、同一条提交路径。
+ *   空表 = 不占任何高度（竖屏高度纪律 §0-14：只有真配了宏才多出这几行）。
+ * @param onQuickMacro 点一枚快捷宏 → 宿主当键盘输入提交（整串交给引擎分段，壳层不切分）。
  */
 @Composable
 internal fun CommandTray(
@@ -176,6 +183,8 @@ internal fun CommandTray(
     executingText: String?,
     lastCommandText: String?,
     onOption: (String) -> Unit,
+    quickMacros: List<RailOptionRules.QuickMacro> = emptyList(),
+    onQuickMacro: (RailOptionRules.QuickMacro) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // 文案表：语言由本层一次取好往下传（照 UpdateUi.copyFor 的口径）。
@@ -183,7 +192,6 @@ internal fun CommandTray(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(max = maxHeight)
             .background(PortraitTokens.Panel, RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp))
             .border(
                 width = 1.dp,
@@ -192,75 +200,98 @@ internal fun CommandTray(
             )
             .padding(horizontal = 9.dp, vertical = 7.dp),
     ) {
-        if (!open) {
-            // 收起态（§4.3）：上下文行（执行中 + 上回指令，失配即隐藏）+ peek + 展开按钮。
-            if (executingText != null || lastCommandText != null) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 5.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (executingText != null) {
-                        Text(
-                            text = copy.fill(copy.trayExecutingFormat, executingText),
-                            color = Color(0xFFFFD9A0),
-                            fontSize = 10.5.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false),
-                        )
-                    }
-                    if (lastCommandText != null) {
-                        Text(
-                            text = copy.fill(copy.trayLastCommandFormat, lastCommandText),
-                            color = PortraitTokens.DimText,
-                            fontSize = 10.5.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-            }
-            if (peek.isEmpty()) {
-                Text(
-                    text = copy.trayEmptyLine,
-                    color = PortraitTokens.DimText,
-                    fontSize = 11.sp,
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                )
-            } else {
-                TrayButtonGrid(options = peek, columns = columns, onOption = onOption)
-            }
-        } else {
-            // 展开态（§4.3）：全部屏行分组纵排（含组标签行），命令区在上限内内部滚动；
-            // 收起按钮在滚动区**外**（盘底），恒在屏内（§10-15）。
-            if (groups.isEmpty()) {
-                Text(
-                    text = copy.trayEmptyLine,
-                    color = PortraitTokens.DimText,
-                    fontSize = 11.sp,
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                )
-            } else {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f, fill = false)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(7.dp),
-                ) {
-                    groups.forEach { group ->
-                        group.label?.let { label ->
+        // 高度上限（§0-14）只落**内容区**、不再套整盘：旧做法整盘 heightIn(max)，
+        // 快捷宏行数多 + 系统字体放大把内容顶到上限时，排在 Column 尾部的
+        // TrayToggleButton 会被挤出整盘的测量边界（子项按约束依次量完就到顶，
+        // 后面的按钮拿不到高度）——「更多指令 ▾」不可见也不可点，玩家看到的
+        // 就是「盘收起之后没了」（2026-11-11 报的竖盘消失症状：§10-15「收起
+        // 按钮恒在盘底」的防线被自己的 heightIn 破了）。toggle 挪到受限区外
+        // 恒在屏内；代价是内容顶满上限的异常路径下整盘比预算多一枚 toggle 高。
+        Column(modifier = Modifier.fillMaxWidth().heightIn(max = maxHeight)) {
+            // 快捷宏小节（2026-11-11）：盘顶常驻，收起/展开态都看得见。
+            // 数据源铁律（§0-4）的唯一例外并写明：本行不是游戏候选，是**玩家自写的指令集串**
+            // （`ShellState.quickMacros`），不进 chips 扫描、不参与排序/分组；点按走
+            // onQuickMacro → 键盘提交路（与横屏右栏常用区同一条）。
+            // 视觉/交互与横屏共用 QuickMacroSection（QuickMacroUi.kt），这里只给竖屏 token 与列数。
+            QuickMacroSection(
+                header = copy.railQuickMacroHeader,
+                macros = quickMacros,
+                columns = columns,
+                enabled = true,
+                style = portraitQuickMacroStyle(),
+                onQuickMacro = onQuickMacro,
+                modifier = Modifier.padding(bottom = 6.dp),
+            )
+            if (!open) {
+                // 收起态（§4.3）：上下文行（执行中 + 上回指令，失配即隐藏）+ peek + 展开按钮。
+                if (executingText != null || lastCommandText != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 5.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (executingText != null) {
                             Text(
-                                text = label,
-                                color = PortraitTokens.Green,
-                                fontSize = 10.sp,
+                                text = copy.fill(copy.trayExecutingFormat, executingText),
+                                color = Color(0xFFFFD9A0),
+                                fontSize = 10.5.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                        }
+                        if (lastCommandText != null) {
+                            Text(
+                                text = copy.fill(copy.trayLastCommandFormat, lastCommandText),
+                                color = PortraitTokens.DimText,
+                                fontSize = 10.5.sp,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
-                        group.rows.forEach { row ->
-                            TrayButtonGrid(options = row, columns = columns, onOption = onOption)
+                    }
+                }
+                if (peek.isEmpty()) {
+                    Text(
+                        text = copy.trayEmptyLine,
+                        color = PortraitTokens.DimText,
+                        fontSize = 11.sp,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    )
+                } else {
+                    TrayButtonGrid(options = peek, columns = columns, onOption = onOption)
+                }
+            } else {
+                // 展开态（§4.3）：全部屏行分组纵排（含组标签行），命令区在上限内内部滚动；
+                // 收起按钮在滚动区**外**（盘底），恒在屏内（§10-15）。
+                if (groups.isEmpty()) {
+                    Text(
+                        text = copy.trayEmptyLine,
+                        color = PortraitTokens.DimText,
+                        fontSize = 11.sp,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    )
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f, fill = false)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(7.dp),
+                    ) {
+                        groups.forEach { group ->
+                            group.label?.let { label ->
+                                Text(
+                                    text = label,
+                                    color = PortraitTokens.Green,
+                                    fontSize = 10.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            group.rows.forEach { row ->
+                                TrayButtonGrid(options = row, columns = columns, onOption = onOption)
+                            }
                         }
                     }
                 }

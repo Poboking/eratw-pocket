@@ -130,6 +130,10 @@ data class UpdateCopy(
     val stagedYesLineFormat: String,
     /** 第三行：没有东西等着应用。 */
     val stagedNoLine: String,
+    /** 第三行：有一份已核对可装的整包等安装（通知丢了也能在设置页看见）。 */
+    val stagedApkLine: String,
+    /** 「安装已下载的更新」按钮：把已核对的整包交给系统安装器。 */
+    val installStagedApk: String,
 
     // ---------------------------------------------------------------- 设置页「看技术细节」展开层
     /** 包里没配地址时的那一行。 */
@@ -421,7 +425,7 @@ data class UpdateCopy(
             offerApkSizeLineFormat = "{0}，需下载 {1}",
             offerApkBlockedLineFormat = "{0}，但当前设备无法安装：{1}",
             offerDeltaMarker = "（仅包含变更部分，体积显著小于完整数据包）",
-            offerAssetsLineFormat = "数据包 {0}（当前数据版本 {1}），需下载 {2}{3}，将在下次启动游戏时自动应用",
+            offerAssetsLineFormat = "有一份新的数据包，需下载 {0}{1}，将在下次启动游戏时自动应用",
             offerAssetsOnlyExplainerLine =
                 "当前安装的应用已是最新版本（{0}）；本次更新内容为独立分发的游戏数据（脚本与图像资源），" +
                     "无需重新安装应用。",
@@ -431,7 +435,7 @@ data class UpdateCopy(
             offerExpandCountFormat = "{0}（发布方提供 {1} 条提示）",
             warningsNoteFormat =
                 "发布方提供的更新信息中，有 {0} 处内容当前版本无法识别；已按可识别部分继续处理，详细原因见「技术细节」。",
-            skippedToastFormat = "已不再提醒版本 {0}；出了更新的版本仍会提醒。{1}。",
+            skippedToastFormat = "以后不再提醒这个版本的更新；出了更新的版本仍会提醒。{0}。",
             skippedNoteFormat = "已跳过版本 {0} 的自动提醒；新版本照常提醒，{1}",
             checkBusyFormat = "{0}，一次只查一路；等这一条的结果出来再点，连点不会更快。",
             notificationRationaleFormat =
@@ -443,7 +447,7 @@ data class UpdateCopy(
             allMirrorsFailedPhrase = "所有更新源都连不上",
             checkFailedFormat = "已配置 {0} 条更新源，这次一条都连不上（{1}）。等网络恢复了再查一次就行。",
             checkCrashedFormat = "检查更新时出了意外（{0}），游戏不受影响，稍后再试一次",
-            upToDateFormat = "已经是最新版（整包 {0}，数据 {1}）",
+            upToDateFormat = "当前已是最新版本",
             techExpandLabel = "看技术细节",
             techCollapseLabel = "收起技术细节",
             canCheckFormat = "更新地址有 {0} 条，会自动帮你查新版；{1}",
@@ -459,8 +463,10 @@ data class UpdateCopy(
             checkCrashedLineFormat = "{0}。检查过程出现异常，游戏不受影响，下一次检查将照常执行。",
             checkUnknownLineFormat = "{0}。该次检查结果未记录，下一次检查完成后将自动补充。",
             stagedYesLineFormat =
-                "已经下好一份数据包（版本 {0}），下次启动游戏时会自动装上；在那之前你玩到的还是现在这份数据。",
+                "已经下好一份数据包，下次启动游戏时会自动装上；在那之前你玩到的还是现在这份数据。",
             stagedNoLine = "没有等着装的数据包。",
+            stagedApkLine = "已经下好一份更新包，等待安装；点下方「安装已下载的更新」即可安装。",
+            installStagedApk = "安装已下载的更新",
             techAddressNoneLine = "更新地址：包里没配",
             techAddressLineFormat = "更新地址 {0} 条，首选 {1}",
             techVersionsLineFormat = "本机整包版本 {0}，盘上数据版本 {1}",
@@ -606,7 +612,7 @@ data class UpdateCopy(
             offerApkSizeLineFormat = "{0}; {1} to download",
             offerApkBlockedLineFormat = "{0}; however, installation is not possible on this device: {1}",
             offerDeltaMarker = " (contains only changed data, considerably smaller than the full data pack)",
-            offerAssetsLineFormat = "Data pack {0} (current data version {1}): {2} to download{3}; " +
+            offerAssetsLineFormat = "A new data pack is available: {0}{1} to download; " +
                 "applied automatically on the next game launch",
             offerAssetsOnlyExplainerLine =
                 "The installed application is already up to date ({0}). This update concerns the separately " +
@@ -618,7 +624,7 @@ data class UpdateCopy(
             warningsNoteFormat =
                 "{0} entries in the release information could not be parsed by this build; " +
                     "processing continued with the remaining entries. See Technical details for the full report.",
-            skippedToastFormat = "Version {0} will not be reported again; newer versions still will be. {1}.",
+            skippedToastFormat = "This version will not be reported again; newer versions still will be. {0}.",
             skippedNoteFormat = "Update reminders for version {0} are silenced; newer versions still remind you, {1}",
             checkBusyFormat = "{0} - one check at a time; wait for this result before tapping again, tapping more is not faster.",
             notificationRationaleFormat =
@@ -633,7 +639,7 @@ data class UpdateCopy(
             checkFailedFormat = "{0} update sources are configured and none of them answered this time ({1}). " +
                 "Check again once the network is back.",
             checkCrashedFormat = "The update check hit an unexpected error ({0}); the game is unaffected, try again later",
-            upToDateFormat = "Already the latest version (app {0}, data {1})",
+            upToDateFormat = "You are already on the latest version",
             techExpandLabel = "Show technical details",
             techCollapseLabel = "Hide technical details",
             canCheckFormat = "{0} update addresses are set up and new versions are looked for automatically; {1}",
@@ -652,9 +658,13 @@ data class UpdateCopy(
                 "{0}: the check encountered an unexpected error. The game is unaffected and the next check will run as scheduled.",
             checkUnknownLineFormat = "{0}: the result of that check was not recorded; it will be filled in after the next check.",
             stagedYesLineFormat =
-                "A data pack (version {0}) is already downloaded and applies itself the next time the game starts; " +
+                "A data pack is already downloaded and applies itself the next time the game starts; " +
                     "until then you keep playing the data you have now.",
             stagedNoLine = "Nothing is waiting to be applied.",
+            stagedApkLine =
+                "An update package has been downloaded and is waiting to be installed; " +
+                    "tap \"Install downloaded update\" below to install it.",
+            installStagedApk = "Install downloaded update",
             techAddressNoneLine = "Update addresses: none built in",
             techAddressLineFormat = "{0} update addresses, preferred {1}",
             techVersionsLineFormat = "On this device: app version {0}, data version {1} on disk",
@@ -841,7 +851,7 @@ data class UpdateCopy(
             offerApkSizeLineFormat = "{0}、取得量 {1}",
             offerApkBlockedLineFormat = "{0}。ただし、この端末にはインストールできません：{1}",
             offerDeltaMarker = "（変更部分のみを含み、データ全体より大幅に小さくなります）",
-            offerAssetsLineFormat = "データパック {0}（現在のデータ版 {1}）、取得量 {2}{3}、次回のゲーム起動時に自動で適用されます",
+            offerAssetsLineFormat = "新しいデータパックがあります。{0}{1} を取得し、次回のゲーム起動時に自動で適用されます",
             offerAssetsOnlyExplainerLine =
                 "インストール済みのアプリはすでに最新版です（{0}）。今回の更新対象は、アプリとは別に配布される" +
                     "ゲームデータ（スクリプトおよび画像）であり、アプリの再インストールは不要です。",
@@ -852,7 +862,7 @@ data class UpdateCopy(
             warningsNoteFormat =
                 "配布側の更新情報に、このビルドが解析できない形式が {0} 件ありました。" +
                     "解析可能な情報のみで処理を続行しました。詳細は「技術詳細」をご確認ください。",
-            skippedToastFormat = "バージョン {0} は次回から通知しません。より新しいバージョンは引き続き通知します。{1}。",
+            skippedToastFormat = "このバージョンは次回から通知しません。より新しいバージョンは引き続き通知します。{0}。",
             skippedNoteFormat = "バージョン {0} の自動通知をスキップ中です。新しいバージョンは通常どおり通知します。{1}",
             checkBusyFormat = "{0}、確認は一度に1本だけです。結果が出てから押してください。連打しても早くは終わりません。",
             notificationRationaleFormat =
@@ -865,7 +875,7 @@ data class UpdateCopy(
             allMirrorsFailedPhrase = "すべての更新先に接続できませんでした",
             checkFailedFormat = "更新先を {0} 件設定していますが、今回は1件も接続できませんでした（{1}）。通信が回復したらもう一度確認してください。",
             checkCrashedFormat = "更新の確認で予期しないエラーがありました（{0}）。ゲームは影響を受けません。あとでもう一度お試しください",
-            upToDateFormat = "すでに最新版です（アプリ {0}、データ {1}）",
+            upToDateFormat = "すでに最新版です",
             techExpandLabel = "技術詳細を見る",
             techCollapseLabel = "技術詳細を閉じる",
             canCheckFormat = "更新先が {0} 件あり、新しい版は自動で探します；{1}",
@@ -882,8 +892,11 @@ data class UpdateCopy(
                 "{0}：確認の実行中に予期しないエラーが発生しました。ゲームへの影響はなく、次回の確認は予定どおり実行されます。",
             checkUnknownLineFormat = "{0}：その回の確認結果は保存されていません。次回の確認後に自動的に補われます。",
             stagedYesLineFormat =
-                "データパック（バージョン {0}）の取得が済んでいます。次回のゲーム起動時に自動で適用されます；それまでは今のデータのまま遊べます。",
+                "データパックの取得が済んでいます。次回のゲーム起動時に自動で適用されます；それまでは今のデータのまま遊べます。",
             stagedNoLine = "適用待ちのデータパックはありません。",
+            stagedApkLine =
+                "更新パックをダウンロード済みで、インストール待ちです。下の「ダウンロード済みの更新をインストール」からインストールできます。",
+            installStagedApk = "ダウンロード済みの更新をインストール",
             techAddressNoneLine = "更新先：組み込まれていません",
             techAddressLineFormat = "更新先 {0} 件、第一候補 {1}",
             techVersionsLineFormat = "この端末のアプリ版 {0}、ディスク上のデータ版 {1}",

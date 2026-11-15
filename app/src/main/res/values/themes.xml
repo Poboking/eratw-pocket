@@ -12,4 +12,14 @@
         <item name="android:navigationBarColor">@android:color/black</item>
         <item name="android:windowLightStatusBar">false</item>
     </style>
+
+    <!--
+      这里**故意没有**设置页专用主题：SettingsActivity 继承 application 的 Theme.Eratw，
+      是不透明的全屏窗口，因而拥有自己的方向域（manifest 的 unspecified = 跟随系统转动）。
+      半透明/浮动窗口会被框架按它下面那只 Activity 的方向定屏，把设置页钉死在游戏的
+      SENSOR_LANDSCAPE 锁里（2026-11-14 玩家反馈「竖着拿手机也转不成竖屏」）；而进度安全
+      已由进程级会话槽 SessionVault 承担，不再需要靠半透明让 MainActivity 保持 visible。
+      因果全链见 AndroidManifest.xml 的 SettingsActivity 节点与 SettingsWindowAssemblyTest。
+      今后若真要给别的 Activity 加半透明主题，另立条目写明自己的因果，别把设置页带回去。
+    -->
 </resources>

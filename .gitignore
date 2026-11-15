@@ -34,3 +34,6 @@ __pycache__/
 *.pyc
 # t63 真机采集默认目录（devtools 本地派生）
 .t63-diag/
+
+# 语料 bug 上游 PR 导出产物（devtools/export_corpus_pr.py）
+out/

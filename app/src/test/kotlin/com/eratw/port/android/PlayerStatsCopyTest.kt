@@ -18,15 +18,19 @@ class PlayerStatsCopyTest {
     private val keys: Map<String, KProperty1<PlayerStatsCopy, String>> = mapOf(
         "title" to PlayerStatsCopy::title,
         "hint" to PlayerStatsCopy::hint,
+        "detailTitle" to PlayerStatsCopy::detailTitle,
+        "purposeBody" to PlayerStatsCopy::purposeBody,
+        "privacyBody" to PlayerStatsCopy::privacyBody,
+        "controlBody" to PlayerStatsCopy::controlBody,
     )
 
     private val copies = SettingsLanguage.entries.map { PlayerStatsCopy.of(it) }
 
     @Test
     fun `三档键数一致且与显式清单对账`() {
-        // lang + title + hint = 3 枚构造属性；文案里不许出现等号（会污染计数）。
-        CopyShapeGate.assertKeyCount("PlayerStatsCopy", copies, keys, 3)
-        assertEquals("键清单漏点名", 2, keys.size)
+        // lang + title + hint + 关于页说明四段 = 7 枚构造属性；文案里不许出现等号（会污染计数）。
+        CopyShapeGate.assertKeyCount("PlayerStatsCopy", copies, keys, 7)
+        assertEquals("键清单漏点名", 6, keys.size)
     }
 
     @Test

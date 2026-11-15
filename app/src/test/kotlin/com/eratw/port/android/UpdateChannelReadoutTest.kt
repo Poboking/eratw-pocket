@@ -74,6 +74,7 @@ class UpdateChannelReadoutTest {
         notes: List<String> = emptyList(),
         noteCount: Int = notes.size,
         stagedDataVersion: Long = 0L,
+        stagedApkPath: String = "",
         skippedVersionCode: Long = 0L,
         autoChannelWanted: Boolean = true,
         nowMillis: Long = 0L,
@@ -88,6 +89,7 @@ class UpdateChannelReadoutTest {
         currentVersionCode = 12L,
         installedDataVersion = 12L,
         stagedDataVersion = stagedDataVersion,
+        stagedApkPath = stagedApkPath,
         skippedVersionCode = skippedVersionCode,
         autoChannelWanted = autoChannelWanted,
         nowMillis = nowMillis,
@@ -189,6 +191,22 @@ class UpdateChannelReadoutTest {
         assertFalse("没应用之前不许说已经更新好：$text", text.contains("已经更新"))
     }
 
+    @Test
+    fun `已核对可装的整包要有自己的一行且路径只进按钮不进正文`() {
+        val withApk = UpdateChannelReadout.of(copy, snapshot(stagedApkPath = "/data/eratw-update/eratw-0.2.46.apk"))
+        val text = withApk.allPlayerText()
+        assertTrue("要点出下载好了等安装：$text", text.contains("等待安装"))
+        assertEquals(
+            "路径要透传给按钮（动作面从读数拿，随轮询刷新）",
+            "/data/eratw-update/eratw-0.2.46.apk",
+            withApk.stagedApkPath,
+        )
+        assertFalse("正文不许出现地址原文（玩家面措辞无地址）：$text", text.contains("/data/"))
+        val without = UpdateChannelReadout.of(copy, snapshot())
+        assertFalse("没有待装包就不多这一行：${without.allPlayerText()}", without.allPlayerText().contains("等待安装"))
+        assertEquals("没有登记时路径为空（按钮不出现）", "", without.stagedApkPath)
+    }
+
     // ------------------------------------------------------------------
     // 病 ③：检查结果的形状
     // ------------------------------------------------------------------
@@ -286,8 +304,8 @@ class UpdateChannelReadoutTest {
 
     @Test
     fun `手动检查两种结论都把提醒条数带上屏`() {
-        assertFalse(UpdateUiText.upToDateReport(copy, 8L, 1199L).contains("没看懂"))
-        val withNotes = UpdateUiText.upToDateReport(copy, 8L, 1199L, 3)
+        assertFalse(UpdateUiText.upToDateReport(copy).contains("没看懂"))
+        val withNotes = UpdateUiText.upToDateReport(copy, 3)
         assertTrue("已经是最新版也要看得见提醒：$withNotes", withNotes.contains("有 3 处内容"))
         val failed = UpdateUiText.checkFailedReport(copy, 2, listOf("a.example：连不上"), 1)
         assertTrue("连不上的报障也要带提醒数量：$failed", failed.contains("有 1 处内容"))
@@ -381,7 +399,7 @@ class UpdateChannelReadoutTest {
 
     @Test
     fun `跳过的两处话术引用同一条恢复口句子`() {
-        val toast = UpdateUiText.skippedToast(copy, 9L)
+        val toast = UpdateUiText.skippedToast(copy)
         val note = UpdateUiText.skippedVersionNote(copy, 9L)!!
         assertTrue(toast.contains(copy.reminderRestorePhrase))
         assertTrue(note.contains(copy.reminderRestorePhrase))
@@ -426,15 +444,17 @@ class UpdateChannelReadoutTest {
             shellCode.any { it.contains("lastFailedDownload(this)?.kind") },
         )
         // 「按当前语言现取名字」是 U3b 指定的正路（新增的下载进度条表头也走它），不是回读单子上的旧标签：
-        // 只把这一处点名放行，其余任何 `.label` 读取仍旧一律报红。
+        // 只把这两处点名放行，其余任何 `.label` 读取仍旧一律报红。
+        //
+        // 放行②：素材直投（843219cb4「素材直接导入」）的 `material.label` 是**玩家在 SAF 里选中的
+        // 文件名/目录名**（`postMaterialReport(slot, copy, material.label, report)` → 报告里的
+        // sourceLabel/name），由玩家提供、不随界面语言变，与 `DownloadJob.label`「下单那一刻的
+        // 语言被钉进单子」的失效模式无关 —— 这条闸管的是后者，故点名放行而不是改语义。
         assertTrue("进度表头要按当前语言现取名字", shellCode.any { it.contains("UpdateProgressText.labelFor(") })
-        // `MaterialSource.label` 是素材来源显示名（BGM 地点名/文件夹名），不是下载单
-        // `DownloadJob.label`（成单那一刻的本地化文案）。这里只点名放行这一种，其余
-        // `.label` 读取（尤其 DownloadJob.label）仍旧一律报红。
         val staleLabelReads = shellCode.filter {
             it.contains(".label") &&
                 !it.contains("UpdateProgressText.labelFor(") &&
-                !it.contains("material.label")
+                !it.contains("postMaterialReport(")
         }
         assertTrue(
             "设置页不许再回头读单子上那个旧语言的标签（label 只在成单那一刻有语言意义）：" +
@@ -477,7 +497,7 @@ class UpdateChannelReadoutTest {
         val manual = shell.substringAfter("fun checkNowInteractive").substringBefore("private fun runCheck")
         assertTrue(manual.contains("showOfferDialog(activity, offer, result.warnings)"))
         assertTrue(manual.contains("checkFailedReport(copy, addressCount"))
-        assertTrue(manual.contains("upToDateReport(copy, current, data"))
+        assertTrue(manual.contains("upToDateReport(copy, result.warnings.size"))
         assertTrue(manual.contains("checkCrashedReport(copy, error)"))
         assertEquals("结果与抛错两条出口各收回一次进行中态", 2, Regex("onSettled\\(\\)").findAll(manual).count())
         assertTrue("拿不到闸要给一句话而不是静默吞掉点击", manual.contains("checkBusyReport("))

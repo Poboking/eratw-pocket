@@ -98,6 +98,23 @@ data class PortraitShellCopy(
     val settingsButton: String,
     /** 右栏候选计数：{0} 枚数。 */
     val railCountFormat: String,
+    /** 右栏候选计数 + 自定义过滤隐藏数：{0} 可点枚数、{1} 隐藏枚数。 */
+    val railHiddenCountFormat: String,
+    /** 右栏常用区（置顶区）的小标题。 */
+    val railPinnedHeader: String,
+    /**
+     * 常用区里**快捷宏小节**的小标题（横屏右栏常用区、竖屏指令盘顶共用一份）。
+     *
+     * 快捷宏 = 玩家自定义的 era 指令集串（`\n` 分段连发、`\e` 快进），与 `macro.txt` 的
+     * F1–F12 键盘宏是两套东西，文案只描述「按钮区」的用途，不解释语法（语法在设置页）。
+     */
+    val railQuickMacroHeader: String,
+    /** 右栏长按菜单：把按钮置顶进常用区。 */
+    val railChipMenuPin: String,
+    /** 右栏长按菜单：把按钮移出常用区。 */
+    val railChipMenuUnpin: String,
+    /** 右栏长按菜单：把这枚按钮从右栏隐藏（自定义过滤黑名单）。 */
+    val railChipMenuHide: String,
     /** 宏条组名缺省字。 */
     val macroGroupFallback: String,
     /** 长按提示卡底部的关闭提示。 */
@@ -216,6 +233,12 @@ data class PortraitShellCopy(
             continueButtonA11y = "继续，翻到下一屏",
             settingsButton = "设置",
             railCountFormat = "{0} 项可点",
+            railHiddenCountFormat = "{0} 项可点 · 已隐藏 {1}",
+            railPinnedHeader = "常用",
+            railQuickMacroHeader = "快捷宏",
+            railChipMenuPin = "置顶到常用",
+            railChipMenuUnpin = "取消置顶",
+            railChipMenuHide = "从右栏隐藏",
             macroGroupFallback = "宏",
             tooltipDismissHint = "点任意处关闭",
             inputToggleExpanded = "键盘(已展开)",
@@ -282,6 +305,12 @@ data class PortraitShellCopy(
             continueButtonA11y = "Continue, go to the next screen",
             settingsButton = "Settings",
             railCountFormat = "{0} tappable",
+            railHiddenCountFormat = "{0} tappable · {1} hidden",
+            railPinnedHeader = "Favorites",
+            railQuickMacroHeader = "Quick Macros",
+            railChipMenuPin = "Pin to Favorites",
+            railChipMenuUnpin = "Unpin",
+            railChipMenuHide = "Hide from rail",
             macroGroupFallback = "Macros",
             tooltipDismissHint = "Tap anywhere to close",
             inputToggleExpanded = "Keyboard (shown)",
@@ -351,6 +380,12 @@ data class PortraitShellCopy(
             continueButtonA11y = "続ける、次の画面へ",
             settingsButton = "設定",
             railCountFormat = "{0} 個選択可能",
+            railHiddenCountFormat = "{0} 個選択可能 · 非表示 {1} 個",
+            railPinnedHeader = "よく使う",
+            railQuickMacroHeader = "クイックマクロ",
+            railChipMenuPin = "よく使うに固定",
+            railChipMenuUnpin = "固定を解除",
+            railChipMenuHide = "右欄から隠す",
             macroGroupFallback = "マクロ",
             tooltipDismissHint = "タップで閉じます",
             inputToggleExpanded = "キーボード（表示中）",

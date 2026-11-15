@@ -132,7 +132,8 @@ class UpdateUiTest {
         // 章不合的说明文案里不许漏出 markdown 强调记号（屏上没有渲染器）。
         assertTrue(lines.none { it.contains("**") })
         // 数据行照常出现（zip 不经安装器，不受覆盖升级互斥影响）。
-        assertTrue(lines.any { it.contains("数据包 1200") })
+        // 数据行的内部版本号不进玩家面：只讲「有一包、多大、什么时候生效」。
+        assertTrue(lines.any { it.contains("数据包") && it.contains("下次启动") && !it.contains("1200") })
     }
 
     @Test
@@ -256,10 +257,11 @@ class UpdateUiTest {
     }
 
     @Test
-    fun `最新版读数把整包与数据两个版本都报出来`() {
-        val report = UpdateUiText.upToDateReport(copy, 8L, 1199L)
-        assertTrue(report.contains("整包 8"))
-        assertTrue(report.contains("数据 1199"))
+    fun `最新版读数只给结论不报内部版本号`() {
+        val report = UpdateUiText.upToDateReport(copy)
+        assertTrue(report.contains("最新版本"))
+        assertFalse("整包 versionCode 不进玩家面：$report", report.contains("整包 8"))
+        assertFalse("数据版本读数不进玩家面：$report", report.contains("数据 1199"))
     }
 
     // ------------------------------------------------------------------
@@ -424,8 +426,9 @@ class UpdateUiTest {
             assertTrue("${c.lang} 的报障要报出源条数：$failed", failed.contains("2"))
             assertTrue("${c.lang} 的报障要逐条点名：$failed", failed.contains("a.example") && failed.contains("b.example"))
             assertTrue("${c.lang} 的报障要把提醒条数带上：$failed", failed.contains("1"))
-            val latest = UpdateUiText.upToDateReport(c, 8L, 1199L)
-            assertTrue("${c.lang} 的最新版读数两个都要报：$latest", latest.contains("8") && latest.contains("1199"))
+            val latest = UpdateUiText.upToDateReport(c)
+            assertTrue("${c.lang} 的最新版读数要给结论：$latest", latest.isNotBlank())
+            assertFalse("${c.lang} 的最新版读数不报内部数据版本：$latest", latest.contains("1199"))
             val crashed = UpdateUiText.checkCrashedReport(c, IllegalStateException("boom"))
             assertTrue("${c.lang} 的抛错句要留异常名给取证：$crashed", crashed.contains("IllegalStateException"))
             // 「没配源」与「连不上」的处理人不同，三语都不许串（中文侧是既有那条用例）。
@@ -437,7 +440,8 @@ class UpdateUiTest {
     @Test
     fun `跳过提醒的话术三语都引用同一条恢复口句子`() {
         listOf(enCopy, jaCopy).forEach { c ->
-            assertTrue("${c.lang} 的 Toast 要带上恢复口：${c.skippedToastFormat}", UpdateUiText.skippedToast(c, 9L).contains(c.reminderRestorePhrase))
+            val toast = UpdateUiText.skippedToast(c)
+            assertTrue("${c.lang} 的 Toast 要带上恢复口：${c.skippedToastFormat}", toast.contains(c.reminderRestorePhrase))
             val note = UpdateUiText.skippedVersionNote(c, 9L)
             assertNotNull(note)
             assertTrue("${c.lang} 的设置页小字要带上同一个恢复口", note!!.contains(c.reminderRestorePhrase))

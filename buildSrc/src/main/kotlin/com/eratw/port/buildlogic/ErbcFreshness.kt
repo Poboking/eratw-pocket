@@ -53,9 +53,18 @@ fun sha256Of(file: File): String {
 fun ByteArray.hexLower(): String = joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
 /**
+ * 编译器源码根集合（相对仓库根），与 erbcc 的 `ErbcCompilerDigest.SOURCE_ROOTS_REL` 同值同序：
+ * core-vm 主源集 + erbcc 驱动两棵整树。缺一根 = 判据缺一角，[compilerDigestOf] 直接抛
+ * [GradleException]，不许静默降级成单根继续算。
+ */
+private val COMPILER_SOURCE_ROOTS = listOf("core-vm/src/main/kotlin", "tools/erbcc/src/main/kotlin")
+
+/**
  * 编译器指纹（CMP-66 的另一半）：与 erbcc 的 `ErbcCompilerDigest` **同口径** ——
- * 取 `core-vm/src/main/kotlin` 整树 .kt（编译链跨 compile/code/expr/lexer/stmt/vars 等包，
- * 逐包枚举会漏），按相对**仓库根**的路径（`\`→`/`）字典序，逐文件
+ * 取 [COMPILER_SOURCE_ROOTS] 两棵整树 .kt（编译链跨 compile/code/expr/lexer/stmt/vars 等包，
+ * 逐包枚举会漏；erbcc 驱动 `CorpusCompile`/`CorpusScan` 也是「读语料 → 落产物」的编排者，
+ * 改驱动不改 core-vm 同样改变落盘方式），按相对**仓库根**的路径（`\`→`/`）做**合流后全局**
+ * 字典序，逐文件
  * `u32be(路径字节数) ‖ 路径 UTF-8 ‖ u32be(文件字节数) ‖ 文件字节` 喂 SHA-256。
  *
  * 为什么在构建逻辑里重写一遍而**不**依赖 erbcc 的类：app 的 buildscript classpath 上没有
@@ -64,21 +73,24 @@ fun ByteArray.hexLower(): String = joinToString("") { "%02x".format(it.toInt() a
  * **换文件集或换编码口径必须两处一起改**（erbc 的 `ErbcCompilerDigest.kt` 与本函数），
  * 否则清单与打包期会互相判红。
  *
- * @param repoRoot 仓库根（核心源码树 `core-vm/src/main/kotlin` 挂在其下）。
+ * @param repoRoot 仓库根（[COMPILER_SOURCE_ROOTS] 两棵源码树挂在其下）。
  * @return digest（小写十六进制）与参与计算的文件数
  */
 fun compilerDigestOf(repoRoot: File): Pair<String, Int> {
-    val srcRoot = File(repoRoot, "core-vm/src/main/kotlin")
-    if (!srcRoot.isDirectory) {
-        throw GradleException("找不到编译器源码树 $srcRoot：compiler-digest 没有判据")
+    val srcRoots = COMPILER_SOURCE_ROOTS.map { File(repoRoot, it) }
+    for (srcRoot in srcRoots) {
+        if (!srcRoot.isDirectory) {
+            throw GradleException("找不到编译器源码树 $srcRoot：compiler-digest 没有判据")
+        }
     }
-    val files = srcRoot.walkTopDown()
-        .filter { it.isFile && it.name.endsWith(".kt") }
-        .map { it.toRelativeString(repoRoot).replace('\\', '/') to it }
-        .sortedBy { it.first }
-        .toList()
+    val files = srcRoots.flatMap { srcRoot ->
+        srcRoot.walkTopDown()
+            .filter { it.isFile && it.name.endsWith(".kt") }
+            .map { it.toRelativeString(repoRoot).replace('\\', '/') to it }
+            .toList()
+    }.sortedBy { it.first }
     if (files.isEmpty()) {
-        throw GradleException("编译器源码树 $srcRoot 里没有 .kt 文件：compiler-digest 没有判据")
+        throw GradleException("编译器源码树 $srcRoots 里没有 .kt 文件：compiler-digest 没有判据")
     }
     val digest = MessageDigest.getInstance("SHA-256")
     for ((rel, file) in files) {
@@ -107,13 +119,16 @@ fun compilerDigestOf(repoRoot: File): Pair<String, Int> {
  * 2. **产物自证**：`artifact erbc.v1/program.erbc <bytes> <sha256>` 与磁盘字节逐位一致。
  * 3. **源 sha**：`source <rel> <bytes> <sha256>` 与语料根的**当前**文件逐个对账，文件集
  *    （增/删）也必须一致 —— 语料改过而没重编 ⇒ 拒绝。
- * 4. **编译器指纹**：`compiler-digest` 必须等于当前 `core-vm/src/main/kotlin` 整树重算值
+ * 4. **编译器指纹**：`compiler-digest` 必须等于当前两根整树（`core-vm/src/main/kotlin` +
+ *    `tools/erbcc/src/main/kotlin`）的重算值
  *    （[compilerDigestOf]）—— 编译器改过而没重编 ⇒ 拒绝。缺这一行（旧格式/旧编译器产物）
  *    同样拒绝：语料摘要与产物摘要在「只有编译器换了」时全都对得上，这一行是唯一判据。
  * 5. **语料补丁对账**：manifest 末尾的 `corpus-patch <id> <相对路径> <坏版sha> <修后sha>`
- *    追加行（compileCorpus 套补丁后写入）是唯一的「编译期改写」豁免口 —— 某源文件
- *    磁盘=坏版 sha 且清单=修后版 sha 且两侧都与留痕行一致时按已应用放行（真语料只读，
- *    补丁只作用于编译期 staging 副本，磁盘慢一步是预期形状）；此外的任何漂移照旧拒绝。
+ *    追加行（compileCorpus 套补丁后写入）是唯一的「编译期改写」豁免口 —— 同一相对路径的
+ *    多条留痕按「本环坏版 sha == 上一环修后 sha」串成一条链（CB-006 → CB-008 即同文件
+ *    先后两笔），磁盘 sha 从链头或链中某一跳起步、逐环走到链尾且终点等于清单登记的 sha
+ *    时按已应用放行（真语料只读，补丁只作用于编译期 staging 副本，磁盘慢一步是预期形状）；
+ *    断链 / 双头 / 终点对不上等此外的任何漂移照旧拒绝。单笔时退化成原来的单跳判据。
  *
  * @param corpusRoot 优先用调用方给的「本次随包语料根」（`<gameRoot>/ERB`）；给不出时退回
  *   manifest 里登记的 `corpus-root`（编译机路径，同一台机器上可用）。
@@ -311,17 +326,28 @@ fun verifyErbcFreshness(
         if (!f.isFile || bytes == null) {
             return reject("语料文件缺失或 manifest 行结构不对：source $rel")
         }
-        val trace = corpusPatches.firstOrNull { it.rel == rel }
+        val traces = corpusPatches.filter { it.rel == rel }
         val actualSha = sha256Of(f)
-        val patchReconciled = trace != null &&
-            actualSha.equals(trace.badSha, ignoreCase = true) &&
-            sha.equals(trace.fixedSha, ignoreCase = true)
+        // 同一 target 允许多笔补丁串成链（CB-006 → CB-008 就是同一份 ERB 上先后两笔）：
+        // 磁盘=链头 bad、清单=链尾 fixed，中间按「本环 bad == 上一环 fixed」逐环相接。
+        // 单笔时本循环退化成原来的单跳判据；断链、双头、终点对不上都落回大小与 sha 判红。
+        // 每环只取未用过的留痕，traces 有限 ⇒ 即使留痕成环也不会死循环。
+        var cursor = actualSha
+        val chain = ArrayList<CorpusPatchTrace>()
+        while (true) {
+            val next = traces.firstOrNull { t ->
+                chain.none { it === t } && t.badSha.equals(cursor, ignoreCase = true)
+            } ?: break
+            chain.add(next)
+            cursor = next.fixedSha
+        }
+        val patchReconciled = chain.isNotEmpty() && cursor.equals(sha, ignoreCase = true)
         if (patchReconciled) {
             // 编译期补丁的预期形状：磁盘仍是病灶版（语料根只读，补丁只在 staging 副本上生效）、
-            // 清单登记修后版，两侧 sha 都与留痕行逐字一致才豁免；豁免口只此一处。
+            // 清单登记链尾修后版，整条链的 sha 与留痕行逐字一致才豁免；豁免口只此一处。
             logger.lifecycle(
-                "stageGameAssets: CMP-66 语料补丁对账：$rel 磁盘=病灶版 sha（${trace.id} 已在编译期" +
-                    "staging 副本应用，manifest 登记修后版）→ 按 corpus-patch 留痕放行",
+                "stageGameAssets: CMP-66 语料补丁对账：$rel 磁盘=病灶版 sha（${chain.joinToString("→") { it.id }}" +
+                    " 已在编译期 staging 副本按序应用，manifest 登记链尾修后版）→ 按 corpus-patch 留痕放行",
             )
             reconciled++
         } else {

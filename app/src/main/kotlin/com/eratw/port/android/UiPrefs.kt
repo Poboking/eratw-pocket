@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import com.eratw.port.core.host.ConsoleOption
 import com.eratw.port.core.lexer.LangVariant
 import com.eratw.port.core.update.DataArtifactKind
 import com.eratw.port.core.update.MirrorHealth
@@ -47,7 +48,10 @@ data class FontColumnsOption(
  *     （「显示大小」档，1 = 跟随 `FONT SIZE`）；
  *   * [screenFit] → `CanvasConsoleView(columnGuardEnabled = …)` 的列数守护开关。
  *     一屏一帧（`frameGateEnabled`）仍是装配参数，但不是壳层偏好：固定用生产缺省
- *     （见 `LineBufferConsoleSink` 的构造参数）。
+ *     （见 `LineBufferConsoleSink` 的构造参数）；
+ *   * [contentMarginFraction] → `CanvasConsoleView(contentMarginFraction = …)` 的
+ *     **画面左右留白居中档位**（圆屏适配；解算收口在 `ScreenLayout.resolve` 的
+ *     `contentMarginPx`，守护看去留白宽继续保列数）。
  *
  * ## 口径
  *   * 不缓存：每次现读 SharedPreferences（一次进程内 XML 快照，微秒量级），
@@ -98,9 +102,6 @@ object UiPrefs {
     /** 右侧选项栏缺省可见（用户可随时用螺旋图标收起，状态记忆）。 */
     const val DEFAULT_OPTION_RAIL: Boolean = true
 
-    /** 「更精简的游戏选项」缺省**关**：关 = 右侧栏照原样显示全部识别结果。 */
-    const val DEFAULT_LEAN_OPTIONS: Boolean = false
-
     /**
      * 「键入回显复刻」缺省**关**：关 = 点选项后玩家看不到那行所选编号
      * （玩家反馈「选口上剧本后最新一行冒数字、整屏跟着抖」）；开 = 原版
@@ -139,10 +140,51 @@ object UiPrefs {
      */
     const val DEFAULT_DISABLE_BAD_APPLE: Boolean = true
 
+    /**
+     * 长页忙碌提示（「少女祈祷中」横带）缺省**开**。
+     *
+     * 只影响**观感**：一页脚本算满 1 秒后，内容区最下面一行显示一条居中呼吸的
+     * 「少女祈祷中…」；页一交付/进入等待就消失。它不打印行、不改行缓冲，关掉也
+     * 只少一层像素（内容与脚本语义逐字不变）。阈值与形态见
+     * `com.eratw.port.core.host.BusyIndicator.MIN_ELAPSED_MS` 与 `BusyIndicatorBand`。
+     */
+    const val DEFAULT_BUSY_INDICATOR: Boolean = true
+    /** RT2 Mod 运行时总闸缺省：关（装配链一次都不进，行为与无 mod 支持逐字节等价）。 */
+    const val DEFAULT_MOD_RUNTIME: Boolean = false
+
+    /**
+     * 画面左右留白居中缺省：**关**（0 = 满宽，全部读数与本功能加入前逐值相同）。
+     * 解算语义见 `ScreenLayout.resolve` 的 `contentMarginPx`；档位见 [CONTENT_MARGIN_OPTIONS]。
+     */
+    const val DEFAULT_CONTENT_MARGIN_FRACTION: Float = 0f
+
+    /** 留白档位：关（= [DEFAULT_CONTENT_MARGIN_FRACTION]，满宽）。 */
+    const val CONTENT_MARGIN_OFF: Float = 0f
+    /** 留白档位：小（每侧 4%，字号 ≈ ×0.92）。 */
+    const val CONTENT_MARGIN_SMALL: Float = 0.04f
+    /** 留白档位：中（每侧 8%，字号 ≈ ×0.84）。 */
+    const val CONTENT_MARGIN_MEDIUM: Float = 0.08f
+    /** 留白档位：大（每侧 12%，字号 ≈ ×0.76）。上限依据：守护看去留白宽仍保 136 列且可读。 */
+    const val CONTENT_MARGIN_LARGE: Float = 0.12f
+
+    /**
+     * 留白档位表（每侧占物理内容宽的比例）：关 / 小 / 中 / 大。
+     * 档位值是白名单（读取不认识回落缺省），新增档 = 改这一处 + 设置页文案。
+     */
+    val CONTENT_MARGIN_OPTIONS: List<Float> = listOf(
+        CONTENT_MARGIN_OFF,
+        CONTENT_MARGIN_SMALL,
+        CONTENT_MARGIN_MEDIUM,
+        CONTENT_MARGIN_LARGE,
+    )
+
     private const val KEY_FONT_COLUMNS = "font_columns"
     private const val KEY_OPTION_RAIL = "option_rail"
     private const val KEY_DISABLE_BAD_APPLE = "disable_bad_apple"
-    private const val KEY_LEAN_OPTIONS = "lean_options"
+    /** 长页忙碌提示开关：开 = 长页最下面一行画「少女祈祷中」，关 = 不画。 */
+    private const val KEY_BUSY_INDICATOR = "busy_indicator"
+    /** RT2 Mod 运行时总闸（开发者面，缺省关）：开 = 会话装配走完整 mod 链。 */
+    private const val KEY_MOD_RUNTIME = "mod_runtime"
     /** 列数守护开关：开 = 屏宽铺不下选定列数时压小字号保地图；关 = 字号优先、地图可能折行。 */
     private const val KEY_SCREEN_FIT = "screen_fit"
     private const val KEY_LIVE_REFLOW = "live_reflow"
@@ -151,8 +193,38 @@ object UiPrefs {
     private const val KEY_LOADING_STYLE = "loading_style"
     private const val KEY_INPUT_KNOB = "input_knob"
 
+    /**
+     * 画面左右留白居中档位（每侧留白 = 物理内容宽 × 比例，0 = 关）。
+     * 移植壳的显示适配，不进 `emuera.config`（与 `WINDOW WIDTH` 零交集）。
+     */
+    private const val KEY_CONTENT_MARGIN_FRACTION = "content_margin_fraction"
+
     /** 右侧选项栏按钮大小档（小/标准/大/特大）。 */
     private const val KEY_RAIL_BUTTON_SIZE = "rail_button_size"
+
+    /** 右侧选项栏布局模式（行内横滑/竖列折行/完全展开）。 */
+    private const val KEY_RAIL_LAYOUT = "rail_layout"
+
+    /** 每行最多按钮数（三模式通用：横滑=超过才滚，竖列/展开=按它折行/定宽）。 */
+    private const val KEY_RAIL_CHIPS_PER_ROW = "rail_chips_per_row"
+
+    /** 自定义过滤的「隐藏无编号按钮」规则开关（缺省关；黑名单独立于它生效）。 */
+    private const val KEY_RAIL_HIDE_UNNUMBERED = "rail_hide_unnumbered"
+
+    /** 自定义过滤：从右栏隐藏的按钮标签黑名单（StringSet，写入侧吃 [RAIL_HIDDEN_LABELS_CAP] 上限）。 */
+    private const val KEY_RAIL_HIDDEN_LABELS = "rail_hidden_labels"
+
+    /** 常用置顶的提交值有序列表（编码串，写入侧吃 [RAIL_PINNED_CAP] 上限、LRU 淘汰）。 */
+    private const val KEY_RAIL_PINNED = "rail_pinned"
+
+    /** 常用置顶的历史候选（值+名字，编码串，写入侧吃 [RAIL_HISTORY_CAP] 上限）。 */
+    private const val KEY_RAIL_HISTORY = "rail_history"
+
+    /**
+     * 快捷宏（名字+指令集串，编码串，写入侧吃 [RailOptionRules.QUICK_MACRO_CAP] 上限）。
+     * 与 [KEY_RAIL_PINNED]/[KEY_RAIL_HISTORY] 同族：一行编码串，读端坏行跳过不炸。
+     */
+    private const val KEY_QUICK_MACROS = "quick_macros"
 
     /** 自动更新总开关（缺省开；真关在包里没源，见 [DEFAULT_AUTO_UPDATE]）。 */
     private const val KEY_AUTO_UPDATE = "auto_update"
@@ -180,6 +252,12 @@ object UiPrefs {
 
     /** 上一次心跳成功落下的 UTC 日：节流状态，不是设置。 */
     private const val KEY_PLAYER_STATS_LAST_DAY = "player_stats_last_day"
+
+    /**
+     * 首启教程（复古像素指南）是否已展示过：缺省 false = 首次安装首次进入时弹一次。
+     * 属于引导完成态而非玩家设置，恢复默认时**不清**（否则老玩家每次全部重置都被教程拦一次）。
+     */
+    private const val KEY_TUTORIAL_SHOWN = "tutorial_shown"
 
     /** 镜像健康表：每行「归一地址 / 连续失败数 / 最后成功时刻」，见 [encodeMirrorHealth]。 */
     private const val KEY_MIRROR_HEALTH = "mirror_health"
@@ -239,6 +317,211 @@ object UiPrefs {
     /** 写选项按钮大小档（随改随存：纯壳层几何，不需要重开会话）。 */
     fun setRailButtonSize(context: Context, size: RailButtonSize) {
         prefs(context).edit().putString(KEY_RAIL_BUTTON_SIZE, size.stored).apply()
+    }
+
+    /**
+     * 右侧选项栏布局模式 —— 三档都按游戏显示行分组、都吃「每行最多按钮数」（[railChipsPerRow]）：
+     * - [RailLayoutMode.ROW_SCROLL] 行内横滑（缺省）：一条游戏行一行，≤N 枚均分宽度，>N 枚横向滚动；
+     * - [RailLayoutMode.COLUMN] 竖列：同一游戏行超过 N 枚就折到下一行，行内仍均分宽度，不横滑；
+     * - [RailLayoutMode.EXPANDED] 完全展开：游戏行分组保留，格子按 N 枚定宽、左起排不拉伸、装不下折行。
+     *
+     * 档名/说明文案在设置页三语表（SettingsStrings.railLayoutLabel 一族），这里只存
+     * [stored] 稳定串 —— 与 [RailButtonSize] 的「stored 落盘、文案分离」同一纪律。
+     */
+    enum class RailLayoutMode(val stored: String) {
+        ROW_SCROLL("row_scroll"),
+        COLUMN("column"),
+        EXPANDED("expanded"),
+        ;
+
+        companion object {
+            fun fromStored(value: String?): RailLayoutMode =
+                entries.firstOrNull { it.stored == value } ?: DEFAULT_RAIL_LAYOUT
+        }
+    }
+
+    /** 布局模式缺省档：行内横滑（＝本设置项加入前唯一一档，老玩家零观感变化）。 */
+    val DEFAULT_RAIL_LAYOUT: RailLayoutMode = RailLayoutMode.ROW_SCROLL
+
+    /** 每行最多按钮数的取值范围（闭区间）。 */
+    const val RAIL_CHIPS_PER_ROW_MIN: Int = 1
+    const val RAIL_CHIPS_PER_ROW_MAX: Int = 6
+
+    /** 每行最多按钮数缺省：3（＝右栏「一行三枚」的既有几何）。 */
+    const val DEFAULT_RAIL_CHIPS_PER_ROW: Int = 3
+
+    /** 常用置顶上限：再置顶就 LRU 淘汰最早的一条。 */
+    const val RAIL_PINNED_CAP: Int = 8
+
+    /** 置顶历史候选上限：只记最近见过的带编号指令。 */
+    const val RAIL_HISTORY_CAP: Int = 32
+
+    /** 隐藏标签黑名单上限：满了之后新隐藏不再入表（提示玩家先恢复一些）。 */
+    const val RAIL_HIDDEN_LABELS_CAP: Int = 64
+
+    /** 读右栏布局模式（缺省 [DEFAULT_RAIL_LAYOUT]；存的值不认识时回落缺省）。 */
+    fun railLayout(context: Context): RailLayoutMode =
+        RailLayoutMode.fromStored(prefs(context).getString(KEY_RAIL_LAYOUT, null))
+
+    /** 写右栏布局模式（随改随存：纯壳层摆法，不需要重开会话）。 */
+    fun setRailLayout(context: Context, mode: RailLayoutMode) {
+        prefs(context).edit().putString(KEY_RAIL_LAYOUT, mode.stored).apply()
+    }
+
+    /** 读每行最多按钮数（夹在 [RAIL_CHIPS_PER_ROW_MIN]..[RAIL_CHIPS_PER_ROW_MAX]，坏值回落缺省）。 */
+    fun railChipsPerRow(context: Context): Int =
+        prefs(context).getInt(KEY_RAIL_CHIPS_PER_ROW, DEFAULT_RAIL_CHIPS_PER_ROW)
+            .coerceIn(RAIL_CHIPS_PER_ROW_MIN, RAIL_CHIPS_PER_ROW_MAX)
+
+    /** 写每行最多按钮数（随改随存：纯壳层几何，不需要重开会话）。 */
+    fun setRailChipsPerRow(context: Context, perRow: Int) {
+        prefs(context).edit()
+            .putInt(KEY_RAIL_CHIPS_PER_ROW, perRow.coerceIn(RAIL_CHIPS_PER_ROW_MIN, RAIL_CHIPS_PER_ROW_MAX))
+            .apply()
+    }
+
+    /**
+     * 「右栏过滤」的规则开关：隐藏**无编号**按钮（立绘开关、【＋】、[CONFIG] 这类屏上不印
+     * 自己编号的小开关）。缺省关；判据是
+     * [com.eratw.port.render.view.LeanOptionFilter.isCommonCommand]（屏上自印编号的
+     * `移动[400]` 与 `[100] - 睁开眼睛` 两形都算），与标签黑名单（[railHiddenLabels]）叠加生效，互不依赖。
+     */
+    fun railHideUnnumbered(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_RAIL_HIDE_UNNUMBERED, false)
+
+    /** 写「隐藏无编号按钮」规则开关（随改随存，下一次右栏刷新即生效）。 */
+    fun setRailHideUnnumbered(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_RAIL_HIDE_UNNUMBERED, enabled).apply()
+    }
+
+    /** 读隐藏标签黑名单（缺省空集）。 */
+    fun railHiddenLabels(context: Context): Set<String> =
+        prefs(context).getStringSet(KEY_RAIL_HIDDEN_LABELS, emptySet()) ?: emptySet()
+
+    /**
+     * 把一枚按钮的标签加进隐藏黑名单（上限 [RAIL_HIDDEN_LABELS_CAP]，满了不追加 ——
+     * 玩家先在设置页恢复几条再试）。返回是否真的写进去了。
+     */
+    fun addRailHiddenLabel(context: Context, label: String): Boolean {
+        if (label.isEmpty()) return false
+        val current = railHiddenLabels(context)
+        if (label in current || current.size >= RAIL_HIDDEN_LABELS_CAP) return false
+        prefs(context).edit().putStringSet(KEY_RAIL_HIDDEN_LABELS, current + label).apply()
+        return true
+    }
+
+    /** 从隐藏黑名单恢复一枚按钮（标签不在表里时是空操作）。 */
+    fun removeRailHiddenLabel(context: Context, label: String) {
+        val current = railHiddenLabels(context)
+        if (label in current) {
+            prefs(context).edit().putStringSet(KEY_RAIL_HIDDEN_LABELS, current - label).apply()
+        }
+    }
+
+    /** 清空隐藏标签黑名单。 */
+    fun clearRailHiddenLabels(context: Context) {
+        prefs(context).edit().remove(KEY_RAIL_HIDDEN_LABELS).apply()
+    }
+
+    /** 读常用置顶的提交值有序列表（越靠后越新；缺省空表）。 */
+    fun railPinned(context: Context): List<String> =
+        RailOptionRules.decodeStringList(prefs(context).getString(KEY_RAIL_PINNED, null).orEmpty())
+
+    /** 写常用置顶有序列表（调用方负责先过 [RailOptionRules.pinTo] 的上限与去重）。 */
+    fun setRailPinned(context: Context, values: List<String>) {
+        prefs(context).edit().putString(KEY_RAIL_PINNED, RailOptionRules.encodeStringList(values)).apply()
+    }
+
+    /** 置顶一枚按钮（LRU：已存在则挪到最新，超 [RAIL_PINNED_CAP] 淘汰最早一条）。 */
+    fun pinRailOption(context: Context, submitValue: String) {
+        setRailPinned(context, RailOptionRules.pinTo(railPinned(context), submitValue, RAIL_PINNED_CAP))
+    }
+
+    /** 取消置顶一枚按钮（不在表里时是空操作）。 */
+    fun unpinRailOption(context: Context, submitValue: String) {
+        setRailPinned(context, RailOptionRules.unpinFrom(railPinned(context), submitValue))
+    }
+
+    /** 清空常用置顶。 */
+    fun clearRailPinned(context: Context) {
+        prefs(context).edit().remove(KEY_RAIL_PINNED).apply()
+    }
+
+    /** 读置顶历史候选（越靠后越新）。 */
+    fun railHistory(context: Context): List<RailOptionRules.RailHistoryEntry> =
+        RailOptionRules.decodeHistory(prefs(context).getString(KEY_RAIL_HISTORY, null).orEmpty())
+
+    /**
+     * 把这一屏识别出的按钮并入历史候选：只记**带编号指令**（[RailOptionRules.pinnableMaskOf]，
+     * 这是历史候选的收录面，不是右栏长按菜单的置顶判据 —— 菜单收全部非色块），按提交值
+     * 去重、名字取最新。调用点在选项指纹翻转时（换屏才合并一次，不是每 250ms）。
+     */
+    fun recordRailHistory(context: Context, options: List<ConsoleOption>) {
+        val merged = RailOptionRules.mergeHistory(
+            railHistory(context),
+            options,
+            RAIL_HISTORY_CAP,
+        )
+        prefs(context).edit().putString(KEY_RAIL_HISTORY, RailOptionRules.encodeHistory(merged)).apply()
+    }
+
+    /**
+     * 补记**一条**历史候选（长按菜单置顶时调用）：菜单允许钉无编号按钮，这类值不在
+     * [recordRailHistory] 的收录面里，不补记的话设置页已置顶列表只能显示兜底
+     * 「编号 {0}」。空名不记（裸数字按钮的标签可能是空串，记了也只是空芯片）。
+     */
+    fun recordRailHistoryEntry(context: Context, submitValue: String, label: String) {
+        if (submitValue.isEmpty() || label.isEmpty()) return
+        val merged = RailOptionRules.mergeHistoryEntry(
+            railHistory(context),
+            RailOptionRules.RailHistoryEntry(submitValue, label),
+            RAIL_HISTORY_CAP,
+        )
+        prefs(context).edit().putString(KEY_RAIL_HISTORY, RailOptionRules.encodeHistory(merged)).apply()
+    }
+
+    /** 清空置顶历史候选。 */
+    fun clearRailHistory(context: Context) {
+        prefs(context).edit().remove(KEY_RAIL_HISTORY).apply()
+    }
+
+    /**
+     * 快捷宏列表（玩家自定义的 era 指令集串，右栏常用区里的按钮，上限
+     * [RailOptionRules.QUICK_MACRO_CAP]）。纯代数在 [RailOptionRules]，这里只做薄存取。
+     */
+    fun quickMacros(context: Context): List<RailOptionRules.QuickMacro> =
+        RailOptionRules.decodeQuickMacros(prefs(context).getString(KEY_QUICK_MACROS, null).orEmpty())
+
+    /** 整表写回（调用方已按上限裁好；写盘口径与置顶/历史同一条 apply）。 */
+    fun setQuickMacros(context: Context, macros: List<RailOptionRules.QuickMacro>) {
+        prefs(context).edit().putString(KEY_QUICK_MACROS, RailOptionRules.encodeQuickMacros(macros)).apply()
+    }
+
+    /**
+     * 新增一条快捷宏。
+     *
+     * @return false = 已满 [RailOptionRules.QUICK_MACRO_CAP] 条或内容为空（**不静默淘汰**
+     *   已有宏：宏是带内容的配置，丢一条玩家会真丢东西），调用方据此提示玩家先删一条。
+     */
+    fun addQuickMacro(context: Context, macro: RailOptionRules.QuickMacro): Boolean {
+        val next = RailOptionRules.addQuickMacro(quickMacros(context), macro) ?: return false
+        setQuickMacros(context, next)
+        return true
+    }
+
+    /** 改第 [index] 条（顺序不变）。 */
+    fun updateQuickMacro(context: Context, index: Int, macro: RailOptionRules.QuickMacro) {
+        setQuickMacros(context, RailOptionRules.updateQuickMacro(quickMacros(context), index, macro))
+    }
+
+    /** 删第 [index] 条。 */
+    fun removeQuickMacro(context: Context, index: Int) {
+        setQuickMacros(context, RailOptionRules.removeQuickMacro(quickMacros(context), index))
+    }
+
+    /** 清空全部快捷宏。 */
+    fun clearQuickMacros(context: Context) {
+        prefs(context).edit().remove(KEY_QUICK_MACROS).apply()
     }
 
     /** 输入栏小抓手在底边的水平位置（0..1，0 = 最左、1 = 最右）；缺省贴右。 */
@@ -332,6 +615,35 @@ object UiPrefs {
     }
 
     /**
+     * 画面左右留白居中档位（每侧留白 = 物理内容宽 × 比例）：缺省 [DEFAULT_CONTENT_MARGIN_FRACTION]。
+     *
+     * 圆屏/圆角屏的壳层显示适配：两侧留黑边、内容居中，列数守护在去留白宽上继续保列数
+     * （字号相应让步）。与 `WINDOW WIDTH`（emuera.config）无关——移植侧显示偏好，
+     * 不进游戏配置链。存放值必须在 [CONTENT_MARGIN_OPTIONS] 里，不认识回落缺省。
+     *
+     * @return 一定是 [CONTENT_MARGIN_OPTIONS] 里的某个值
+     */
+    fun contentMarginFraction(context: Context): Float =
+        readContentMarginFraction(prefs(context))
+
+    /** 写留白档位（重开一局生效；设置页随改随存，与字号档同口径）。 */
+    fun setContentMarginFraction(context: Context, fraction: Float) =
+        writeContentMarginFraction(prefs(context), fraction)
+
+    // 与 liveReflow 同款的 internal read/write 层（以 SharedPreferences 为参、不走 prefs()）：
+    // 纯 JVM 可注入测试桩，公开函数只做 prefs(context) 接线。
+    internal fun readContentMarginFraction(sp: SharedPreferences): Float {
+        val stored = sp.getFloat(KEY_CONTENT_MARGIN_FRACTION, DEFAULT_CONTENT_MARGIN_FRACTION)
+        return if (CONTENT_MARGIN_OPTIONS.any { it == stored }) stored else DEFAULT_CONTENT_MARGIN_FRACTION
+    }
+
+    internal fun writeContentMarginFraction(sp: SharedPreferences, fraction: Float) {
+        val normalized =
+            if (CONTENT_MARGIN_OPTIONS.any { it == fraction }) fraction else DEFAULT_CONTENT_MARGIN_FRACTION
+        sp.edit().putFloat(KEY_CONTENT_MARGIN_FRACTION, normalized).apply()
+    }
+
+    /**
      * 「键入回显复刻」（ECHO-INPUT）开关，缺省 [DEFAULT_ECHO_INPUT]（关）。
      *
      * false = 回显行仍打进逻辑行表、只从上屏帧剔除（玩家看不到编号，脚本侧零偏离）；
@@ -373,28 +685,6 @@ object UiPrefs {
     }
 
     /**
-     * 「更精简的游戏选项」：缺省 [DEFAULT_LEAN_OPTIONS]（关）。
-     *
-     * 开：右侧栏只显示**屏上自带编号**的常用指令（`移动[400]`、`[100] - 睁开眼睛` 两形都算）；
-     * 关：显示 [com.eratw.port.core.host.ConsoleOption] 的全部识别结果（原行为）。
-     *
-     * 过滤只发生在壳层显示端（[com.eratw.port.render.view.LeanOptionFilter]），
-     * 不参与引擎的可点性判定，也不影响正文里的按钮命中。
-     */
-    fun leanOptions(context: Context): Boolean = readLeanOptions(prefs(context))
-
-    /** 写「更精简的游戏选项」开关（随改随存，下一次右侧栏刷新即生效）。 */
-    fun setLeanOptions(context: Context, enabled: Boolean) = writeLeanOptions(prefs(context), enabled)
-
-    // 与 LIVE-REFLOW 同款的 internal read/write 层：纯 JVM 可注入测试桩，公开函数只做接线。
-    internal fun readLeanOptions(sp: SharedPreferences): Boolean =
-        sp.getBoolean(KEY_LEAN_OPTIONS, DEFAULT_LEAN_OPTIONS)
-
-    internal fun writeLeanOptions(sp: SharedPreferences, enabled: Boolean) {
-        sp.edit().putBoolean(KEY_LEAN_OPTIONS, enabled).apply()
-    }
-
-    /**
      * 标题彩蛋（`@BADAPPLE`）是否**屏蔽**：缺省 [DEFAULT_DISABLE_BAD_APPLE]（开 = 屏蔽）。
      *
      * 读点只有一处：`MainActivity` 在 **UI 线程**取好，经 `GameHost` 的构造参数传给
@@ -416,6 +706,84 @@ object UiPrefs {
     internal fun writeDisableBadApple(sp: SharedPreferences, disabled: Boolean) {
         sp.edit().putBoolean(KEY_DISABLE_BAD_APPLE, disabled).apply()
     }
+
+    /**
+     * 长页忙碌提示开关：缺省 [DEFAULT_BUSY_INDICATOR]（开）。
+     *
+     * 与 [disableBadApple] 同一条线程纪律：读点只有一处（`MainActivity` 在 **UI 线程**
+     * 取好、经 `GameHost(busyIndicator = …)` 构造参数传给页中检查点），`GameHost` 内部
+     * 不许再摸偏好表。改完下一局生效（宿主构造期定死，与 liveReflow 同口径）。
+     */
+    fun busyIndicator(context: Context): Boolean = readBusyIndicator(prefs(context))
+
+    /** 写长页忙碌提示开关（下一次装配生效）。 */
+    fun setBusyIndicator(context: Context, enabled: Boolean) =
+        writeBusyIndicator(prefs(context), enabled)
+
+    // 与 LIVE-REFLOW 同款的 internal read/write 层：纯 JVM 可注入测试桩，公开函数只做接线。
+    internal fun readBusyIndicator(sp: SharedPreferences): Boolean =
+        sp.getBoolean(KEY_BUSY_INDICATOR, DEFAULT_BUSY_INDICATOR)
+
+    internal fun writeBusyIndicator(sp: SharedPreferences, enabled: Boolean) {
+        sp.edit().putBoolean(KEY_BUSY_INDICATOR, enabled).apply()
+    }
+
+    /**
+     * RT2 Mod 运行时装配总闸（`wave/mod-b1` 装配链的唯一开关）：缺省 [DEFAULT_MOD_RUNTIME]（关）。
+     *
+     * 与 [disableBadApple] 同一条线程纪律：读点只有一处（`MainActivity` 在 **UI 线程**
+     * 取好，经 `GameHost(modRuntime = ...)` 构造参数传入；装配期在 VM 线程上，那里不许摸偏好表）。
+     * 关态装配链一次都不进（`ModRuntimeHost` 构造次数 == 0），磁盘都不碰。
+     *
+     * **写面归属**：开发者面闸，缺省关。「操作与显示」卡末尾已有玩家开关（2026-11-12
+     * 接线：`SettingsActivity` 的 `modRuntimeTitle/Hint` 行 → [setModRuntime]）；缺省值仍是
+     * 关 —— **打开它是发版决定**，不是随开关一起改的常量。走 [resetAll] 的 `clear()`
+     * 一并恢复缺省。
+     */
+    fun modRuntime(context: Context): Boolean = readModRuntime(prefs(context))
+
+    /** 写 Mod 运行时总闸（随改随存，下一次会话装配生效）。 */
+    fun setModRuntime(context: Context, enabled: Boolean) = writeModRuntime(prefs(context), enabled)
+
+    // 与 LIVE-REFLOW 同款的 internal read/write 层：纯 JVM 可注入测试桩，公开函数只做接线。
+    internal fun readModRuntime(sp: SharedPreferences): Boolean =
+        sp.getBoolean(KEY_MOD_RUNTIME, DEFAULT_MOD_RUNTIME)
+
+    internal fun writeModRuntime(sp: SharedPreferences, enabled: Boolean) {
+        sp.edit().putBoolean(KEY_MOD_RUNTIME, enabled).apply()
+    }
+
+    // ---- RT2 玩家排序配置（L2，2026-11-14）：公开读点 / 纯转换 / 设置页读写 ----
+    // 完整实现与归一化语义在文件顶层 `ModPackageOrderStore`：UiPrefs 类体已逼近 detekt
+    // LargeClass 阈值，整块逻辑留在外面才不把闸门顶红（不改阈值 / 不加 @Suppress / 不改 baseline）。
+    // 只补壳层「配置来源」：一行核心排序语义都不改（语义权威 = LinkOrder KDoc 与
+    // CONTRACT-RT2-M2-3.md §3.1）。读点纪律照 [modRuntime]：偏好只在 UI 线程读。
+
+    /** 逗号分隔串 → 归一化 packageId 列表（实现见 `ModPackageOrderStore.parse`）。 */
+    fun parsePreferredPackageIds(raw: String): List<String> = ModPackageOrderStore.parse(raw)
+
+    /** 纯 JVM 可注入层：读原始串（缺键回落空串 = 缺省）；与 [readModRuntime] 同款。 */
+    internal fun readPreferredPackageIds(sp: SharedPreferences): String = ModPackageOrderStore.read(sp)
+
+    /** 纯 JVM 可注入层：写原始串（随改随存，apply）。 */
+    internal fun writePreferredPackageIds(sp: SharedPreferences, raw: String) = ModPackageOrderStore.write(sp, raw)
+
+    /**
+     * 构造期读一次（**UI 线程**）并转成 [com.eratw.port.core.patch.LinkOrder] 的输入：
+     * 归一化后的 preferredPackageIds 列表。
+     *
+     * 与 [modRuntime] 同一条线程纪律：读点只有一处 —— `MainActivity` 在 UI 线程取好，
+     * 经 `GameHost` 构造参数单路传入（`linkOrder = LinkOrder(preferredPackageIds(this))`），
+     * 装配期在 VM 线程上不许摸偏好表。**需组长接线**：`GameHost` 构造参数 +
+     * `ModChainAssembly.assemble` 的 `linkOrder =` 实参（worker 不碰 GameHost）。
+     */
+    fun preferredPackageIds(context: Context): List<String> = ModPackageOrderStore.list(prefs(context))
+
+    /** 设置页读原始串（UI 线程）：玩家输入原样回填输入框，归一化留到 [preferredPackageIds]。 */
+    fun preferredPackageIdsRaw(context: Context): String = ModPackageOrderStore.read(prefs(context))
+
+    /** 设置页写原始串（UI 线程，随改随存；下一次会话装配生效）。 */
+    fun setPreferredPackageIds(context: Context, raw: String) = ModPackageOrderStore.write(prefs(context), raw)
 
     /**
      * 是否允许自动更新通道在冷启动时联网检查（国内镜像仓通道，2026-10-29）。
@@ -490,6 +858,23 @@ object UiPrefs {
     /** 只在服务端 2xx 之后由接线层调用：写进去就等于「今天已数过」。 */
     internal fun writePlayerStatsLastDay(sp: SharedPreferences, day: String) {
         sp.edit().putString(KEY_PLAYER_STATS_LAST_DAY, day).apply()
+    }
+
+    // ---- 首启教程（2026-11-09）--------------------------------------------
+
+    /** 首启教程是否已展示过；缺键 = 没展示过（首次安装首次进入时弹）。 */
+    fun tutorialShown(context: Context): Boolean = readTutorialShown(prefs(context))
+
+    /** 教程关闭时落「已读」：此后冷启不再弹，关于页仍可重新查阅。 */
+    fun markTutorialShown(context: Context) {
+        writeTutorialShown(prefs(context))
+    }
+
+    internal fun readTutorialShown(sp: SharedPreferences): Boolean =
+        sp.getBoolean(KEY_TUTORIAL_SHOWN, false)
+
+    internal fun writeTutorialShown(sp: SharedPreferences) {
+        sp.edit().putBoolean(KEY_TUTORIAL_SHOWN, true).apply()
     }
 
     /**
@@ -1017,6 +1402,7 @@ object UiPrefs {
      * 匿名编号同理：清掉会换一枚新 id，服务端按 id 去重就会把同一个玩家数成两个人，
      * 徽章凭空虚增；上次心跳日也留着，免得恢复默认后同一天又补发一拍。
      * 「是否参与统计」那个开关**不在此列**，恢复默认就该回到出厂缺省。
+     * 首启教程的「已读」标记也留：它是引导完成态，清掉等于让老玩家每次重置再读一遍教程。
      */
     private val KEEP_ON_RESET = setOf(
         KEY_ROLLOUT_BUCKET,
@@ -1028,6 +1414,7 @@ object UiPrefs {
         KEY_UPDATE_FAILED_ASSETS_VERSION,
         KEY_PLAYER_STATS_ID,
         KEY_PLAYER_STATS_LAST_DAY,
+        KEY_TUTORIAL_SHOWN,
     )
 
     /** 「全部重置」后「返回游戏时问一句」的一次性标记（由 MainActivity 消费）。 */
@@ -1159,6 +1546,50 @@ fun langVariantOf(lang: SettingsLanguage): LangVariant = when (lang) {
     SettingsLanguage.ZH -> LangVariant.ZHS
     SettingsLanguage.EN -> LangVariant.EN
     SettingsLanguage.JA -> LangVariant.JA
+}
+
+// ---- RT2 玩家排序配置（L2）：壳层配置来源实现（UiPrefs 只留薄委托）--------------------
+// 核心层 LinkOrder(preferredPackageIds) 已贯通 ModuleLinkOrder.plan → ModuleLinker.link
+// → ModChainAssembler.assemble → ModChainAssembly.assemble，缺的只是「配置来源」。
+// 这里只补壳层的持久化与归一：一行核心排序语义都不改（语义权威 = LinkOrder KDoc 与
+// CONTRACT-RT2-M2-3.md §3.1）。偏好只在 UI 线程读（读点由 UiPrefs 的公开函数收口）。
+private object ModPackageOrderStore {
+
+    /**
+     * 逗号分隔的 packageId 列表原始串（沿用 UiPrefs 的 KEY_* 命名范式）。
+     * 空串 = 无显式排序意图，得 LinkOrder() 缺省（packageId 规范序），与未接配置前逐位一致。
+     * 属玩家设置：走 UiPrefs.resetAll 的 clear() 一并清掉。
+     */
+    const val KEY_MOD_PACKAGE_ORDER = "mod_package_order"
+
+    /**
+     * 逗号分隔串 → 归一化 packageId 列表：去重、去空、保序、首尾空白剔除，
+     * 段内仍含空白的整段丢弃（packageId 是连续非空白 token）。
+     *
+     * 纯函数：不摸 UiPrefs.prefs、不看线程，装配期与纯 JVM 单测都可直接调。
+     * 空串 ⇒ 空表 ⇒ LinkOrder() 缺省行为（packageId 规范序）。
+     *
+     * 去重是**硬要求**：核心 ModuleLinkOrder.plan 的 preferredRanks 对配置内重复 ID
+     * 整组抛 LinkOrderException（不静默去重），玩家输入里的重复必须由本函数挡在装配之前。
+     * 这是「就绪模块优先级」的比较键，不是对完整排列做最小调整 —— UI 文案点明此语义。
+     */
+    fun parse(raw: String): List<String> =
+        raw.split(',')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && it.all { c -> !c.isWhitespace() } }
+            .distinct()
+
+    /** 纯 JVM 可注入层：读原始串（缺键回落空串 = 缺省）。 */
+    fun read(sp: SharedPreferences): String =
+        sp.getString(KEY_MOD_PACKAGE_ORDER, "").orEmpty()
+
+    /** 纯 JVM 可注入层：写原始串（随改随存，apply）。 */
+    fun write(sp: SharedPreferences, raw: String) {
+        sp.edit().putString(KEY_MOD_PACKAGE_ORDER, raw).apply()
+    }
+
+    /** 构造期用：读原始串 → 归一列表（prefs 由 UiPrefs 在 UI 线程取好传入）。 */
+    fun list(sp: SharedPreferences): List<String> = parse(read(sp))
 }
 
 

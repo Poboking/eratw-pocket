@@ -7,9 +7,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 四个 QoL 开关的壳层偏好读写层（CONTRACT-MODERN-T6 §3.1 / T6-1 / T6-2）。
+ * 三个 QoL 开关的壳层偏好读写层（CONTRACT-MODERN-T6 §3.1 / T6-1 / T6-2）。
  *
- * 覆盖 `screen_fit` / `option_rail` / `lean_options` / `disable_bad_apple` 四对
+ * 覆盖 `screen_fit` / `option_rail` / `disable_bad_apple` 三对
  * internal `readX`/`writeX`（以 `SharedPreferences` 为参）；公开函数
  *（`screenFit(context)` 等）只是 `prefs(context)` 的一行接线（[UiPrefs.readLiveReflow] 同款先例），
  * 另测公开函数只是复述实现。
@@ -120,16 +120,14 @@ class QolPrefTest {
     }
 
     @Test
-    fun `四个开关的缺省值`() {
+    fun `三个开关的缺省值`() {
         val sp = FakeSharedPreferences()
         assertTrue("列数守护缺省开", UiPrefs.DEFAULT_SCREEN_FIT)
         assertTrue("守护开关的缺省就是 DEFAULT_SCREEN_FIT（不是字面量）", UiPrefs.readScreenFit(sp))
         assertTrue("选项栏缺省开", UiPrefs.readOptionRail(sp))
-        assertFalse("精简选项缺省关（关 = 原样显示全部识别结果）", UiPrefs.readLeanOptions(sp))
         assertTrue("标题彩蛋缺省屏蔽", UiPrefs.readDisableBadApple(sp))
         // 常量与读侧必须同值：设置页「恢复默认」显示的就是这几个常量。
         assertTrue(UiPrefs.DEFAULT_OPTION_RAIL)
-        assertFalse(UiPrefs.DEFAULT_LEAN_OPTIONS)
         assertTrue(UiPrefs.DEFAULT_DISABLE_BAD_APPLE)
     }
 
@@ -164,21 +162,6 @@ class QolPrefTest {
     }
 
     @Test
-    fun `精简选项 开→关→开 双向回读`() {
-        val sp = FakeSharedPreferences()
-        UiPrefs.writeLeanOptions(sp, true)
-        assertTrue(sp.map["lean_options"] == true)
-        assertTrue(UiPrefs.readLeanOptions(sp))
-
-        UiPrefs.writeLeanOptions(sp, false)
-        assertTrue(sp.map["lean_options"] == false)
-        assertFalse(UiPrefs.readLeanOptions(sp))
-
-        UiPrefs.writeLeanOptions(sp, true)
-        assertTrue(UiPrefs.readLeanOptions(sp))
-    }
-
-    @Test
     fun `标题彩蛋屏蔽 关→开→关 双向回读`() {
         val sp = FakeSharedPreferences()
         UiPrefs.writeDisableBadApple(sp, false)
@@ -194,56 +177,50 @@ class QolPrefTest {
     }
 
     @Test
-    fun `四个键名逐字不变`() {
+    fun `三个键名逐字不变`() {
         val sp = FakeSharedPreferences()
         UiPrefs.writeScreenFit(sp, false)
         UiPrefs.writeOptionRail(sp, false)
-        UiPrefs.writeLeanOptions(sp, true)
         UiPrefs.writeDisableBadApple(sp, false)
         assertEquals(
             "键名改名 = 玩家已存偏好丢失",
-            setOf("screen_fit", "option_rail", "lean_options", "disable_bad_apple"),
+            setOf("screen_fit", "option_rail", "disable_bad_apple"),
             sp.map.keys,
         )
 
-        // 反向：只塞邻居键（四个真键一个都没有）⇒ 四项一律回落缺省
+        // 反向：只塞邻居键（三项真键一个都没有）⇒ 三项一律回落缺省
         val decoy = FakeSharedPreferences()
         listOf("font_columns", "live_reflow", "echo_input", "loading_style", "rail_button_size")
             .forEach { decoy.map[it] = true }
         assertEquals(UiPrefs.DEFAULT_SCREEN_FIT, UiPrefs.readScreenFit(decoy))
         assertTrue(UiPrefs.readOptionRail(decoy))
-        assertFalse(UiPrefs.readLeanOptions(decoy))
         assertTrue(UiPrefs.readDisableBadApple(decoy))
     }
 
     @Test
-    fun `四个开关互不污染`() {
+    fun `三个开关互不污染`() {
         val sp = FakeSharedPreferences()
         UiPrefs.writeScreenFit(sp, false)
         UiPrefs.writeOptionRail(sp, false)
-        UiPrefs.writeLeanOptions(sp, true)
         UiPrefs.writeDisableBadApple(sp, false)
-        // 四键同处一表也各读各的
-        assertFalse(UiPrefs.readScreenFit(sp))
-        assertFalse(UiPrefs.readOptionRail(sp))
-        assertTrue(UiPrefs.readLeanOptions(sp))
-        assertFalse(UiPrefs.readDisableBadApple(sp))
-
-        // 只翻精简选项一份，其余三项读数一位不动
-        UiPrefs.writeLeanOptions(sp, false)
-        assertFalse(UiPrefs.readLeanOptions(sp))
+        // 三键同处一表也各读各的
         assertFalse(UiPrefs.readScreenFit(sp))
         assertFalse(UiPrefs.readOptionRail(sp))
         assertFalse(UiPrefs.readDisableBadApple(sp))
 
-        // 反向：写别的偏好不会把这四项读成别的值
+        // 只翻选项栏一份，其余两项读数一位不动
+        UiPrefs.writeOptionRail(sp, true)
+        assertTrue(UiPrefs.readOptionRail(sp))
+        assertFalse(UiPrefs.readScreenFit(sp))
+        assertFalse(UiPrefs.readDisableBadApple(sp))
+
+        // 反向：写别的偏好不会把这三项读成别的值
         sp.map["font_columns"] = 90
         sp.map["live_reflow"] = true
         sp.map["echo_input"] = true
         sp.map["option_rail_button_size"] = 3
         assertFalse(UiPrefs.readScreenFit(sp))
-        assertFalse(UiPrefs.readOptionRail(sp))
-        assertFalse(UiPrefs.readLeanOptions(sp))
+        assertTrue("上面翻开的选项栏不该被邻居键污染成别的值", UiPrefs.readOptionRail(sp))
         assertFalse(UiPrefs.readDisableBadApple(sp))
     }
 }

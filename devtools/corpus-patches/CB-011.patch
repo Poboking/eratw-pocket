@@ -1,0 +1,11 @@
+--- a/NEWGAME/NEWGAME_UTILS.ERB
++++ b/NEWGAME/NEWGAME_UTILS.ERB
+@@ -79,6 +79,7 @@
+ DO
+ 	INPUT
+-	SIF argCanselNo || (RESULT < VARSIZE("refChoices") && refChoices:RESULT != "")
++	;取消号本身非零会让判据恒真（任何输入原样 RETURN），改相等判断让越界输入走 CLEARLINE 重试
++	SIF RESULT == argCanselNo || (RESULT < VARSIZE("refChoices") && refChoices:RESULT != "")
+ 		RETURN RESULT
+ 	CLEARLINE 1
+ LOOP 1

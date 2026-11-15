@@ -34,11 +34,18 @@ include(":render-canvas")
 include(":platform")
 include(":app")
 
-// 引擎仓：core-vm / render / tools:erbcc 都在这边。
-// 自动替换 com.eratw.port:core-vm / :render → erak-engine 的对应工程。
+// 引擎仓：core-vm / render / tools:erbcc / sqlite-adapter / mod-* 都在这边。
+// 自动替换 com.eratw.port:* → erak-engine 的对应工程。
 includeBuild("../erak-engine") {
     dependencySubstitution {
         substitute(module("com.eratw.port:core-vm")).using(project(":core-vm"))
         substitute(module("com.eratw.port:render")).using(project(":render"))
+        substitute(module("com.eratw.port:erbcc")).using(project(":tools:erbcc"))
+        // SQLite 真实驱动适配器与 RT2 Mod SDK（mod-*）都在引擎仓，纯 JVM。
+        substitute(module("com.eratw.port:sqlite-adapter")).using(project(":sqlite-adapter"))
+        substitute(module("com.eratw.port:mod-api")).using(project(":mod-api"))
+        substitute(module("com.eratw.port:mod-family")).using(project(":mod-family"))
+        substitute(module("com.eratw.port:mod-memory")).using(project(":mod-memory"))
+        substitute(module("com.eratw.port:mod-livingworld")).using(project(":mod-livingworld"))
     }
 }

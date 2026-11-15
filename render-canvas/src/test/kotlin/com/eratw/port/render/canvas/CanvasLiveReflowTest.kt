@@ -33,7 +33,8 @@ import kotlin.test.assertTrue
  * 4. `reflowAttachedFeed` 的三支：没挂 feed ⇒ false；宽度不符 ⇒ `IllegalStateException`
  *    （核心必须先 resize）；宽度对齐 ⇒ 新建空屏并按固定顺序换给 feed；
  * 5. 换屏用的新屏口径：列数 = 入参、行数 = 入参、`maxLog` 仍取 `Grid.MAX_LOG_DEFAULT`
- *    （MAXLOG 语义不动）、内容为空。
+ *    （MAXLOG 语义不动）、内容为空，且 `fontWidth` = 当前 `fontDisplayWidth`（换屏必须带走
+ *    同一只尺；出处 d9a57ccdb setfont-ruler，见 CanvasConsoleView 换屏处源码注释）。
  */
 class CanvasLiveReflowTest {
 
@@ -198,7 +199,7 @@ class CanvasLiveReflowTest {
             .substringBefore("\n        val layout = resolveFor(w, h)\n        applyMetrics(layout.metrics)")
     }
 
-    /** 新分支必须整体落在 `if (liveReflow)` 里：关态连一次版面解算都不许多做。 */
+    /** 回调分支必须整体落在 `if (liveReflow)` 里：几何/度量同代是关态也要做的，回调不许。 */
     @Test
     fun `rebuildScreen_新分支被开关守住`() {
         val branch = attachedBranch
@@ -298,7 +299,7 @@ class CanvasLiveReflowTest {
         val body = reflowBody
         val seq = listOf(
             "applyMetrics(resolveFor(width, height).metrics)",
-            "val fresh = ConsoleScreen(columns, Grid.MAX_LOG_DEFAULT, rows)",
+            "val fresh = ConsoleScreen(",
             "swapScreen(fresh)",
             "screen = fresh",
             "syncFeedLayout()",
@@ -311,6 +312,29 @@ class CanvasLiveReflowTest {
             val at = body.indexOf(step)
             assertTrue(at > last, "换屏顺序错位：`$step` 不在预期位置（其实到第 ${body.indexOf(step)} 字）")
             last = at
+        }
+    }
+
+    /**
+     * 尺钉子（d9a57ccdb setfont-ruler）：换屏必须带走同一只尺。
+     *
+     * 构造段 = `val fresh = ConsoleScreen(` 与 `swapScreen(fresh)` 之间，四条口径
+     * （columns / Grid.MAX_LOG_DEFAULT / rows / fontWidth = fontDisplayWidth）必须同段齐备；
+     * 少了 fontWidth，[ConsoleScreen] 会落回缺省静态表，SETFONT 段重新错位
+     * （源侧注释：折行/列区间与屏上推进必须同源）。
+     */
+    @Test
+    fun `reflowAttachedFeed_新屏带走同一只尺`() {
+        val body = reflowBody
+        val start = body.indexOf("val fresh = ConsoleScreen(")
+        val end = body.indexOf("swapScreen(fresh)")
+        assertTrue(start >= 0 && end > start, "找不到新屏构造段（val fresh = ConsoleScreen( 到 swapScreen(fresh)）")
+        val segment = body.substring(start, end)
+        for (arg in listOf("columns", "Grid.MAX_LOG_DEFAULT", "rows", "fontWidth = fontDisplayWidth")) {
+            assertTrue(
+                segment.contains(arg),
+                "新屏构造段缺 `$arg`：换屏丢尺会让 SETFONT 段重新错位，实到：$segment",
+            )
         }
     }
 

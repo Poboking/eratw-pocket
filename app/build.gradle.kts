@@ -71,10 +71,11 @@ val abiList: List<String> = (providers.gradleProperty("eratwAbi").orNull ?: "arm
 //      伪程序只为量体积与验机制，正式包必须换 :tools:erbcc:compileCorpus 的真产物）
 //   ⇒ 「APK ≤ 420 MB」与「程序条目 STORED」在算术上不能同时成立：只有把程序条目改
 //     DEFLATE（-PeratwErbcCompress，实测 378 MB → 84,747,684 B）才落到 **约 425 MB**，
-//     离 420 还差 5 MB；且压缩条目拿不到 `openFd` 长度 ⇒ 解包侧退化成「目标存在即跳过」，
-//     **APK 升级后旧产物不会被换掉**（见 GameAssetInstaller.needsCopy）。所以缺省走 STORED：
-//     体积换正确性，上限由 `package.report` 自描述、由 tools/apkpack/inspect_apk.py 逐类对账卡。
-//     要出 420 MB 那一档必须显式加 -PeratwErbcCompress，核验时配 --allow-compressed。
+//     离 420 还差 5 MB。压缩条目没有字节数可对账，换代改由侧车声明的 `program-sha256`
+//     判定并重拷（GameAssetInstaller.compressedPairStale：同版异内容、盘上缺摘要都自愈），
+//     所以压缩档不存在「APK 升级后旧产物不会被换掉」的问题。缺省仍走 STORED（解包路径最简）；
+//     上限由 `package.report` 自描述、由 tools/apkpack/inspect_apk.py 逐类对账卡；
+//     要出 420 MB 那一档显式加 -PeratwErbcCompress，核验时配 --allow-compressed。
 // ===========================================================================
 
 /**
@@ -321,6 +322,7 @@ android {
     // A-5：compileSdk/minSdk/targetSdk 走 catalog 的 versions 段（值与改前逐字同值）。
     compileSdk = libs.versions.compileSdk.get().toInt()
 
+
     defaultConfig {
         applicationId = "com.eratw.port.android"
         minSdk = libs.versions.minSdk.get().toInt()
@@ -379,8 +381,14 @@ android {
         // 0.2.43 / 19（2026-11-07）：收 rt2 契约层（EntityContracts/SymbolCatalog/SidecarSaveBundle/
         //        ModuleDescriptor 等）+ 立绘脸黑修复（blendPixel 直通域 + 非预乘解码）+ 存档求援
         //        回收量口径 + CBG 绘序/图层精确几何/尺寸源 miss 单出口 + OOM 账本载荷记账等合流面。
-        versionCode = 19
-        versionName = "0.2.43"
+        // 0.2.44 / 20（2026-11-10）：收 RT2 §20 通用能力核心（Hook Pipeline / GameClock 调度 /
+        //        多目标 Interaction / Mod 链装配 RT2MANIFEST/2 / 实体内建 23 条 / 跨设备身份重映射
+        //        原型）+ 错误报告 ERB 帧栈与行号双标 + 首启教程新文风长文案 + MAPID/CHKDATENOW
+        //        内联默认开 + ART MappedByteBuffer 兼容 + CALLSHARP 通用处置。
+        // 0.2.45 / 21（2026-11-11）：一键出包工具按发版要求自动抬号。
+        // 0.2.46 / 22（2026-11-15）：一键出包工具按发版要求自动抬号。
+        versionCode = 22
+        versionName = "0.2.46"
 
         // 方案③ 报错上报端点（服务端模板见 tools/report-endpoint/）：缺省空 =
         // 上报通道整体关闭（零网络行为）；要启用在出包时带这两个 -P 参数：
@@ -547,6 +555,13 @@ dependencies {
     implementation("com.eratw.port:core-vm")
     implementation(project(":render-canvas"))
     implementation(project(":platform"))
+    // RT2-B②：Kotlin mod 载体注册表的组合根。:mod-family 只 api :mod-api（F1 判据），
+    // 经它进 app 的只有 EraMod 公开面，core-vm 不从这里漏进宿主。
+    implementation("com.eratw.port:mod-family")
+    // RT2-M91：记忆 Mod 参考实现（M9-1）载体，同上只经 EraMod 公开面进宿主。
+    implementation("com.eratw.port:mod-memory")
+    // M10-1：Living World Demo 四载体（eratw.lw.*），同上只经 EraMod 公开面进宿主。
+    implementation("com.eratw.port:mod-livingworld")
     coreLibraryDesugaring(libs.desugar.jdk.libs.nio)
     // 壳层 Compose：只用于输入条 / 右侧选项栏 / 覆盖层 / 设置入口；游戏画面仍是
     // CanvasConsoleView（经 AndroidView 嵌入），渲染与命中路径零改动。
@@ -563,6 +578,10 @@ dependencies {
     androidTestImplementation(libs.androidx.test.uiautomator)
     // 壳层布局回归（如右侧选项栏的画布预留宽）：纯 JVM 单测即可覆盖，不需要设备。
     testImplementation(libs.junit4)
+    // F3 口上内容 e2e（ModChainAssemblyKojoContentEndToEndTest）：从真 kojo 源编译模块，
+    // 签名规范串必须由写侧同一对象 SignatureExport 产出（禁手写），故测试类路径要见
+    // :tools:erbcc 的 ErbModuleCompiler / SignatureExport。test-only，不进 APK。
+    testImplementation("com.eratw.port:erbcc")
     // T2-63：把随包的 baseline profile 在「非 Android 12」机型上真正落地。
     //
     // APK 里的 `assets/dexopt/baseline.prof` 只有 API 31+（Android 12）由 dex2oat 在**安装时**
@@ -673,8 +692,21 @@ if (bundlingEnabled) {
     val cfgDataDirs = stagedDataDirs(!skipBadFrames)
     val cfgConfigFiles = stagedConfigFiles
     val cfgSuffixes = stagedSuffixes
+    // 随包落盘并行度：缺省按物理核口径（逻辑核/2，本机 88 线程 → 44），封顶 32 条线程
+    // 免得 10k 个小文件把文件系统压死；-PeratwStageWorkers=1 一键退回串行做 A/B。
+    val cfgStageWorkers = providers.gradleProperty("eratwStageWorkers").orNull?.toIntOrNull()
+        ?: (Runtime.getRuntime().availableProcessors() / 2).coerceIn(4, 32)
     // apkOverheadAllowance 与任务属性重名，必须中转（同上遮蔽规则）；set 自己 = 循环解析
     val cfgApkOverhead = apkOverheadAllowance
+    // ENGC-6 构建期通道（CONTRACT §8.0.4）：`-PeratwEngineStampFile`（pack 配置模式生成的
+    // 印章文件）有值时接进 staging 任务；缺省不设置（Optional 语义 ⇒ 不写印章）。
+    // 印章的 profile/engine/version 语义都在印章字节里，staging 只拷字节；
+    // `-PeratwEngineProfile` 的接线点是 :tools:erbcc:compileCorpus（erbcc --engine-profile 透传）。
+    val cfgEngineStampFile = providers.gradleProperty("eratwEngineStampFile").orNull?.takeIf { it.isNotBlank() }
+    // `-PeratwForeignCorpus=1`（pack `--foreign-corpus`）：声明随包游戏根不是 eraTW 语料补丁表的根
+    // ⇒ root=game 补丁整表不适用。缺省关（任何其它写法也算关，宁可按旧口径判红也不静默放行）。
+    val cfgForeignCorpus = providers.gradleProperty("eratwForeignCorpus").orNull
+        ?.trim()?.lowercase() in setOf("1", "true")
     val stageGameAssets = tasks.register<StageGameAssetsTask>("stageGameAssets") {
         group = "eratw"
         description = "把 erbc 产物 + CSV/resources/sound/plugins/配置搬进 assets staging（装机即玩随包）"
@@ -689,7 +721,10 @@ if (bundlingEnabled) {
         dataDirs.set(cfgDataDirs)
         configFiles.set(cfgConfigFiles)
         noCompressSuffixes.set(cfgSuffixes.toList())
+        stageWorkers.set(cfgStageWorkers)
+        foreignCorpus.set(cfgForeignCorpus)
         apkOverheadAllowance.set(cfgApkOverhead)
+        cfgEngineStampFile?.let { engineStampFile.set(File(it)) }
         outRoot.set(gameAssetsRoot)
         // 输入指纹（与旧 inputs.dir/file 逐条同义）：erbcDir 已在上面 set（@Optional @InputDirectory），
         // 这里补语料目录/配置文件；语料是 335 MB，Gradle 每次要 xxhash 一遍（实测几十秒内）；

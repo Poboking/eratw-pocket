@@ -1,0 +1,13 @@
+@FIXTURE_EXPR_ONLY_BUILTINS
+; engine-compat mini fixture: expression-position calls of snake-only builtins.
+; SQL_CONNECT sits in the snake (4.9xx) function surface but is absent from the
+; v24_1824 and em_ee_1824_v22 function surfaces (EngineProfileData.functionsOf),
+; so under those two profiles the call below must show up in the
+; `unknownFunctions` array of --engine-report. The default (no --engine-profile)
+; path compiles this file unchanged.
+; Expression position (inside the IF condition, not a line-head command) is
+; deliberate: this is exactly the CONTRACT-ENGCOMPAT 8.5 probe for the
+; ArgSignatureCheck builtinUnknownSink scan site.
+IF SQL_CONNECT("127.0.0.1", 3141) < 0
+ENDIF
+PRINTL expression-builtin fixture executed

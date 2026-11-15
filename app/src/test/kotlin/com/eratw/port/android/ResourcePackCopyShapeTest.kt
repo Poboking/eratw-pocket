@@ -69,6 +69,19 @@ class ResourcePackCopyShapeTest {
         "backgroundEnabledHint" to ResourcePackCopy::backgroundEnabledHint,
         "bgmEnabledHint" to ResourcePackCopy::bgmEnabledHint,
         "enableStepsTitle" to ResourcePackCopy::enableStepsTitle,
+        "clearBackgroundButton" to ResourcePackCopy::clearBackgroundButton,
+        "clearBgmButton" to ResourcePackCopy::clearBgmButton,
+        "clearConfirmTitle" to ResourcePackCopy::clearConfirmTitle,
+        "clearConfirmBackgroundBody" to ResourcePackCopy::clearConfirmBackgroundBody,
+        "clearConfirmBgmBody" to ResourcePackCopy::clearConfirmBgmBody,
+        "clearConfirmOk" to ResourcePackCopy::clearConfirmOk,
+        "clearConfirmCancel" to ResourcePackCopy::clearConfirmCancel,
+        "clearRunningText" to ResourcePackCopy::clearRunningText,
+        "clearSucceededFormat" to ResourcePackCopy::clearSucceededFormat,
+        "clearNothingFormat" to ResourcePackCopy::clearNothingFormat,
+        "clearRestoredFormat" to ResourcePackCopy::clearRestoredFormat,
+        "clearFailedFormat" to ResourcePackCopy::clearFailedFormat,
+        "clearRestartHint" to ResourcePackCopy::clearRestartHint,
     )
 
     /** 顿号这类正字法事实中日共用（不是漏翻），EN 档则用逗号加空格；「地点名」是汉字词。 */
@@ -81,14 +94,16 @@ class ResourcePackCopyShapeTest {
         "bgmLocationHint",
         // 官方包索引名是游戏内的汉字键（地点_季节_时间），EN 句里照抄这个标识符
         "autoIndexGeneratedFormat",
+        // 清理确认框正文点名的盘上真实投放根与自动索引名（EN 句子本身仍是英文）
+        "clearConfirmBackgroundBody",
     )
 
     @Test
     fun `三档条目数相等且与显式键清单对账`() {
-        // data class 的 toString 逐个列构造属性：1 个 lang + 41 条键 = 42 个 '='。
+        // data class 的 toString 逐个列构造属性：1 个 lang + 54 条键 = 55 个 '='。
         // 表里的值不许带 '=' 字符（有就换一种计数法，别硬绕）。
-        assertEquals(41, keys.size)
-        CopyShapeGate.assertKeyCount("ResourcePackCopy", copies, keys, expectedPerCopy = 42)
+        assertEquals(54, keys.size)
+        CopyShapeGate.assertKeyCount("ResourcePackCopy", copies, keys, expectedPerCopy = 55)
     }
 
     @Test

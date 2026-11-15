@@ -13,9 +13,19 @@ import org.junit.Test
  * 两条重置路径的**逐键对拍**（T6 后半，R1.1–R1.4）。
  *
  * 同一份出厂目标表分别喂给 `ResetPaths.allReset` 与 `ResetPaths.gameItemsOnly`，写后的
- * `GAME` 组快照必须逐键相同；出厂文件缺的键两边都落在 `ConfigSpec.defaultValue`；
- * assets 不可读的等价形状（[FactoryConfigDefaults.resetTargets] 返回空表）两边也都落在
- * 引擎缺省，且目标表本身不得含 `DEBUG` / `REPLACE` 组键。
+ * `GAME` 组快照必须逐键相同；出厂文件缺的键两边都落在**出厂缺省链**上
+ * （平台出厂缺省 [PortFactoryConfig] → 引擎 `ConfigSpec.defaultValue`，见
+ * `FactoryConfigDefaults.apply` 的回落链）；assets 不可读的等价形状
+ * （[FactoryConfigDefaults.resetTargets] 返回空表）两边同样落在同一条链上；
+ * 且目标表本身不得含 `DEBUG` / `REPLACE` 组键。
+ *
+ * 2026-11-10 修正（**预存红，非本波引入**）：本文件原先按「缺键 ⇒ `ConfigSpec.defaultValue`」
+ * 断言，那是 CONFIG-OVERLAY（2026-11-09）**之前**的回落链；接入平台出厂缺省之后，
+ * `InfiniteLoopAlertTime` 这类被平台覆盖的键会落在平台值上，于是这两条断言在
+ * `origin/main@0e07a0202` 上就已经红了（把 `PortFactoryConfig.INFINITE_LOOP_ALERT_MS`
+ * 临时改回 100000 复跑，红法完全相同 ⇒ 与本波改阈值无关）。
+ * 期望值改为与 `FactoryConfigDefaults.apply` **同一条回落链**，`FactoryConfigDefaultsTest`
+ * 里已有一份等价断言。
  *
  * 真实 assets 的读取分支（`resetTargets(context)` 非空）在 JVM 单测里造不出 Context，
  * 由同一条 [FactoryConfigDefaults.parse] 解析链用夹具文本等价覆盖。
@@ -48,7 +58,9 @@ class ResetPathsTargetParityTest {
 
         assertEquals("两条路径的 GAME 组快照必须逐键相等", gameSnapshot(all), gameSnapshot(only))
         for (spec in gameSpecs) {
-            val expectedValue = targets[spec.key] ?: spec.defaultValue
+            val expectedValue = targets[spec.key]
+                ?: PortFactoryConfig.factoryDefaultOf(spec.key)
+                ?: spec.defaultValue
             assertEquals("${spec.key} 顶栏取值不是出厂目标值", expectedValue, all.store.itemOf(spec.key).value)
             assertEquals("${spec.key} 底部取值不是出厂目标值", expectedValue, only.store.itemOf(spec.key).value)
         }
@@ -102,14 +114,15 @@ class ResetPathsTargetParityTest {
 
         assertEquals(gameSnapshot(all), gameSnapshot(only))
         for (spec in gameSpecs) {
+            val expected = PortFactoryConfig.factoryDefaultOf(spec.key) ?: spec.defaultValue
             assertEquals(
-                "${spec.key} 顶栏没回落到引擎缺省",
-                spec.defaultValue,
+                "${spec.key} 顶栏没回落到出厂缺省链",
+                expected,
                 all.store.itemOf(spec.key).value,
             )
             assertEquals(
-                "${spec.key} 底部没回落到引擎缺省",
-                spec.defaultValue,
+                "${spec.key} 底部没回落到出厂缺省链",
+                expected,
                 only.store.itemOf(spec.key).value,
             )
         }

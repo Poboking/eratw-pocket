@@ -105,7 +105,13 @@ internal object FactoryConfigDefaults {
         var pinned = 0
         for (spec in ConfigSpecTable.all) {
             if (spec.group != ConfigGroup.GAME) continue
-            val target = targets[spec.key] ?: spec.defaultValue
+            // 回落链：出厂文件写了的键 → 用出厂值；否则**平台出厂缺省**（[PortFactoryConfig]，
+            // 例：安卓的 `InfiniteLoopAlertTime` = 360000）→ 最后才是引擎缺省（`ConfigSpec`）。
+            // 随包资产已由构建期校准写入 360000，第一条就会命中；中间层仍保留，旧包/夹具
+            // 资产缺这个键时不会把玩家从 360 s 悄悄改回桌面的 5 s。
+            val target = targets[spec.key]
+                ?: PortFactoryConfig.factoryDefaultOf(spec.key)
+                ?: spec.defaultValue
             if (model.store.itemOf(spec.key).assign(target)) written++ else pinned++
         }
         return Outcome(written, pinned)

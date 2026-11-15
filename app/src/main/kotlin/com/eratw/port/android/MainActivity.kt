@@ -30,12 +30,15 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.eratw.port.android.portrait.PORTRAIT_HUD_TAIL_LINES
 import com.eratw.port.core.config.ConfigKey
 import com.eratw.port.core.host.AndroidKeyCodes
+import com.eratw.port.core.host.ConsoleOption
 import com.eratw.port.core.host.InputRequest
 import com.eratw.port.platform.config.SettingsStore
 import com.eratw.port.platform.input.BlankTapPolicy
@@ -43,6 +46,7 @@ import com.eratw.port.platform.input.ScrollLineAccumulator
 import com.eratw.port.platform.input.InputBarState
 import com.eratw.port.platform.input.InputHint
 import com.eratw.port.platform.input.MacroFile
+import com.eratw.port.platform.input.RailScanGate
 import com.eratw.port.platform.input.TouchGestureController
 import com.eratw.port.platform.storage.GameAssetInstaller
 import com.eratw.port.platform.storage.GameAssetTree
@@ -52,7 +56,6 @@ import com.eratw.port.render.button.ButtonAcceptance
 import com.eratw.port.render.RunKind
 import com.eratw.port.render.canvas.CanvasConsoleView
 import com.eratw.port.render.input.KeyMacroTable
-import com.eratw.port.render.view.LeanOptionFilter
 import com.eratw.port.render.view.ScreenRows
 import com.eratw.port.android.ui.EratwShellDialog
 import java.io.File
@@ -105,6 +108,17 @@ import kotlin.math.floor
  *   `onResume` 重读宏配置（不重置控制台）、重新申请焦点，并把重绘循环恢复成**唯一**一条
  *   （`pumping` 翻 true 后 removeCallbacks + post：Choreographer 已排的帧回调摘不掉，
  *   只能靠 `pumping` 让它进来即退，否则 onPause 后循环停不掉、onResume 还会叠出第二条）。
+ * - 设置页是**不透明的全屏 Activity**（2026-11-14 起，因果全链见 manifest 的 SettingsActivity
+ *   节点）：它盖上来时本 Activity 正常走 pause → stop，`onStop` 的 30 秒后台冻结与
+ *   RunWatch 的 background 落盘按「真的不可见」发生，与 [backgroundPauseRunnable] /
+ *   [onStop] 的既有注释同口径。设置页因此拥有自己的方向域，玩家竖着拿手机就转竖屏，
+ *   与游戏屏在 onCreate 写下的横屏/竖屏锁互不干扰。
+ * - 本 Activity 在设置页盖着期间被系统销毁（「不保留活动」/ OEM 清理）**不再等于丢进度**：
+ *   `onDestroy` 以 `isFinishing` 分水岭只冻结不 close，VM 会话留在 [SessionVault] 的
+ *   进程级槽里，下一实例首帧 `reattachView` 接回同一局（见 [SessionVault] 类头与
+ *   `SessionHandoverWireTest`）。2026-11-13 那笔半透明窗口改造正是因此撤掉 —— 它让
+ *   MainActivity 保持 visible 的前提已被会话升进程级取代，副作用却是把设置页钉死在
+ *   游戏的方向锁里。
  * - `onDestroy` 对 [GameHost.close] 只调一次（内部另有 `closed` 守卫）；[pump] 先摘回调再关，
  *   避免销毁后回到 UI 线程。
  * - `onDestroy` 还要收口**进程级**的调试通道（CMP-17）：[DevToolsHost.stop] interrupt + join
@@ -161,6 +175,15 @@ class MainActivity : ComponentActivity() {
     private var optionScanAt = 0L
 
     /**
+     * 上一帧的**等待页身份**（[RailScanGate.waitSignature]）：与 [optionScanAt] 配对，
+     * 决定「这一帧能不能吃节流」。
+     *
+     * 初值 = [RailScanGate.IDLE_SIGNATURE]（未等待）。首帧若已在等待，签名不同 ⇒ 当帧重扫，
+     * 与 `optionScanAt = 0` 的既有首扫行为同向、不冲突。
+     */
+    private var lastWaitSignature: Long = RailScanGate.IDLE_SIGNATURE
+
+    /**
      * 上一次由「等待态」推出的提示文案（[refreshShell] 的写闸）。
      *
      * pump 每帧都跑 [refreshShell]，若它无条件把 [ShellState.hint] 刷回状态文案，
@@ -173,9 +196,11 @@ class MainActivity : ComponentActivity() {
      * 本次 Activity 实例建 [consoleView] 时用的**列数守护下限**（同一个 SharedPreferences
      * 值也派生「显示大小」倍率 [UiPrefs.fontScale]，所以只比这一个数就够了）。
      *
+     * **按本实例方向取档**：横屏档 [UiPrefs.fontColumns]、竖屏档
+     * [UiPrefs.fontColumnsPortrait]，由 [effectiveFontColumns] 统一选键（竖屏档表见设计稿 §5.2）。
      * 守护下限与倍率都是**构造期**参数（`CanvasConsoleView.minColumnsOverride` /
      * `fontScale` 派生 metrics/paints），设置页改档位后仅重开会话不会换字号 ——
-     * `onActivityResult` 拿它和最新 [UiPrefs.fontColumns] 比，变了就走 `recreate()`
+     * `onActivityResult` 拿它和**当前方向**的最新档位比，变了就走 `recreate()`
      * （重建 View 并重新装载）。注意字号本身（`emuera.config` 的 `FONT SIZE`/`LINE HEIGHT`）
      * 不是构造期参数，由 [GameHost] 在每次会话开始前灌入
      * （见 `CanvasConsoleView.applySourceFontMetrics`）。
@@ -223,16 +248,38 @@ class MainActivity : ComponentActivity() {
     private var appliedLiveReflow: Boolean = false
 
     /**
-     * 进设置页**之前**的显示大小档 / 列数守护开关 / LIVE-REFLOW 开关快照（[openSettings] 写）。
+     * 本次 Activity 实例装配 [consoleView] 时用的**画面左右留白居中档位**（每侧占物理内容宽
+     * 的比例，0 = 关）。
+     *
+     * 与 [appliedFontColumns] / [appliedScreenFit] / [appliedLiveReflow] 同一条口径：它是
+     * [CanvasConsoleView] 的**构造期**参数（`contentMarginFraction`，只在 `resolveFor` 折算成
+     * 留白设备 px），改动只有重建 View 才生效，所以从设置页返回时一并进
+     * [onActivityResult] 的 `displayChanged` 比较。留白改变列数守护的输入宽 → 守护字号/列数
+     * 变化，折行宽会话期冻结，必须重开会话。
+     */
+    private var appliedContentMargin: Float = UiPrefs.DEFAULT_CONTENT_MARGIN_FRACTION
+
+    /**
+     * 进设置页**之前**的显示大小档 / 列数守护开关 / LIVE-REFLOW 开关 / 留白档位快照
+     * （[openSettings] 写）。
      *
      * 用途只有一个：区分「本次设置页访问里真的改了」与「上一轮改了但选择了下次启动生效」——
      * 后者返回时 prefs 与 [appliedFontColumns] 依旧不等，若拿 applied 值判就会每次返回都弹一遍
      * 重开确认。按进页快照判，玩家没动这几项就永不打扰。
+     *
+     * 字号快照**按方向取键**（[effectiveFontColumns]）：竖屏实例存竖屏档、横屏实例存横屏档，
+     * 否则竖屏下改竖屏档检测不到、改横屏档反而误报。
+     *
+     * 初值不是随便填的缺省值：`onCreate` 用**本实例的装配值**打底。设置页是不透明全屏页，
+     * 本 Activity 可能在它盖着期间被系统销毁；收到 `onActivityResult` 的若是重建出来的新实例
+     * （它没走过 [openSettings]），缺省值会被当成「进页前的旧值」，把本实例已经生效的方向
+     * 误判成「本次改过」（见 [confirmOrientationRestart]，同意即拆掉刚接回的会话）。
      */
     private var settingsEntryFontColumns: Int = 0
     private var settingsEntryScreenFit: Boolean = true
     private var settingsEntryPortraitMode: Boolean = false
     private var settingsEntryLiveReflow: Boolean = false
+    private var settingsEntryContentMargin: Float = UiPrefs.DEFAULT_CONTENT_MARGIN_FRACTION
 
     /**
      * 当前宿主；UI 线程赋值/读取（`eratw-assets` 线程也经 `runOnUiThread` 才碰它）。
@@ -329,6 +376,13 @@ class MainActivity : ComponentActivity() {
      */
     @Volatile
     private var pumping = false
+
+    /**
+     * 首帧非空内容已真正落笔（[CanvasConsoleView.onFirstContentFrame]，UI 线程写）。
+     * 首启教程的唯一放行闸：解包/装载期与失败屏都不弹书 —— 不能用 `shell.loading`，
+     * 失败屏也把它复位成 false，分不清「画面就绪」与「装载失败」。
+     */
+    private var firstContentFrameSeen by mutableStateOf(false)
 
     /**
      * 重绘循环的连续失败熔断器（判据与取舍见 [UiFaultBreaker]）。
@@ -460,6 +514,27 @@ class MainActivity : ComponentActivity() {
     private fun guardedTextAction(where: String, action: (String) -> Unit): (String) -> Unit = { text ->
         try {
             action(text)
+        } catch (t: RuntimeException) {
+            logUiFault(where, t)
+        }
+    }
+
+    /** [guardedAction] 的右栏菜单版本（置顶/取消置顶/隐藏收一枚候选）。 */
+    private fun guardedOptionAction(where: String, action: (ConsoleOption) -> Unit): (ConsoleOption) -> Unit = { chip ->
+        try {
+            action(chip)
+        } catch (t: RuntimeException) {
+            logUiFault(where, t)
+        }
+    }
+
+    /** [guardedAction] 的任意单参版本（快捷宏收一条 `QuickMacro`，不是右栏候选）。 */
+    private fun guardedQuickMacroAction(
+        where: String,
+        action: (RailOptionRules.QuickMacro) -> Unit,
+    ): (RailOptionRules.QuickMacro) -> Unit = { macro ->
+        try {
+            action(macro)
         } catch (t: RuntimeException) {
             logUiFault(where, t)
         }
@@ -787,16 +862,31 @@ class MainActivity : ComponentActivity() {
         // 倍率 = 62 ÷ 档位列数（缺省 62 档 = ×1.00，与横屏「缺省档 = ×1.00」同构），
         // 守护下限 = 档位列数本身——90 档靠守护压字号、50 档靠倍率抬字号。§5.2 算例
         // 的两台参考机三档落点 ±1px；S24U 的 62 档约差 2px，真机读数 TODO(verify)。
-        appliedFontColumns = if (portraitPick) {
-            UiPrefs.fontColumnsPortrait(this)
-        } else {
-            UiPrefs.fontColumns(this)
-        }
+        // 选键与「设置页返回是否要重开」共用 [effectiveFontColumns]：两处各写一次方向分支
+        // 迟早分叉（旧实现就是回程固定读横屏键）。
+        appliedFontColumns = effectiveFontColumns(
+            portrait = portraitPick,
+            landscapeColumns = UiPrefs.fontColumns(this),
+            portraitColumns = UiPrefs.fontColumnsPortrait(this),
+        )
         appliedScreenFit = UiPrefs.screenFit(this)
         // LIVE-REFLOW 开关：**装配期只读这一次**，同一个值既喂视口（下面构造 [CanvasConsoleView]）
         // 也喂核心（[startGameOrDemo] 传给 [GameHost]）。两处各读一次会因设置页在中间被改动而
         // 分叉成「视口一直问、核心一直拒」，判据见 [appliedLiveReflow] 的 KDoc。
         appliedLiveReflow = UiPrefs.liveReflow(this)
+        // 画面左右留白居中档位：与守护/倍率同款构造期参数，装配期读一次定格。
+        appliedContentMargin = UiPrefs.contentMarginFraction(this)
+        // 进页快照以**本实例的装配值**打底（openSettings 每次进页还会再刷一次）。
+        // 设置页是不透明全屏页，本 Activity 可能在它盖着期间被系统销毁并重建；重建实例的
+        // onCreate 读到的已经是设置页改过的偏好，若快照还停在字段缺省值，回来那一发
+        // onActivityResult 会误判「这次把竖屏模式改了」并弹一次重开确认 —— 玩家一旦同意，
+        // restartGame 反而会拆掉刚由 SessionVault 接回的那一局。以本实例装配值打底后，
+        // 新实例的快照与本实例已生效的方向/档位一致，判据只剩「本次访问真的改过」。
+        settingsEntryFontColumns = appliedFontColumns
+        settingsEntryScreenFit = appliedScreenFit
+        settingsEntryPortraitMode = portraitNow
+        settingsEntryLiveReflow = appliedLiveReflow
+        settingsEntryContentMargin = appliedContentMargin
         consoleView = CanvasConsoleView(
             this,
             minColumnsOverride = appliedFontColumns,
@@ -808,6 +898,8 @@ class MainActivity : ComponentActivity() {
             },
             // 关 = 现有横屏/竖屏「会话期宽度冻结、只改行数」路径逐字不变（契约 §0/§5 L4）。
             liveReflow = appliedLiveReflow,
+            // 0 = 关 = 满宽，与未传该参数逐值相同（ScreenLayout.resolve 的 contentMarginPx 闸）。
+            contentMarginFraction = appliedContentMargin,
         ).apply { setBackgroundColor(Color.BLACK) }
         attachGestures()
         reloadMacros()
@@ -815,6 +907,12 @@ class MainActivity : ComponentActivity() {
         shell.railVisible = UiPrefs.optionRailVisible(this)
         // 选项按钮大小档（设置页）：只影响壳层几何，镜像进来供右栏取用。
         shell.railButtonSize = UiPrefs.railButtonSize(this)
+        // 右栏布局模式/每行枚数/常用置顶（2026-11-11）：同样只影响壳层摆法，镜像进壳层。
+        shell.railLayout = UiPrefs.railLayout(this)
+        shell.railChipsPerRow = UiPrefs.railChipsPerRow(this)
+        shell.railPinned = UiPrefs.railPinned(this)
+        // 快捷宏（2026-11-11）：常用区的宏按钮，跨屏常驻；同样只影响壳层，镜像进来。
+        shell.quickMacros = UiPrefs.quickMacros(this)
 
         // 壳层 = Jetpack Compose（2026-10-23）；游戏画面仍是 CanvasConsoleView，
         // 经 AndroidView 嵌入，绘制/命中路径零改动。分区布局在 EratwShell 里。
@@ -857,14 +955,42 @@ class MainActivity : ComponentActivity() {
                                 orientationForLock(shell.orientationLocked, portraitNow)
                         },
                         onInputChanged = guardedTextAction("镜像输入框") { text -> mirrorTextBox(text) },
+                        // 右栏长按菜单三动作（2026-11-11 自定义过滤 + 常用置顶）：落 UiPrefs
+                        // 并同步壳层；hide 后清扫描节流立即重扫，按钮当场消失。
+                        onPinOption = guardedOptionAction("置顶常用") { chip -> pinRailOption(chip) },
+                        onUnpinOption = guardedOptionAction("取消置顶") { chip -> unpinRailOption(chip) },
+                        onHideOption = guardedOptionAction("右栏隐藏") { chip -> hideRailOption(chip) },
+                        // 快捷宏（2026-11-11）：点一枚 = 「玩家打出这段指令集 + 回车」。整串交给键盘
+                        // 提交路（submitInput → GameHost.submit），分段连发由引擎侧 QueueInputSink 完成 ——
+                        // 壳层不预切分、不预剥 \e。
+                        onQuickMacro = guardedQuickMacroAction("快捷宏") { macro -> submitQuickMacro(macro) },
                         // 竖屏三区壳（竖屏设计稿 §6/§8 接线点）：装配期按方向定死分支；
-                        // linesProvider 是 HUD 尾窗快照的唯一通路——经 GameHost.debugSession()
-                        // 的只读口取 LineBufferConsoleSink.lines() 尾窗（GameHost 零改动），
-                        // 250ms 轮询与解析都在竖屏分支里（PortraitShellContent）。
+                        // linesProvider 是 HUD 尾窗快照的唯一通路——经 `GameHost.consoleTail(limit)`
+                        // 的窄只读口取 LineBufferConsoleSink.lines() 尾窗（只交不可变快照，
+                        // 不暴露 GameSession），250ms 轮询与解析都在竖屏分支里（PortraitShellContent）。
                         isPortrait = portraitNow,
                         portraitLinesProvider = { portraitScreenLines() },
                     )
 
+                    // 首启教程（复古像素指南）：仅初次安装弹一次，且必须等首帧非空内容
+                    // 真正落笔（标题页可见）之后才放行 —— 解包/装载的几十秒里不弹书，
+                    // 玩家先看到加载页正常走完。关闭即落「已读」，此后冷启不再弹
+                    // （关于页可重新查阅）。
+                    var tutorialVisible by remember { mutableStateOf(false) }
+                    LaunchedEffect(firstContentFrameSeen) {
+                        if (firstContentFrameSeen && !UiPrefs.tutorialShown(this@MainActivity)) {
+                            tutorialVisible = true
+                        }
+                    }
+                    if (tutorialVisible) {
+                        TutorialDialog(
+                            copy = TutorialCopy.of(UiPrefs.settingsLanguage(this@MainActivity)),
+                            onDismiss = {
+                                tutorialVisible = false
+                                UiPrefs.markTutorialShown(this@MainActivity)
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -884,6 +1010,24 @@ class MainActivity : ComponentActivity() {
         consoleView.viewTreeObserver.addOnGlobalLayoutListener {
             if (started || consoleView.consoleScreen() == null) return@addOnGlobalLayoutListener
             started = true
+            // 会话升进程级（2026-11-13）：槽里有活会话（上一实例被系统销毁而进程存活
+            // ——「不保留活动」/ OEM 清理 / 设置页再进 SAF 全屏界面）就接回同一局：
+            // reattachView 把渲染桥挂到本实例的新视图上（画面/输入/弹窗随之归位），
+            // 玩家看到的还是离开时的那一屏，进度不丢。通道接线与交接点同款（活引用闭包）。
+            // 槽空 / 会话已死（失败终局 / QUIT，takeoverIfAlive 会就地收场）才走冷启装载。
+            val revived = SessionVault.takeoverIfAlive()
+            if (revived != null && revived.reattachView(consoleView)) {
+                host = revived
+                revived.heartbeat = heartbeat
+                HotConfigChannel.install(this) { host?.liveConfigStore() }
+                // 认主装挂：口径同交接点（接回实例成为通道的当前归属）。
+                ModImportSessionChannel.install(this) { host?.debugSession() }
+                Log.i(TAG, "接回进程级会话：${revived.javaClass.simpleName}@${revived.hashCode()}")
+                return@addOnGlobalLayoutListener
+            }
+            // 从槽里取出了宿主却接不上（活会话的三要件不该缺，防的就是不自洽）：就地收场，
+            // 让槽/堆都不留无主会话，然后照常走冷启装载。
+            runCatching { revived?.close() }
             // 更新检查挂在「首屏已经画出来」这一拍，而不是 onCreate：装在 onCreate 会和首启解包、
             // 装载抢带宽与 CPU（本仓的启动耗时读数就盯这一段）。本进程只做一次，见 UpdateUi。
             UpdateUi.scheduleStartupCheck(this, storage.gameRoot())
@@ -904,21 +1048,34 @@ class MainActivity : ComponentActivity() {
             // `!wantsRestart` 提前挡掉，当前会话继续按旧档位渲染 —— 玩家的体感就是「显示大小设置了无效」。
             // 这里按「本次进设置页前后的快照」判有没有真的动过，再决定要不要问、要不要重开。
             // 判据本体抽在 [displaySettingChanged]（纯函数，app 单测直测：`MainActivity` 起不来）。
+            //
+            // 字号档**按当前方向取键**（[effectiveFontColumns]）：竖屏实例读
+            // `font_columns_portrait`、横屏实例读 `fontColumns`。旧实现两处都固定读横屏键，
+            // 竖屏下「改竖屏档检测不到 / 改横屏档反而误报重开」（L27 RECON §3.2 的现存 bug）。
+            val nowFontColumns = effectiveFontColumns(
+                portrait = portraitNow,
+                landscapeColumns = UiPrefs.fontColumns(this),
+                portraitColumns = UiPrefs.fontColumnsPortrait(this),
+            )
             val displayChanged = fromSettings && displaySettingChanged(
-                nowFontColumns = UiPrefs.fontColumns(this),
+                nowFontColumns = nowFontColumns,
                 appliedFontColumns = appliedFontColumns,
                 nowScreenFit = UiPrefs.screenFit(this),
                 appliedScreenFit = appliedScreenFit,
                 nowLiveReflow = UiPrefs.liveReflow(this),
                 appliedLiveReflow = appliedLiveReflow,
+                nowContentMargin = UiPrefs.contentMarginFraction(this),
+                appliedContentMargin = appliedContentMargin,
             )
             val displayTouched = fromSettings && displaySettingChanged(
-                nowFontColumns = UiPrefs.fontColumns(this),
+                nowFontColumns = nowFontColumns,
                 appliedFontColumns = settingsEntryFontColumns,
                 nowScreenFit = UiPrefs.screenFit(this),
                 appliedScreenFit = settingsEntryScreenFit,
                 nowLiveReflow = UiPrefs.liveReflow(this),
                 appliedLiveReflow = settingsEntryLiveReflow,
+                nowContentMargin = UiPrefs.contentMarginFraction(this),
+                appliedContentMargin = settingsEntryContentMargin,
             )
             // 「竖屏模式」也是装配期参数（壳分支、列宽、requestedOrientation 都在
             // onCreate 定死）：改了只有重建 Activity 才生效。
@@ -1170,10 +1327,16 @@ class MainActivity : ComponentActivity() {
     private fun openSettings() {
         // 记录进页快照：回来时用它判断「这次访问里真的改了显示大小/守护开关」，
         // 避免玩家选择「下次启动生效」后每次返回都被重开确认拦住。
-        settingsEntryFontColumns = UiPrefs.fontColumns(this)
+        // 字号快照按当前方向取键（[effectiveFontColumns]），与返回时的比较同一口径。
+        settingsEntryFontColumns = effectiveFontColumns(
+            portrait = portraitNow,
+            landscapeColumns = UiPrefs.fontColumns(this),
+            portraitColumns = UiPrefs.fontColumnsPortrait(this),
+        )
         settingsEntryScreenFit = UiPrefs.screenFit(this)
         settingsEntryPortraitMode = UiPrefs.portraitMode(this)
         settingsEntryLiveReflow = UiPrefs.liveReflow(this)
+        settingsEntryContentMargin = UiPrefs.contentMarginFraction(this)
         // 上一轮「恢复默认」若没走返回流程（玩家切走后被杀进程），一次性标记会残留到
         // 这一轮，下次返回时弹一句过期的重开询问。进页前先消费掉。
         // 恢复默认本身发生在设置页内部（recreate 不回 MainActivity），不会被这里清掉。
@@ -1461,6 +1624,11 @@ class MainActivity : ComponentActivity() {
             runCatching {
                 EratwStrictMode.allowUiDiskIo(StrictModeGuard.WHERE_LIFECYCLE_STATE) {
                     RunWatch.markBackground(applicationContext)
+                    // OOM-C 波：切后台按 MemoryLimiter 的 notVisible 档自检一次进程总量。
+                    // 旧形状这一相位没有任何自救（回合边界只在前台跑，后台等系统 trim，
+                    // ROM 不发就直接无栈杀）；PSS 与设备档位表都是 IO，正好放进既有豁免窗口。
+                    // 未贴线时零动作，host 还没装配（首启解包）时静默跳过。
+                    host?.reclaimForBackgroundFootprint()
                 }
             }
         }
@@ -1473,9 +1641,14 @@ class MainActivity : ComponentActivity() {
         resumed = true
         // 设置页可能改过 USE KEYBOARD MACROS；macro.txt 也可能被外部替换。
         if (::storage.isInitialized) reloadMacros()
-        // 设置页也可能改过「选项按钮大小」：纯壳层几何，不需要重开会话，
-        // 回前台读一次镜像到 shell 状态，右栏下一次重组就是新尺寸。
+        // 设置页也可能改过「选项按钮大小」「右栏布局」「每行枚数」「常用置顶」：纯壳层几何，
+        // 不需要重开会话，回前台读一次镜像到 shell 状态，右栏下一次重组就是新摆法。
         shell.railButtonSize = UiPrefs.railButtonSize(this)
+        shell.railLayout = UiPrefs.railLayout(this)
+        shell.railChipsPerRow = UiPrefs.railChipsPerRow(this)
+        shell.railPinned = UiPrefs.railPinned(this)
+        // 快捷宏（2026-11-11）：常用区的宏按钮，跨屏常驻；同样只影响壳层，镜像进来。
+        shell.quickMacros = UiPrefs.quickMacros(this)
         // 音频焦点在这里唯一一次重新申请（后台期间已被 onPause 放弃）。这一步要过
         // AudioManager（真机上有 OEM 抛 IllegalStateException 的形态），抛出去就是
         // 「切回前台，应用没了」—— 而重绘循环还没排上，屏也醒不过来。
@@ -1563,16 +1736,31 @@ class MainActivity : ComponentActivity() {
         // `ActivityThread.mActivities` 里摘掉的；上面任何一步抛出去，摘除就永远不发生 ——
         // 表现正是真机量到的「旧壳不回收」（`Activities: 2`）与「上一局没让出堆」的启动失败。
         // 所以两条可能抛的收口都单独兜住：异常照打日志，控制流一定走到下面。
-        runCatching { host?.close() }
-            .onFailure { Log.e(TAG, "onDestroy: host.close 抛异常（照常往下收口）", it) }
+        //
+        // 会话升进程级（2026-11-13）的分水岭就在 isFinishing：玩家主动退出（finish /
+        // 返回键）才拆会话（close 的认主出槽见 GameHost.close 尾部）；系统销毁（「不保留
+        // 活动」/ OEM 清理 / 配置重建 / 设置页再进 SAF 全屏界面——进程还活着）则**不 close**，
+        // 会话留在 [SessionVault] 槽里等下一实例接回。此刻把它冻住（等效 onStop 30 秒后的
+        // 后台冻结，只是销毁路径没有那个等待的必要）：无壳期间脚本不该推进，下一实例
+        // onResume 里的解冻（`setBackgroundPaused(false)`）会把控制权接回来。
+        // 双壳交接窗口（旧壳 onDestroy 跑在新壳接回之后，2026-10-31 真机实形）下旧壳
+        // `isFinishing` 为 false，只会冻一把、绝不会 close 掉新壳正在玩的会话。
+        if (isFinishing) {
+            runCatching { host?.close() }
+                .onFailure { Log.e(TAG, "onDestroy: host.close 抛异常（照常往下收口）", it) }
+        } else {
+            runCatching { host?.setBackgroundPaused(true) }
+                .onFailure { Log.e(TAG, "onDestroy: 会话冻结失败（照常往下收口）", it) }
+        }
         // 热更通道装的是闭包（捕获本 Activity，fix-staticpin 阶段一实测：捕获槽反射可见、
         // 接线期间 WeakReference 收不回），销毁时必须摘掉，否则进程级单例攥着一个已销毁的壳。
         // 认主卸载：真机双壳交接窗口（旧壳的 onDestroy 跑在新壳接线之后）里，旧壳无权把
         // 新壳刚装好的通道撬空（否则热更键静默退化成「只落盘」）。
         HotConfigChannel.uninstall(this)
-        // 会话读数口与热更通道同寿命：先卸载再放掉 host 引用，设置页读到的要么是
-        // 活会话要么是空，不会是已 close 的旧会话。
-        ModImportSessionChannel.install(null)
+        // 会话读数口与热更通道同寿命：先认主卸载再放掉 host 引用，设置页读到的要么是
+        // 活会话要么是空，不会是已 close 的旧会话。认主（2026-11-13）：接回形态下旧壳
+        // 的销毁不得撅空新壳刚装的接线（ModImportSessionChannel 类头）。
+        ModImportSessionChannel.uninstall(this)
         // CMP-17：调试通道是进程级单代槽，销毁时**必须**真复位（interrupt + join + 清引用）。
         // 顺序放在 host.close() 之后：轮询线程可能还在执行一条命令（它读 host/view 的
         // volatile 快照口），让会话先收口再打断，命令读到的就是「已关闭」而不是半关状态。
@@ -1751,6 +1939,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 装载分段进度上屏（CONTRACT-BOOTPHASE）：把 [LoadTrace] 真实阶段序列折算出的档位与
+     * 比例写进覆盖层。只在覆盖层还挂着时生效，首帧后 `shell.loading = false` 即自然停手，
+     * 不会把标题页的读数改掉。
+     *
+     * 语言按 UI 线程现取（与 [syncLoading] 同口径）；标题仍由 [loadLabelTitle] 的 LOADLABEL
+     * 复刻决定，本方法只改进度条与明细行，不碰标题、不碰失败屏、不改装载语义。进度来自
+     * 装载链本身，不是时间估算，也不因本方法而缩短或隐藏任何一段。
+     */
+    private fun applyLoadPhase(progress: LoadProgress?) {
+        if (progress == null) return
+        if (!shell.loading || destroyed || isFinishing) return
+        val copy = ShellFailureCopy.of(UiPrefs.settingsLanguage(this))
+        shell.progress = progress.fraction
+        shell.progressText = when (progress.phase) {
+            LoadPhase.PROGRAM -> copy.loadPhaseProgramLine
+            LoadPhase.META -> copy.loadPhaseMetaLine
+            LoadPhase.SESSION -> copy.loadPhaseSessionLine
+            LoadPhase.STARTING -> copy.loadPhaseStartingLine
+        }
+    }
+
     private fun startGameOrDemo(storage: GameStorage) {
         // 这里是**每一次开局**的入口（首启 / 失败重试 / 兼容档重试 / 设置页重启全汇到这一处，
         // 由首次布局回调在 UI 线程上触发）。整段兜住：宿主构造、游戏根解析、首屏快照任何
@@ -1773,10 +1983,22 @@ class MainActivity : ComponentActivity() {
                 disableBadApple = UiPrefs.disableBadApple(this),
                 // ECHO-INPUT：同一条线程纪律 —— 装配期在 VM 线程上，读数在这里（UI 线程）取好。
                 echoInput = UiPrefs.echoInput(this),
+                // 长页忙碌提示：同一条线程纪律（UI 线程读好 → 构造参数 → 页中检查点），
+                // GameHost 里不许再摸 UiPrefs。
+                busyIndicator = UiPrefs.busyIndicator(this),
+                modRuntime = UiPrefs.modRuntime(this),
+                // RT2 Mod 装载优先级：同一条线程纪律（UI 线程读好 → 构造参数单路传入；
+                // 空表 = LinkOrder() 缺省 packageId 规范序，装配行为与接线前逐位一致）。
+                modPackageOrder = UiPrefs.preferredPackageIds(this),
+                // RT2 Mod 运行时总闸：同一条线程纪律 —— UI 线程读好、经构造参数单路传入
+                // （缺省关 = 装配链一次都不进；写面是开发者闸，不给玩家设设置页开关）。
                 // 失败面文案：构造期（UI 线程）一次取好，VM/装载线程的 failure 写点只吃这份
                 // 快照（照 ModImportController「起线程前一次取好进线程」的口径）。
                 failureCopy = ShellFailureCopy.of(UiPrefs.settingsLanguage(this)),
             ).also { candidate = it }
+            // CONTRACT-BOOTPHASE：装载链分段进度 → UI 线程 → 覆盖层进度条与明细。
+            // 照 onConsoleReady 的回调惯例在构造后赋值，不改 GameHost 构造参数表。
+            host.loadPhaseSink = { progress -> runOnUiThread { applyLoadPhase(progress) } }
             val gameRoot = storage.gameRoot()
             // 随包形态（M10-PKG400）：APK 里带 erbc.v1 + CSV/resources/sound/plugins + emuera.config，
             // 首启要解到游戏根 —— 全 STORED 口径下是 679.9 MiB、四千个条目，量级是「几十秒到几分钟」，
@@ -1930,8 +2152,12 @@ class MainActivity : ComponentActivity() {
             // 最多还要落盘的量；差值 ≤ 0 表示已齐，连 64 MiB 余量都不该再要求。
             // 盘不够就在这里停 —— 进了 artifactsAvailable() 就是逐文件拷贝，写到一半 ENOSPC
             // 只会在盘上留下半份产物 + 一条含糊的解包异常。检查留在本线程（eratw-assets）。
+            // 但随包解包让位成立时本轮一个字节都不拷：缺口读数（数据包更新盘与随包清单天然
+            // 不一致）不构成硬停理由，suppress 时跳过本闸 —— 判定与解包共用同一份函数
+            // （LoadPipeline.unpackSuppressed），不许在这里复制第二份判据逻辑。
+            val suppressUnpack = LoadPipeline.unpackSuppressed(gameRoot, UpdateManager.currentVersionCode(this))
             val missingBytes = (expected.bytes - landedBefore.bytes).coerceAtLeast(0L)
-            if (missingBytes > 0L && !GameAssetInstaller.hasSpaceFor(gameRoot, missingBytes)) {
+            if (!suppressUnpack && missingBytes > 0L && !GameAssetInstaller.hasSpaceFor(gameRoot, missingBytes)) {
                 // 向上取整：需求 0.1 MiB 也不能说成「0 MiB」。
                 val requiredMiB = (missingBytes + MIB_BYTES - 1) / MIB_BYTES
                 runOnUiThread {
@@ -2032,6 +2258,11 @@ class MainActivity : ComponentActivity() {
                 }
                 host = candidate
                 candidate.heartbeat = heartbeat
+                // 会话升进程级（2026-11-13）：交接完成即入 [SessionVault]。从此槽是权威，
+                // 本实例只是第一代视图适配器——Activity 被系统销毁而进程存活时，下一实例
+                // 从槽里接回同一局（见 onCreateCore 首次布局回调的接回分支与 SessionVault
+                // 类头）。close 的认主出槽在 GameHost.close 尾部，所有拆会话路一处收口。
+                SessionVault.install(candidate)
                 // 设置页「热更键」的投递口（M5-CONFIG 的运行时重载口径）：设置页读盘那份
                 // `SettingsModel.store` 与会话那份条目表是两份实例，只能靠这条通道推过去。
                 // 这里装的是**活引用**闭包（`host?.`，捕获本壳；fix-staticpin：接线带宿主身份），
@@ -2040,7 +2271,9 @@ class MainActivity : ComponentActivity() {
                 HotConfigChannel.install(this) { host?.liveConfigStore() }
                 // 补丁导入面（R7-D1 任务①起宿主在设置页）经这条通道跨 Activity 读会话侧
                 // I7 四读数；与上面同一「活引用」口径：host 变 null 后 read 自动为空。
-                ModImportSessionChannel.install { host?.debugSession() }
+                // 认主装挂（2026-11-13）：销毁清场走 uninstall(this)，双壳交接窗口下旧壳
+                // 无权把本壳刚装的接线撅空。
+                ModImportSessionChannel.install(this) { host?.debugSession() }
                 // 解包/判定这几十秒里 Activity 可能已经切到后台：这次 onPause 走过时
                 // `host` 还是 null（`onPause` 只转发现有 host），新 host 的 `activityPaused`
                 // 于是停在构造值 false。补一次 onPause，装载完成时就不会在后台申请焦点
@@ -2082,6 +2315,8 @@ class MainActivity : ComponentActivity() {
                 // 玩家看到的始终是「加载页 → 可见画面」，中间不露状态屏、也不黑屏。
                 consoleView.onFirstContentFrame = {
                     shell.loading = false
+                    // 首启教程的放行闸（见 [firstContentFrameSeen]）：画面真的出来了才准弹书。
+                    firstContentFrameSeen = true
                     // C6：首帧非空内容真的落笔 = 本次启动已经进了主循环。上一轮的崩溃摘要
                     // 到此认账（玩家要么已经看过横幅，要么这一轮根本没崩）—— 标记只在崩溃
                     // 处理器里写，这里清掉不会把「本轮早崩」抹掉（那种情况走不到这一行）。
@@ -2168,7 +2403,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         val roots = ArrayList(GameAssetInstaller.DATA_DIRS)
-        roots.add(GameHost.ARTIFACT_DIR)
+        roots.add(LoadPipeline.ARTIFACT_DIR)
         roots.add(GameAssetInstaller.CONFIG_FILE)
         roots.forEach { walk(it) }
         return Inventory(entries, bytes)
@@ -2231,7 +2466,7 @@ class MainActivity : ComponentActivity() {
         var entries = 0
         var bytes = 0L
         val names = ArrayList(GameAssetInstaller.DATA_DIRS)
-        names.add(GameHost.ARTIFACT_DIR)
+        names.add(LoadPipeline.ARTIFACT_DIR)
         names.add(GameAssetInstaller.CONFIG_FILE)
         for (name in names) {
             val f = File(gameRoot, name)
@@ -2293,7 +2528,8 @@ class MainActivity : ComponentActivity() {
      *   到底有没有推进。
      * - 长按：postDelayed 到 500ms 取按钮提示（原版 PC 的 hover ToolTip）。阈值直接引用
      *   [TouchGestureController.DEFAULT_LONG_PRESS_MS]，与控制器判「长按不算单击」同源，
-     *   两处不会漂移。
+     *   两处不会漂移。**空白处长按抬手即跳过**（复刻 PC 双击快进的手势面，2026-11-11
+     *   群友追加）；长按按钮只弹提示卡、不跳过。
      */
     private fun attachGestures() {
         // 拖动行数的零头累加器（判据与出处见 ScrollLineAccumulator）：只在一次按下之内累加。
@@ -2306,6 +2542,15 @@ class MainActivity : ComponentActivity() {
         var downY = 0f
         var lastY = 0f
         var lastX = 0f
+        /**
+         * 本次长按是否已经用掉（弹了按钮提示卡）——抬手据此决定「长按空白跳过」要不要走。
+         *
+         * 长按有两条出口：①落在按钮上 ⇒ 弹 `title` 提示卡（原版 hover ToolTip，
+         * `EmueraConsole.cs:1891-1917`），这一下**不**跳过 —— 玩家是在看说明，不是在快进；
+         * ②落在空白处 ⇒ 复制 PC 的双击快进（[handleSkip]）。旗子由 [longPressTick] 在
+         * 取到提示时置真，每次 [MotionEvent.ACTION_DOWN] 复位。
+         */
+        var longPressShowedHint = false
 
         /**
          * 长按按钮 → 显示它的 `title`（原版 PC 的 hover ToolTip）。
@@ -2317,6 +2562,10 @@ class MainActivity : ComponentActivity() {
          *
          * 长按**遮罩图**则取色投喂输入通道（INPUT(6/3,color) 消费面的手势半段，
          * 判定与投喂口径见 [pickMappedColorAt]）；与提示卡同闸同拍，两件事互不挤占。
+         *
+         * 长按**空白处**在抬手时走「跳过」（见 [TouchGestureController.Action.LongPress]
+         * 的 UP 分支与 [longPressShowedHint]）：这里只负责把「弹没弹提示卡」记下来，
+         * 抬手那次跳过由绑定点执行 —— 取色等待的 `canSkip` 为假，两者不会打架。
          *
          * 触发条件与控制器判「长按不是点击」的分界同源：**纵向位移不足半行**才算长按
          * （横向不参与滚动判定，见 [TouchGestureController] 类文档）。但横挥要另设闸：
@@ -2331,7 +2580,11 @@ class MainActivity : ComponentActivity() {
             if (!shell.inputVisible && !scrolled &&
                 abs(lastY - downY) < halfLine && abs(lastX - downX) < horizontalSlop
             ) {
-                consoleView.tooltipAt(downX, downY)?.let { shell.tooltip = it }
+                consoleView.tooltipAt(downX, downY)?.let {
+                    shell.tooltip = it
+                    // 长按落在按钮上 = 玩家在看说明 ⇒ 抬手不跳过（见 longPressShowedHint）。
+                    longPressShowedHint = true
+                }
                 pickMappedColorAt(downX, downY)
             }
         }
@@ -2350,6 +2603,7 @@ class MainActivity : ComponentActivity() {
                         scrollLines.reset()
                         scrolled = false
                         tracking = true
+                        longPressShowedHint = false
                         downX = event.x
                         downY = event.y
                         lastY = event.y
@@ -2357,7 +2611,7 @@ class MainActivity : ComponentActivity() {
                         // 行高在会话期冻结（换字号要重开会话，见 CanvasConsoleView 类头），
                         // 但仍按当前值现取：任何测量缓存陈旧都不许把滑动距离算错。
                         touch.pixelsPerLine = consoleView.lineHeightPx().positiveOr(touch.pixelsPerLine)
-                        touch.onDown(columnOf(event.x), event.y, event.eventTime)
+                        touch.onDown(consoleView.columnAt(event.x), event.y, event.eventTime)
                         // 按下态高亮（绘制面，不产输入）：与 tap 同一套行/列换算（`cellHitAt`）。
                         consoleView.setPointer(event.x, event.y, pressed = true, acceptance = host?.acceptance() ?: ButtonAcceptance.ANY)
                         // 触摸现场 → MouseState（MOUSEB/MOUSEX/MOUSEY）：只在按下/抬起/取消时记，
@@ -2425,9 +2679,10 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
                                 TouchGestureController.Action.Skip -> {
-                                    handleSkip()
-                                    // 跳过本身就是一次推进，且不落在按钮上。
-                                    touch.noteTapExecuted(advanced = true, hitButton = false)
+                                    // 双击第二条通道：真正交出去了才算「推进」——
+                                    // handleSkip 自带 canSkip 闸，闸关着时它什么也没做，
+                                    // 这时不能回填 advanced=true（否则下一击会被误当双击）。
+                                    touch.noteTapExecuted(advanced = handleSkip(), hitButton = false)
                                 }
                                 is TouchGestureController.Action.Scroll -> {
                                     // 快扫的兜底（2026-11-02 审查修正）：MOVE 只在攒满整行时付账
@@ -2440,8 +2695,27 @@ class MainActivity : ComponentActivity() {
                                     scrolled = true
                                     consoleView.scrollRows(action.scrollRowsSteps)
                                 }
-                                // LongPress / None：抬手不再产动作
-                                // （长按只弹提示，None 无可产出）。
+                                TouchGestureController.Action.LongPress -> {
+                                    // 长按空白 = 跳过（2026-11-11 群友：PC 双击能快进、模拟器没有）。
+                                    // 走的就是双击跳过那条 [handleSkip]（自带 canSkip 闸、同一
+                                    // submitSkip 路径、同一框镜像），一次长按只推一次；长按按钮
+                                    // 弹过提示卡则不跳（[longPressShowedHint]）。
+                                    //
+                                    // 回填 advanced 用**真实结果**：手势层判 LongPress 不看 canSkip
+                                    // （它只作用于双击配对），执行期长按因此可能一次都没提交 ——
+                                    // 那种情况必须记 advanced=false，否则玩家下一次正常点击会被
+                                    // 当成双击的第二击而多跳一步。
+                                    // 输入条展开时不跳过，与单击通道同口径：单击路径由
+                                    // handleConsoleTap 专门分支「先收起输入条、不推进」挡着
+                                    // （设计上那一下的意图是「收键盘」），长按若照旧跳过，
+                                    // 就会把玩家正在打的草稿当跳过文本交出去再清空
+                                    // （handleSkip 会 submitSkip(shell.input) + 清框）——
+                                    // 玩家看到的是「打字停顿一下，字没了，还多翻一屏」。
+                                    if (!longPressShowedHint && !shell.inputVisible) {
+                                        touch.noteTapExecuted(advanced = handleSkip(), hitButton = false)
+                                    }
+                                }
+                                // None：抬手无可产出。
                                 else -> Unit
                             }
                         }
@@ -2509,18 +2783,6 @@ class MainActivity : ComponentActivity() {
         active.submitMappedColor(color)
     }
 
-    /**
-     * 屏幕横坐标 → 半角格列号（与 `CanvasConsoleView.tap` 的命中列同一空间）。
-     *
-     * 只给手势层算「双击位置邻域」用：`TouchGestureController` 的列阈值是半角格，
-     * 换算必须与绘制侧同源（`cellWidthPx` = `CellMetrics.cellPixelWidth`），且不减夹取
-     * （居中/右对齐行的 `colStart` 可以为负）。
-     */
-    private fun columnOf(x: Float): Int {
-        val width = consoleView.cellWidthPx()
-        if (!(width > 0f)) return 0
-        return floor((x - consoleView.paddingLeft) / width).toInt()
-    }
 
     /**
      * 行高兜底：`TouchGestureController` 的行高必须为正的有限值（它要拿去做除数），
@@ -2553,7 +2815,8 @@ class MainActivity : ComponentActivity() {
         }
         val active = host ?: return TapResult(advanced = false, hitButton = false)
         active.fireVirtualKeyEdge(AndroidKeyCodes.VK_LBUTTON)
-        val outcome = consoleView.tap(x, y, active.acceptance())
+        // NF 等待期不抢焦点、不把玩家从历史位置拉回底部（MainWindow.cs:949）。
+        val outcome = consoleView.tap(x, y, active.acceptance(), noFocusWait())
         val submitted = outcome.hit
         if (submitted != null) {
             // 世代闸（2026-10-26 静态复查补）：命中表是渲染侧的**可见行**按钮，
@@ -2605,14 +2868,20 @@ class MainActivity : ComponentActivity() {
      * INPUT/INPUTS 等文本请求时不该排一条 skip，否则会比玩家多提交一次 —— 所以这里
      * 再守一次 [InputBarState.canSkip]（手势层已经用同一个闸判过，这一层是防漏）。
      * 与 [submitInput] 同口径：提交即清框（canSkip ⇒ VM 正在等，不是抢跑）。
+     *
+     * @return true = 这一次**真的**排了一条跳过；false = 宿主不在 / 闸关着 / 执行期，
+     *   什么也没交出去。调用方（手势绑定点）要用这个真实结果回填
+     *   [TouchGestureController.noteTapExecuted] —— 长按通道在闸关着时同样会走到这里，
+     *   回填错会让玩家下一次单击被当成双击的第二击（多跳一步）。
      */
-    private fun handleSkip() {
-        val active = host ?: return
-        if (!inputBarState().canSkip) return
+    private fun handleSkip(): Boolean {
+        val active = host ?: return false
+        if (!inputBarState().canSkip) return false
         mirrorTextBox("")
         active.submitSkip(shell.input)
         shell.input = ""
         consoleView.requestRedraw()
+        return true
     }
 
     /**
@@ -2722,6 +2991,39 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * 点一枚**快捷宏**：把它的指令集串当「玩家打出一整串 + 回车」提交。
+     *
+     * 走键盘路（[GameHost.submit]，= 原版 `PressEnterKey(changedByMouse: false)`），
+     * 分段与段内 `\e` 的剥离由引擎侧 `QueueInputSink.submit` 完成（`EmueraConsole.cs:146`/
+     * `:1429-1438`）—— 「会话×5」「连开十个宝藏袋」就是一条串，壳层不预切分。
+     *
+     * 与 [submitInput] 的两处差别（都不是随手的）：
+     * - **不动输入条草稿**（不写 `shell.input`）：宏不是玩家正在打的字，点一下不该把
+     *   打到一半的话清掉；
+     * - **不镜像到核心文本框**（不调 `textBoxAfterSubmit`）：宏是指令集串，把它塞进
+     *   `Window.TextBox` 只会让 `GETTEXTBOX()` 读到一串带转义符的原文；AWAIT 轮询屏上
+     *   这一下按「空回车」语义推进即可。
+     *
+     * 执行期（VM 在跑、没有等待方）按原版静默丢弃：不排队跨屏补交，也不弹「VM 没在跑」
+     * 的错提示（那会把「正在跑」说成「没运行」）。连发靠串里的分段，不靠连点。
+     *
+     * @return true = 已交给宿主
+     */
+    private fun submitQuickMacro(macro: RailOptionRules.QuickMacro): Boolean {
+        val content = RailOptionRules.macroContent(macro)
+        if (content.isBlank()) return false
+        val active = host ?: return false
+        if (!inputBarState().canSubmit) return false
+        // 与键入回车同一条贴底纪律（MainWindow.cs:1402-1406）：提交前把视口送回最新行；
+        // NF 等待按 :1591 跳过（noFocusWait）。
+        consoleView.snapToBottomForSubmit(noFocusWait())
+        active.submit(content)
+        lastDerivedHint = null
+        consoleView.requestRedraw()
+        return true
+    }
+
+    /**
      * 提交一条输入（输入条回车/提交键、右侧选项按钮、点击命中区共用）。
      *
      * @return true = 已交给宿主（入队，或执行期轮询屏的「文本框 + 回车沿变」事件）；
@@ -2751,7 +3053,8 @@ class MainActivity : ComponentActivity() {
         // 把视口送回最新行；选项按钮提交路对应原版点击语义（:799-805）。AWAIT 轮询屏的
         // 抢跑提交同样受此约束（原版 :1402 不看等待态，先弹底、后到 :1410 才闸提交）。
         // 手机软键盘没有 KeyDown 可挂，贴底实现在 CanvasConsoleView.snapToBottomForSubmit。
-        consoleView.snapToBottomForSubmit()
+        // NF 等待按 MainWindow.cs:1591 跳过强制贴底，保留玩家的上滚位置。
+        consoleView.snapToBottomForSubmit(noFocusWait())
         // 输入条/命中区共用这一口：画面按钮（右侧栏选项）带 clickIntent，执行期落点保活；
         // 键入回车不带（见 GameHost.submitButton 的 KDoc）。
         if (clickIntent) active.submitButton(text) else active.submit(text)
@@ -2776,19 +3079,21 @@ class MainActivity : ComponentActivity() {
 
     /**
      * 竖屏 HUD 的屏行尾窗快照（竖屏设计稿 §3 数据来源一览「屏行快照
-     * `LineBufferConsoleSink.lines()`」行）：经 [GameHost.debugSession] 的只读口取
-     * `lines()`，截尾到 [PORTRAIT_HUD_TAIL_LINES] 后逐行取纯文本（`textOf`，与渲染层
-     * 同一条行文本口径）。serial 随行带出——指令盘组标签靠它与候选的 `lineSerial`
-     * 对区间（竖屏设计稿 §3.5 组标签段）。
+     * `LineBufferConsoleSink.lines()`」行）：经 [GameHost.consoleTail] 的窄只读口取尾
+     * [PORTRAIT_HUD_TAIL_LINES] 行（serial to 纯文本，显示序）。serial 随行带出——指令盘
+     * 组标签靠它与候选的 `lineSerial` 对区间（竖屏设计稿 §3.5 组标签段）。
+     *
+     * 宿主只交不可变快照，不把可变 `GameSession` 暴露给 HUD（零指令提交铁律：HUD 只显示、
+     * 不提交）；空会话/未装载返回空表。锁口径在 [GameHost.consoleTail] 内沿用
+     * `LineBufferConsoleSink.lines()` 本体（快照在锁内完成，跨线程安全）。
      *
      * 只在竖屏分支的 250ms 轮询里被调（`PortraitShellContent`，频率 ≤ 选项扫描，
-     * §0-9）；横屏不进这条路。锁口径同 `lines()` 本体（快照在锁内完成，跨线程安全）。
+     * §0-9）；横屏不进这条路。
      */
     private fun portraitScreenLines(): List<Pair<Long, String>> {
-        val sink = host?.debugSession()?.console ?: return emptyList()
         // ECHO-INPUT 抑制档下引擎根本不产生回显显示行，活表就是屏上可见行；
         // 脚本侧的行账本折算只在 deleteLine 发生，不影响这里读到的行表。
-        return sink.lines().takeLast(PORTRAIT_HUD_TAIL_LINES).map { it.serial to sink.textOf(it) }
+        return host?.consoleTail(PORTRAIT_HUD_TAIL_LINES) ?: emptyList()
     }
 
     /** 输入条的纯逻辑状态（可见性恒 true；提交分禁用/正常/抢跑）。 */
@@ -2803,6 +3108,17 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * 当前等待是否是 4.981 `NF` 族的无焦点等待（`TINPUTNF` / `TINPUTSNF`）。
+     *
+     * 单源 = 引擎的 [InputRequest.noFocus]（`Runtime/InputRequest.cs:51`，
+     * `Instraction.Child.cs:1100` / `:1154` 置位）；原版由此进入
+     * `WaitInputNoFocus`（`EmueraConsole.cs:780-818`），宿主在鼠标点击
+     * （`MainWindow.cs:949`）与按键（`:1591`）两处据 `IsWaitInputNoFocusState`
+     * 跳过强制贴底。壳层不另存真源，逐次读当前等待请求即可 —— 等待结束请求即变。
+     */
+    private fun noFocusWait(): Boolean = host?.pendingRequest()?.noFocus == true
+
+    /**
      * pump 每帧把壳层状态刷进 [ShellState]（值不变时 `mutableStateOf` 不触发重组）。
      *
      * 选项栏按 [OPTION_SCAN_MS] 节流 + 指纹去重：读的是 `GameHost.currentOptions()` ——
@@ -2811,9 +3127,9 @@ class MainActivity : ComponentActivity() {
      * 不再扫可见行。选项只在页面切换/轮询重印时变，60fps 每帧重建指纹仍是白烧电，
      * 所以保留 250ms 节流。
      *
-     * 「更精简的游戏选项」（[UiPrefs.leanOptions]，缺省关）只裁剪**显示端**：打开时
-     * 用 [LeanOptionFilter] 留下屏上自带编号的常用指令（`移动[400]` 与 `[100] - 睁开眼睛` 两形）；
-     * 关闭时 chips 原样不动。引擎快照与正文按钮命中都不受影响。
+     * 右栏过滤（[RailOptionRules.filterOptions]）只裁剪**显示端**：标签黑名单 +
+     * 可选「隐藏无编号按钮」规则（判据是屏上自印编号的 `移动[400]` 与 `[100] - 睁开眼睛` 两形）。
+     * 引擎快照与正文按钮命中都不受影响。
      */
     private fun refreshShell() {
         val state = inputBarState()
@@ -2844,11 +3160,32 @@ class MainActivity : ComponentActivity() {
         shell.macroEnabled = state.macroEnabled
 
         val now = android.os.SystemClock.uptimeMillis()
-        if (now - optionScanAt < OPTION_SCAN_MS) return
+        // 等待页身份变了 ⇒ **当帧**重扫，不吃 250ms 节流（2026-11-12 泡茶子选单案）。
+        //
+        // 只看节流会让右栏在换页后最多滞后 250ms，而等待页切换（命令面板 → QOL 子选单弹窗）
+        // 时引擎快照在 `noteInputWait` 入口就换了：玩家在那段窗口里看到并点到的是**上一页的
+        // 芯片**，提交值被新的等待页消费但语义不符 —— QOL 子选单的 `INPUT -1, 1` 收到面板
+        // 按钮值（如 301），`INRANGE(INPUT_VALUES, 0, OPTIONNUM)` 不成立 ⇒ 变体没切、
+        // 弹窗直接返回，玩家看到的就是「点了没反应」。
+        //
+        // 判据是纯函数、每帧零分配（见 [RailScanGate] 的 KDoc）；**只**在身份变化的那一帧
+        // 绕过节流，同页重试与 AWAIT 轮询重印照旧 250ms —— 不能退回每帧重扫，
+        // 那是 2026-10-31 真机 OOM 现场（热路径上几十枚候选的指纹分配）。
+        val waitSignature = RailScanGate.waitSignature(host?.pendingRequest(), state.awaitingAnyKey)
+        val waitPageChanged = RailScanGate.mustScanNow(waitSignature, lastWaitSignature)
+        lastWaitSignature = waitSignature
+        if (!waitPageChanged && now - optionScanAt < OPTION_SCAN_MS) return
         optionScanAt = now
         val recognized = host?.currentOptions().orEmpty()
-        // 缺省关：`recognized` 原样交给选项栏，识别口径与筛选前完全一致。
-        val chips = if (UiPrefs.leanOptions(this)) LeanOptionFilter.keepCommon(recognized) else recognized
+        // 右栏过滤（2026-11-11 自定义过滤功能卡）：标签黑名单 + 可选「隐藏无编号按钮」规则，
+        // 纯显示层；被藏掉的枚数镜像进壳层供计数行显示。
+        val filtered = RailOptionRules.filterOptions(
+            recognized,
+            UiPrefs.railHiddenLabels(this),
+            UiPrefs.railHideUnnumbered(this),
+        )
+        val chips = filtered.options
+        shell.railHiddenCount = filtered.hiddenCount
         // 指纹 = **64 位哈希**，不再 `joinToString` 拼字符串（2026-10-31 真机 OOM 现场改）。
         //
         // 崩溃栈首帧就是这段的 `StringBuilder.append(Long)`：
@@ -2884,7 +3221,46 @@ class MainActivity : ComponentActivity() {
             // 「已发布」，右侧栏停在上一次场景的按钮上 —— 点下去还会提交到错的等待方。
             shell.chips = chips
             optionFingerprint = h
+            // 换屏才并入置顶历史候选（设置页「从最近见过的指令里新增」的数据面）：
+            // 同屏重扫不重复合并 —— 名字没变，合了也是同一条。
+            UiPrefs.recordRailHistory(this, recognized)
         }
+    }
+
+    // ------------------------------------------------------------------
+    // 右栏置顶/隐藏动作（2026-11-11 自定义过滤 + 常用置顶的宿主接线）
+    // ------------------------------------------------------------------
+
+    /**
+     * 长按菜单「置顶到常用」：LRU 落 `UiPrefs` 并同步壳层，常用区下一次重组就出现。
+     *
+     * 菜单允许钉无编号按钮（`[CONFIG]` / `地图切换`），先把名字补进历史候选：
+     * 否则设置页的已置顶列表只能显示兜底「编号 {0}」，看不出钉的是什么。
+     */
+    private fun pinRailOption(chip: ConsoleOption) {
+        UiPrefs.pinRailOption(this, chip.submitValue)
+        UiPrefs.recordRailHistoryEntry(this, chip.submitValue, chip.label)
+        shell.railPinned = UiPrefs.railPinned(this)
+        // 快捷宏（2026-11-11）：常用区的宏按钮，跨屏常驻；同样只影响壳层，镜像进来。
+        shell.quickMacros = UiPrefs.quickMacros(this)
+    }
+
+    /** 长按菜单「取消置顶」。 */
+    private fun unpinRailOption(chip: ConsoleOption) {
+        UiPrefs.unpinRailOption(this, chip.submitValue)
+        shell.railPinned = UiPrefs.railPinned(this)
+        // 快捷宏（2026-11-11）：常用区的宏按钮，跨屏常驻；同样只影响壳层，镜像进来。
+        shell.quickMacros = UiPrefs.quickMacros(this)
+    }
+
+    /**
+     * 长按菜单「从右栏隐藏」：标签进黑名单（横竖屏共用的数据流），随后清掉扫描节流并
+     * 立即重扫一遍 —— 不等下一个 250ms 周期，按钮当场消失。
+     */
+    private fun hideRailOption(chip: ConsoleOption) {
+        UiPrefs.addRailHiddenLabel(this, chip.label)
+        optionScanAt = 0L
+        refreshShell()
     }
 
     /** 失败屏「复制报告」：整份报告进剪贴板，玩家直接粘进群聊/邮件。 */
@@ -3123,6 +3499,24 @@ class MainActivity : ComponentActivity() {
         }
 
         /**
+         * 按当前方向取字号档位读数（竖屏设计稿 §6.4 + §5.2：竖屏档与横屏档互相独立）。
+         *
+         * [portrait] 由 [portraitNow] 定格（本 Activity 实例的方向在 `onCreate` 定死，运行中不翻转）：
+         * 竖屏读 `font_columns_portrait`、横屏读 `fontColumns`。装配期选档（`onCreate` 写
+         * [appliedFontColumns]）与「设置页返回要不要重开」（`onActivityResult` 的
+         * `displayChanged` / `displayTouched`、`openSettings` 的进页快照）共用这一条判据 ——
+         * 旧实现回程固定读横屏键，竖屏实例里改竖屏档检测不到、改横屏档反而误报「显示大小变了」。
+         *
+         * 抽成 companion 纯函数的口径与 [displaySettingChanged] 相同：`MainActivity` 是 Android 壳，
+         * app 的 JVM 单测面实例化不了它，判据只能挂在静态面上直测。
+         */
+        internal fun effectiveFontColumns(
+            portrait: Boolean,
+            landscapeColumns: Int,
+            portraitColumns: Int,
+        ): Int = if (portrait) portraitColumns else landscapeColumns
+
+        /**
          * 「显示大小档 / 列数守护开关 / LIVE-REFLOW 开关」里有没有任何一项变了（LIVE-REFLOW 契约 §6 L6）。
          *
          * 三颗都是 [CanvasConsoleView] / [GameHost] 的**装配期**参数：改了只有重建 View（进而重开一局）
@@ -3145,9 +3539,12 @@ class MainActivity : ComponentActivity() {
             appliedScreenFit: Boolean,
             nowLiveReflow: Boolean,
             appliedLiveReflow: Boolean,
+            nowContentMargin: Float = UiPrefs.DEFAULT_CONTENT_MARGIN_FRACTION,
+            appliedContentMargin: Float = UiPrefs.DEFAULT_CONTENT_MARGIN_FRACTION,
         ): Boolean = nowFontColumns != appliedFontColumns ||
             nowScreenFit != appliedScreenFit ||
-            nowLiveReflow != appliedLiveReflow
+            nowLiveReflow != appliedLiveReflow ||
+            nowContentMargin != appliedContentMargin
 
         /**
          * 解包线程的**跨 Activity 单飞槽**（2026-10-24 真机实证补的口子）。

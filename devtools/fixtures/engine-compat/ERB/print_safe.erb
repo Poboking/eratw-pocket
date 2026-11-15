@@ -1,0 +1,8 @@
+@FIXTURE_SAFE_PRINT
+; engine-compat mini fixture: PRINT-family statements only.
+; Every statement here is a plain line-print instruction that every
+; target engine accepts, so this file must compile under any profile.
+PRINTL engine-compat fixture: safe print line 1
+PRINTL engine-compat fixture: safe print line 2
+PRINTFORML computed value = {1 + 2}
+WAIT

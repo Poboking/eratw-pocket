@@ -55,7 +55,7 @@ class SaveImportTest {
     private val nothingOccupied: (String) -> ByteArray? = { null }
 
     private fun planOf(name: String, bytes: ByteArray, config: SaveConfig = eraConfig, base: GameBaseData? = eraBase, slotCount: Int = 20, occupied: (String) -> ByteArray? = nothingOccupied) =
-        SaveImport.plan(name, bytes, config, base, slotCount, occupied)
+        SaveImport.plan(name, bytes, SaveImport.Context(config, base, slotCount, occupied))
 
     // -----------------------------------------------------------------
     // 落位：槽号从文件名认
@@ -251,7 +251,7 @@ class SaveImportTest {
         val gameBase = GameBaseLoader.load(csvDir, mutableListOf())
 
         val bytes = pcSave.readBytes()
-        val plan = SaveImport.plan("save00.sav", bytes, eraConfig, gameBase, 20, nothingOccupied)
+        val plan = SaveImport.plan("save00.sav", bytes, SaveImport.Context(eraConfig, gameBase, 20, nothingOccupied))
         plan as SaveImport.Place
         // 落位必须与引擎读的那一格同名（PC 上叫什么，安卓上就在哪一格）
         assertEquals("sav/save00.sav", plan.targetRel)

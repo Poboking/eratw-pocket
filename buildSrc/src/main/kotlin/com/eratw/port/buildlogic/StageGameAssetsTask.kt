@@ -5,6 +5,8 @@ import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.nio.file.Files
 import java.security.MessageDigest
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
 import org.gradle.api.file.ConfigurableFileCollection
@@ -99,6 +101,14 @@ abstract class StageGameAssetsTask : DefaultTask() {
     @get:InputFiles
     abstract val compilerSources: ConfigurableFileCollection
 
+    /**
+     * 随包件落盘的并行度（`-PeratwStageWorkers`）。10k 条硬链接/拷贝是元数据操作，
+     * 单线程做一遍要几十秒；按物理核口径分给线程池能真并行。设 1 = 完全退回旧串行行为，
+     * 供 A/B 与事故回退。作为 [Input] 登记：翻了这个值就重跑 staging，不会拿旧产物冒充新结果。
+     */
+    @get:Input
+    abstract val stageWorkers: Property<Int>
+
     /** 分片字节数（0 = 单条）。分片大小改了必须重切，不能命中 UP-TO-DATE。 */
     @get:Input
     abstract val chunkBytes: Property<Long>
@@ -118,6 +128,33 @@ abstract class StageGameAssetsTask : DefaultTask() {
     /** `-PeratwAllowStaleErbc` 放行开关：翻了必须重跑（对账才跑得到）。 */
     @get:Input
     abstract val allowStaleErbc: Property<Boolean>
+
+    /**
+     * `-PeratwForeignCorpus`（ENGC-6 构建期通道，pack `--foreign-corpus`）：声明本次随包的
+     * 游戏根**不是** eraTW 语料补丁表所属的那个根 ⇒ root=game 的补丁整表不适用
+     * （不套、也不因「游戏根目标缺席」判红），否则第三方游戏根出不了完整资产包。
+     * 缺省 false = 与引入本开关前逐字节相同（判红护栏原样保留）。
+     * 作为 [Input] 登记：翻这个值必须重跑 staging，不许拿另一根的产物冒充。
+     */
+    @get:Input
+    abstract val foreignCorpus: Property<Boolean>
+
+    /**
+     * 引擎档印章源文件（`-PeratwEngineStampFile`；ENGC-6 构建期通道，CONTRACT §8.0.4）。
+     *
+     * 非空 ⇒ 执行期把该文件**字节**写进 staging 根 `engine-profile.json`
+     * （staging 根 = APK 的 `assets/`，所以 APK 条目是 `assets/engine-profile.json`，
+     * 与 core-vm `EngineStamp.ASSET_NAME` 逐字对齐；目录不存在则建，APK 运行期按印章档装配）；
+     * 缺省 ⇒ 删掉 staging 根可能残留的旧印章（含旧口径误写的 `assets/engine-profile.json` 一层，
+     * 属性从有到无的场景），保证「无 stampFile ⇒ APK 无印章」恒成立。
+     * 只拷字节 + 轻校验（非空、可按 schema/profile/engine/version 四字段解析），
+     * **不内置档位表**：profile/engine/version 的合法值单源在
+     * `core-vm EngineProfiles.TARGETS` 与 python 出包侧同步表，staging 侧只认字节。
+     * 声明为 [InputFile]：印章文件内容变更 ⇒ 必须重跑（不得 UP-TO-DATE）。
+     */
+    @get:Optional
+    @get:InputFile
+    abstract val engineStampFile: RegularFileProperty
 
     /** 本次随包的游戏根（null = 只随包 erbc 的形态）。运行期值，目录内容不整树哈希。 */
     @get:Internal
@@ -203,7 +240,11 @@ abstract class StageGameAssetsTask : DefaultTask() {
                 ?: "unverified(见上面的告警)"
         }
 
-        outRoot.deleteRecursively()
+        // 幂等 staging：只整体重建 erbc.v1（几件、每次都要自证），语料四类目录改走
+        // 「差量同步」——目标已与源同一 inode（硬链接）就跳过，不再全删 10k 条链接。
+        // 全删重建会让下游 merge/compress/package 的输入指纹每次都变，把 1 GiB 级重打包
+        // 从「只有内容真变了才做」退化成「只要本任务重跑就做」。残留件由 pruneStaged 清掉。
+        File(outRoot, "erbc.v1").deleteRecursively()
         var linked = 0
         var copied = 0
         var extensionless = 0
@@ -389,13 +430,16 @@ abstract class StageGameAssetsTask : DefaultTask() {
         // 走「删链接 + 写字节」而不是 link 后修改。
         val patchesDir = corpusPatchesDir.orNull?.asFile
         val gameRootPatches = if (gameRoot != null && patchesDir != null) {
-            planGameRootPatches(gameRoot, patchesDir, logger)
+            planGameRootPatches(gameRoot, patchesDir, logger, foreignCorpus.getOrElse(false))
         } else {
             emptyMap()
         }
         val stagedPatchTargets = mutableSetOf<String>()
         val stagedDirs = LinkedHashMap<String, Pair<Int, Long>>()
+        val workers = stageWorkers.get().coerceAtLeast(1)
         if (gameRoot != null) {
+            // --- 2a. 先只做目录遍历、收集待同步件（单线程，不碰 I/O）------------------
+            val items = mutableListOf<StageItem>()
             dataDirs.forEach { name ->
                 val src = File(gameRoot, name)
                 if (!src.isDirectory) {
@@ -403,27 +447,31 @@ abstract class StageGameAssetsTask : DefaultTask() {
                     stagedDirs[name] = 0 to 0L
                     return@forEach
                 }
-                var count = 0
-                var bytes = 0L
                 src.walkTopDown().filter { it.isFile }.forEach { f ->
                     val rel = f.toRelativeString(src).replace('\\', '/')
-                    if (!f.name.contains('.')) extensionless++
-                    val dst = File(outRoot, "$name/$rel")
                     val patched = gameRootPatches["$name/$rel"]
-                    if (patched != null) {
-                        if (dst.exists()) dst.delete()
-                        dst.parentFile?.mkdirs()
-                        Files.write(dst.toPath(), patched)
-                        copied++
-                        stagedPatchTargets += "$name/$rel"
-                        count++
-                        bytes += patched.size
-                    } else {
-                        if (linkOrCopy(f, dst)) linked++ else copied++
-                        count++
-                        bytes += f.length()
-                    }
+                    if (patched != null) stagedPatchTargets += "$name/$rel"
+                    items += StageItem(f, File(outRoot, "$name/$rel"), rel, name, patched, !f.name.contains('.'))
                 }
+            }
+            // --- 2b. 差量清理：源里已删的件不许留在 staged 里混进包 ------------------
+            dataDirs.forEach { name ->
+                val expected = items.filter { it.group == name }.mapTo(HashSet()) { it.rel }
+                pruneStaged(File(outRoot, name), expected)
+            }
+            // --- 2c. 并行落盘：10k 条硬链接/补丁写入分给 workers 条线程 --------------
+            val results = stageFilesParallel(items, workers)
+            // 报告记当前形态（稳定），日志另报本次真动手的件数（看并行/幂等效果）
+            linked += results.count { it.isLink }
+            copied += results.count { !it.isLink }
+            extensionless += results.count { it.extensionless }
+            val byGroup = results.groupBy { it.group }
+            dataDirs.forEach { name ->
+                // 缺目录的形状与旧版逐字一致：stagedDirs 记 0，但不往 report 写这两列
+                if (!File(gameRoot, name).isDirectory) return@forEach
+                val rs = byGroup[name].orEmpty()
+                val count = rs.size
+                val bytes = rs.sumOf { it.bytes }
                 stagedDirs[name] = count to bytes
                 report["entries-$name"] = count.toString()
                 report["bytes-$name"] = bytes.toString()
@@ -431,6 +479,11 @@ abstract class StageGameAssetsTask : DefaultTask() {
                     "stageGameAssets: $name $count 个文件 ${mb(bytes)}（${bytes} B）",
                 )
             }
+            logger.lifecycle(
+                "stageGameAssets: 随包落盘 workers=$workers · 提交 ${results.size} 件 · " +
+                    "本次实际新建/重写 ${results.count { it.linked || it.copied }} 件 · " +
+                    "幂等跳过 ${results.count { !it.linked && !it.copied }} 件",
+            )
             val unapplied = gameRootPatches.keys - stagedPatchTargets
             if (unapplied.isNotEmpty()) {
                 throw GradleException(
@@ -448,19 +501,25 @@ abstract class StageGameAssetsTask : DefaultTask() {
                 val src = File(gameRoot, "ERB")
                 var count = 0
                 var bytes = 0L
+                val erdRels = HashSet<String>()
                 if (src.isDirectory) {
                     src.walkTopDown()
                         .filter { it.isFile && it.name.endsWith(".ERD", ignoreCase = true) }
                         .forEach { f ->
-                            val rel = f.toRelativeString(src)
+                            val rel = f.toRelativeString(src).replace('\\', '/')
+                            erdRels += rel
                             val dst = File(outRoot, "ERB/$rel")
-                            if (linkOrCopy(f, dst)) linked++ else copied++
+                            if (dst.isFile && sameFile(dst, f)) {
+                                // 幂等：链接还在就别重建；报告仍按当前形态记一条链接
+                                linked++
+                            } else if (linkOrCopy(f, dst)) linked++ else copied++
                             count++
                             bytes += f.length()
                         }
                 } else {
                     logger.warn("stageGameAssets: 游戏根缺 ERB/（$src）：ERD 表不随包")
                 }
+                pruneStaged(File(outRoot, "ERB"), erdRels)
                 stagedDirs["ERB"] = count to bytes
                 report["entries-ERB"] = count.toString()
                 report["bytes-ERB"] = bytes.toString()
@@ -474,11 +533,38 @@ abstract class StageGameAssetsTask : DefaultTask() {
             var configBytes = 0L
             configFiles.forEach { name ->
                 val f = File(gameRoot, name)
+                val dst = File(outRoot, name)
                 if (f.isFile) {
-                    if (linkOrCopy(f, File(outRoot, name))) linked++ else copied++
+                    if (dst.isFile && sameFile(dst, f)) {
+                        // 幂等：链接还在就别重建（校准会在下面单独把它解链后改写）
+                        linked++
+                    } else if (linkOrCopy(f, dst)) linked++ else copied++
                     configCount++
                     configBytes += f.length()
+                } else if (dst.isFile) {
+                    dst.delete() // 源已删 ⇒ staged 不留旧配置
                 }
+            }
+            // 安卓出厂校准（2026-11-11）：只对 staged 的 emuera.config 本份拷贝改写，
+            // 语料本体零接触。⚠️ staged 件可能还是指向语料的硬链接：改写前必须先解除
+            // 链接（delete 后新写），直接写硬链接 = 改语料，违反 AGENTS 第 1 节。
+            val stagedConfig = File(outRoot, "emuera.config")
+            if (stagedConfig.isFile && ANDROID_FACTORY_CALIBRATION.isNotEmpty()) {
+                val original = stagedConfig.readText(Charsets.UTF_8)
+                val (calibrated, applied) = applyFactoryCalibration(original, ANDROID_FACTORY_CALIBRATION)
+                if (calibrated != original) {
+                    val sizeBefore = stagedConfig.length()
+                    stagedConfig.delete()
+                    stagedConfig.writeText(calibrated, Charsets.UTF_8)
+                    configBytes += stagedConfig.length() - sizeBefore
+                    logger.lifecycle(
+                        "stageGameAssets: 安卓出厂校准 ${applied.size} 项（${applied.joinToString("、")}）",
+                    )
+                }
+                report[FACTORY_CALIBRATION_KEY] =
+                    if (applied.isEmpty()) APPLIED_CORPUS_PATCHES_EMPTY else applied.joinToString(" | ")
+            } else {
+                report[FACTORY_CALIBRATION_KEY] = APPLIED_CORPUS_PATCHES_EMPTY
             }
             stagedDirs["配置"] = configCount to configBytes
             report["entries-config"] = configCount.toString()
@@ -487,10 +573,58 @@ abstract class StageGameAssetsTask : DefaultTask() {
                 logger.warn("stageGameAssets: 游戏根没有 emuera.config：首启只能靠内部根兜底")
             }
         } else {
+            // 只随 erbc 的形态：整体删改成了只重建 erbc.v1，所以上次全量包留下的
+            // 图/声/配置必须在这里显式清掉，否则「零随包条目」包里会混进 1 GiB 旧资源。
+            dataDirs.forEach { name -> File(outRoot, name).deleteRecursively() }
+            File(outRoot, "ERB").deleteRecursively()
+            configFiles.forEach { name -> File(outRoot, name).delete() }
             logger.lifecycle(
                 "stageGameAssets: 未给 -PeratwGameRoot 且 ERATW_GAMEDIR 无效 ⇒ 只随包 erbc.v1，" +
                     "缺图缺声音（不是「装机即玩」形态）",
             )
+        }
+
+        // --- 2d. 引擎档印章（ENGC-6 构建期通道）：字节落 staging 根 -------------------
+        // 属性有值 ⇒ 校验后逐字节写印章；缺省 ⇒ 清掉残留旧印章
+        // （属性从有到无的场景，保证「无 stampFile ⇒ APK 无印章」恒成立）。
+        // 校验失败让任务失败并带原样内容 —— 半个坏印章随包比打不出包更糟。
+        //
+        // **落点是 `outRoot/engine-profile.json`，不是 `outRoot/assets/...`**：`outRoot` 整个目录
+        // 就是 APK 的 `assets/`（同级的 CSV/emuera.config/erbc.v1 都是这么随包的），
+        // 多写一层会变成 APK 条目 `assets/assets/engine-profile.json`，
+        // 而运行期 `EngineProfileStamp` 按 core-vm `EngineStamp.ASSET_NAME`="engine-profile.json"
+        // 经 AssetManager 打开 = APK 的 `assets/engine-profile.json` ⇒ 印章**永远读不到**，
+        // 配置模式出的包会静默退化成「无印章 = 全量 snake 行为」（fail-open）。
+        // 2026-11-12 B7 端到端实测抓到（pack 的 config-mode 印章回读判红即此路径不一致），
+        // 对账口径三方 = 这里写的相对路径 / `EngineStamp.ASSET_NAME` / `engine_compat.STAMP_ASSET_PATH`。
+        val stampTarget = File(outRoot, "engine-profile.json")
+        // 旧口径（多套一层 assets/）写出来的位置：staging 根是复用的，不清就会被下一次
+        // assembleRelease 继续随包，表现为「包里有印章但游戏不认」。
+        val legacyStampTarget = File(outRoot, "assets/engine-profile.json")
+        val stampSrc = engineStampFile.orNull?.asFile
+        if (stampSrc != null) {
+            val stampBytes = stampSrc.readBytes()
+            check(stampBytes.isNotEmpty()) {
+                "引擎档印章文件是空的（$stampSrc）：非空四字段 JSON 才是合法印章"
+            }
+            val stampText = stampBytes.toString(Charsets.UTF_8)
+            val stampFields = parseEngineStamp(stampText)
+            check(stampFields != null) {
+                "引擎档印章不是 schema/profile/engine/version 四字段 JSON（$stampSrc），原样内容：\n$stampText"
+            }
+            stampTarget.parentFile?.mkdirs()
+            Files.write(stampTarget.toPath(), stampBytes)
+            legacyStampTarget.delete()
+            logger.lifecycle(
+                "stageGameAssets: 引擎档印章 engine-profile.json（APK 条目 assets/engine-profile.json，" +
+                    "profile=${stampFields.profile} " +
+                    "engine=${stampFields.engine} version=${stampFields.version}，${stampBytes.size} B）",
+            )
+        } else {
+            val cleaned = listOf(stampTarget, legacyStampTarget).filter { it.isFile }.onEach { it.delete() }
+            if (cleaned.isNotEmpty()) {
+                logger.lifecycle("stageGameAssets: 无 -PeratwEngineStampFile ⇒ 清掉 staging 残留旧印章（${cleaned.size} 处）")
+            }
         }
 
         // --- 3. package.report：随包读数落进 assets，供 inspect_apk.py 逐类对账 -------
@@ -608,6 +742,102 @@ fun formatAppliedCorpusPatches(manifestText: String): String {
     return if (items.isEmpty()) APPLIED_CORPUS_PATCHES_EMPTY else items.joinToString(" | ")
 }
 
+/** package.report 里 factory-calibration 独立列的键（生效条目按 " | " 连接，与补丁列同形状）。 */
+const val FACTORY_CALIBRATION_KEY = "factory-calibration"
+
+/**
+ * 安卓出厂校准表（2026-11-11 QQ 群反馈波）：staged 的 `emuera.config` 是 PC 语料原样，
+ * 手机首装的默认值按这张表改写 —— **只动 staging 拷贝，语料本体一个字节不动**。
+ *
+ * 生效链（三处自动同源，零额外接线）：
+ * - 首装：`GameAssetInstaller` 只拷一次 ⇒ 新装玩家拿到校准后的移动默认；
+ * - 老玩家：盘上那份永不覆盖 ⇒ 校准本身不改写它；历史出厂值（如 4.980 的死循环阈值
+ *   15000）由 `PortFactoryConfig.CONFIG_VALUE_MIGRATIONS` +
+ *   `GameAssetInstaller.migrateConfigValues` 在升级后首个冷启动一次性迁移；
+ * - 重置默认：`FactoryConfigDefaults` 读的就是这份 staged 资产 ⇒ 重置也回校准值。
+ *
+ * 表就是群友征集结果的落点：字高/行高/窗口宽度等日后回填只改这里，并同步 `FactoryCalibrationTest`。
+ */
+val ANDROID_FACTORY_CALIBRATION: Map<String, String> = mapOf(
+    // actifse（11-10）：PRINTC 每行项目数改 4（随包出厂原是 PC 语料作者调的 5）。
+    "ITEMS PER LINE FOR PRINTC" to "4",
+    // 2026-11-12：4.980 语料把死循环告警阈值显式写成 15000（emuera.config:31）。平台层
+    // 「只填空、不改写」的覆盖策略因此永远注入不了出厂值，线上实际是 15 s、长链反复弹框。
+    // 在随包资产里直接校到 360 s：新装/重装立即生效；老玩家盘上的 15000 由安装器一次性迁移
+    // （见 PortFactoryConfig.CONFIG_VALUE_MIGRATIONS 与 GameAssetInstaller.migrateConfigValues）。
+    "MILLISECONDS FOR INFINITE LOOP WARNING" to "360000",
+)
+
+/**
+ * 安卓出厂校准的纯函数：把 `KEY:VALUE` 形态的行按 [table] 改写，其余行（注释/空行/
+ * 未知键）原样保留、行序不动；表里有而文件里没有的键追加到文末。键匹配不分大小写
+ * （原版配置键全大写，这里归一后比对），值原样落。CRLF/LF 逐行保持。
+ *
+ * 返回（校准后全文，实际生效的 `KEY=VALUE` 清单 —— report 自证列与日志共用）。
+ * 表为空 = 原样返回（测试基准）；坏行不抛 —— 校准只在「认识的键」上生效，
+ * 多余的宽容换不来风险，少改一行才是不该发生的事。
+ */
+fun applyFactoryCalibration(text: String, table: Map<String, String>): Pair<String, List<String>> {
+    if (table.isEmpty()) return text to emptyList()
+    val eol = if (text.contains("\r\n")) "\r\n" else "\n"
+    val lines = text.split("\n")
+    val out = ArrayList<String>(lines.size + table.size)
+    val applied = LinkedHashMap<String, String>()
+    for (line in lines) {
+        val lineEnd = if (line.endsWith("\r")) "\r" else ""
+        val body = line.removeSuffix("\r")
+        val idx = body.indexOf(':')
+        var replaced = false
+        if (idx > 0) {
+            val key = body.substring(0, idx).trim().uppercase()
+            val value = table.entries.firstOrNull { it.key.trim().uppercase() == key }?.value
+            if (value != null) {
+                out += body.substring(0, idx + 1) + value + lineEnd
+                applied[key] = value
+                replaced = true
+            }
+        }
+        if (!replaced) out += line
+    }
+    val missing = table.entries.filter { it.key.trim().uppercase() !in applied }
+    val rewritten = out.joinToString("\n")
+    if (missing.isEmpty()) return rewritten to applied.map { (k, v) -> "$k=$v" }
+    // 追加键：先保证全文以完整行结束（原文没以换行收尾就补一个，行尾风格随原文），
+    // 再逐键一行，最后一行也以换行收尾 —— 配置文件的标准结尾，解析端两种都吃。
+    val base = if (rewritten.endsWith("\n")) rewritten else rewritten + eol
+    val result = base + missing.joinToString(eol) { "${it.key.trim().uppercase()}:${it.value}" } + eol
+    val appliedList = applied.map { (k, v) -> "$k=$v" } + missing.map { (k, v) -> "${k.trim().uppercase()}=$v" }
+    return result to appliedList
+}
+
+/**
+ * 引擎档印章轻解析结果（schema/profile/engine/version 四字段，CONTRACT §8.0.4）。
+ */
+internal data class EngineStampFields(
+    val schema: Long,
+    val profile: String,
+    val engine: String,
+    val version: String,
+)
+
+/**
+ * 印章轻校验纯函数：从印章文本提取四字段；任何一缺 ⇒ null（调用侧让任务失败带原样内容）。
+ *
+ * 只认「四字段都在且形态可解析」，**不内置档位表**：profile/engine/version 的合法值
+ * 单源在 core-vm `EngineProfiles.TARGETS` 与 python 出包侧同步表，staging 侧只拷字节。
+ * schema 是数字字面量，其余三串是字符串；字段序任意（JSON 语义），宽松匹配容空白。
+ */
+internal fun parseEngineStamp(text: String): EngineStampFields? {
+    val schema = Regex("\"schema\"\\s*:\\s*(\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull()
+        ?: return null
+    fun stringField(name: String): String? =
+        Regex("\"$name\"\\s*:\\s*\"([^\"]+)\"").find(text)?.groupValues?.get(1)
+    val profile = stringField("profile") ?: return null
+    val engine = stringField("engine") ?: return null
+    val version = stringField("version") ?: return null
+    return EngineStampFields(schema, profile, engine, version)
+}
+
 /**
  * 从 [src] 的 [offset] 起拷 [count] 字节到 [dst]，按 1 MiB 块流式走，不整份进堆。
  *
@@ -628,6 +858,91 @@ private fun copyRange(src: File, dst: File, offset: Long, count: Long, digest: M
                 remaining -= read.toLong()
             }
         }
+    }
+}
+
+/** 一条待同步的随包件：src → dst；rel 相对本组目录（差量清理用），group 用于分类计数。 */
+internal data class StageItem(
+    val src: File,
+    val dst: File,
+    val rel: String,
+    val group: String,
+    val patched: ByteArray?,
+    val extensionless: Boolean,
+)
+
+/**
+ * 单件同步结果：linked/copied 二选一，两者都 false = 幂等跳过；bytes 是随包字节数。
+ * [isLink] 记的是**当前 staged 形态**（是否与源同一 inode），与本次有没有动手无关 ——
+ * package.report 的 linked/copied 两列据此汇总，语义从「本次动作数」改成「当前形态数」，
+ * 这样幂等重跑不会让报告字节变化、进而把下游 1 GiB 重打包又打回 executed。
+ */
+internal data class StageResult(
+    val group: String,
+    val linked: Boolean,
+    val copied: Boolean,
+    val bytes: Long,
+    val extensionless: Boolean,
+    val isLink: Boolean,
+)
+
+/**
+ * 落一件。三种「不用重写」的形状，都是为了避免让下游 1 GiB 重打包白白重跑：
+ * - 补丁件：staged 字节与补丁字节逐字相同 ⇒ 跳过；
+ * - 普通件：staged 与源是**同一 inode**（硬链接）⇒ 内容必然逐字节相同 ⇒ 跳过；
+ * - 其余才建链接或流式拷贝。
+ *
+ * 幂等判定只认 inode / 内容，不认 mtime：Gradle 的输入指纹本身就是内容哈希，
+ * 保住字节就等于保住 UP-TO-DATE。
+ */
+internal fun stageOne(item: StageItem): StageResult {
+    val patched = item.patched
+    if (patched != null) {
+        if (item.dst.isFile && item.dst.readBytes().contentEquals(patched)) {
+            return StageResult(item.group, false, false, patched.size.toLong(), item.extensionless, false)
+        }
+        if (item.dst.exists()) item.dst.delete()
+        item.dst.parentFile?.mkdirs()
+        Files.write(item.dst.toPath(), patched)
+        return StageResult(item.group, false, true, patched.size.toLong(), item.extensionless, false)
+    }
+    if (item.dst.isFile && sameFile(item.dst, item.src)) {
+        return StageResult(item.group, false, false, item.src.length(), item.extensionless, true)
+    }
+    val linked = linkOrCopy(item.src, item.dst)
+    return StageResult(item.group, linked, !linked, item.src.length(), item.extensionless, linked)
+}
+
+/** 同一 inode 判据；路径不存在/跨卷/无权限一律当「不同」，退回重建而不是静默跳过。 */
+internal fun sameFile(a: File, b: File): Boolean = try {
+    Files.isSameFile(a.toPath(), b.toPath())
+} catch (_: Throwable) {
+    false
+}
+
+/**
+ * 并行落盘：10k 条硬链接/补丁写入是元数据操作，线程池能真吃满多核。
+ * `workers=1` 完全退回旧串行行为（A/B 与事故回退口）；结果按提交顺序返回，
+ * 日志与计数仍由主线程汇总，输出顺序稳定、Gradle 增量键不受线程调度影响。
+ */
+internal fun stageFilesParallel(items: List<StageItem>, workers: Int): List<StageResult> {
+    if (items.isEmpty()) return emptyList()
+    if (workers <= 1) return items.map(::stageOne)
+    val pool = Executors.newFixedThreadPool(minOf(workers, items.size))
+    return try {
+        val futures = items.map { item -> pool.submit(Callable { stageOne(item) }) }
+        futures.map { it.get() }
+    } finally {
+        pool.shutdown()
+    }
+}
+
+/** 删掉 [dir] 下不在 [expected] 里的旧件：源已删 ⇒ 包里不许留旧字节。 */
+internal fun pruneStaged(dir: File, expected: Set<String>) {
+    if (!dir.isDirectory) return
+    dir.walkTopDown().filter { it.isFile }.forEach { f ->
+        val rel = f.toRelativeString(dir).replace('\\', '/')
+        if (rel !in expected) f.delete()
     }
 }
 

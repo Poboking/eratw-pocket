@@ -17,14 +17,16 @@ import org.junit.rules.TemporaryFolder
 /**
  * 首启解包器（M8-ASSETSINSTALL）—— APK assets 树用临时目录顶替，纯 JVM 跑，不建 `Context`。
  *
- * 钉的是 [GameAssetInstaller] 的六条对外契约：
+ * 钉的是 [GameAssetInstaller] 的七条对外契约：
  * 1. assets 里没有 `erbc.v1` 时**一个文件都不碰**（不能凭空造目录，否则 `GameStorage` 的根选择会误判）；
  * 2. 单条 `program.erbc` 与侧车一起落盘，并按侧车声明的 `program-sha256` 核对；
  * 3. 分片按 `program.parts` 的**行序**拼接（不是文件名字典序）；
  * 4. SHA 不配对：清中间文件、抛可读错误，**旧产物保留**（上一版配对可降级）；
  * 5. 配对事务：program/meta 任一步失败，整对回滚到上一版（不留「新 program + 旧 meta」）；
  *    回滚本身出岔子时按**收集式**逐条尽力恢复，未恢复项计数并点名（`回滚收集式` 一组用例）；
- * 6. 幂等：第二次全跳过，目标被截断则重拷；`emuera.config` 永不覆盖。
+ * 6. 幂等：第二次全跳过，目标被截断则重拷；`emuera.config` 永不覆盖；
+ * 7. 历史出厂值迁移：只改「值仍等于随包旧值」的键，一次性标记后不再执行
+ *    （迁移一组见 [GameAssetInstallerMigrationTest]）。
  *
  * 第 10 例拿 core 自己的 [BootMetadata] 编码器当 oracle：解包器读的「第 3 行头部」
  * 与侧车格式必须同源，core 换写法时这条会先红。
@@ -533,6 +535,132 @@ class GameAssetInstallerTest {
     // 装置
     // ------------------------------------------------------------------
 
+    // ------------------------------------------------------------------
+    // RT2-B③：内置 Kotlin 载体 manifest 的专用投递步骤
+    // ------------------------------------------------------------------
+
+    private fun builtinManifestAsset(name: String = "eratw.family.manifest") =
+        "mods/rt2/$name"
+
+    @Test
+    fun `内置RT2 manifest首启落盘且第二轮幂等`() {
+        val payload = "RT2MANIFEST/3\n@meta\nS61\n/\n".toByteArray()
+        asset(builtinManifestAsset(), payload)
+
+        val first = install()
+        val target = File(gameRoot, builtinManifestAsset())
+
+        assertEquals("只落内置 manifest 这一个文件", 1, first.copiedFiles)
+        assertArrayEquals(payload, target.readBytes())
+        assertEquals("第二轮一个字节都不该重写", 0, install().copiedFiles)
+    }
+
+    @Test
+    fun `内置manifest内容变了但长度相同也按字节重拷`() {
+        // needsCopy 只比长度：这条就是钉住「专用步骤必须逐字节对账」的反向证明。
+        val a = ByteArray(200) { 'A'.code.toByte() }
+        val b = ByteArray(200) { 'B'.code.toByte() }
+        asset(builtinManifestAsset(), a)
+        install()
+        asset(builtinManifestAsset(), b)
+
+        val result = install()
+
+        assertEquals("同长换内容仍须重拷", 1, result.copiedFiles)
+        assertArrayEquals(b, File(gameRoot, builtinManifestAsset()).readBytes())
+    }
+
+    @Test
+    fun `没有内置manifest资产时mods目录一个文件都不建`() {
+        val result = install()
+
+        assertEquals(0, result.copiedFiles)
+        assertFalse("旧包没有这条资产就该零接触", File(gameRoot, "mods").exists())
+    }
+
+    @Test
+    fun `玩家导入的同目录文件不被内置投递覆盖或清理`() {
+        val player = File(gameRoot, "mods/rt2/player.manifest").apply {
+            parentFile?.mkdirs()
+            writeBytes("player-owned".toByteArray())
+        }
+        asset(builtinManifestAsset(), "builtin".toByteArray())
+
+        install()
+
+        assertArrayEquals("玩家文件不许被碰", "player-owned".toByteArray(), player.readBytes())
+        assertTrue("非后缀条目不投递", !File(gameRoot, "mods/rt2/readme.txt").exists())
+        assertArrayEquals("内置条目照常落盘", "builtin".toByteArray(), File(gameRoot, builtinManifestAsset()).readBytes())
+    }
+
+    @Test
+    fun `mods子树不进文件级摘要且普通语料照旧进表`() {
+        assertFalse(
+            "内置 manifest 靠专用步骤逐字节对账，不进摘要",
+            GameAssetInstaller.recordedInDigest("mods/rt2/eratw.family.manifest"),
+        )
+        assertFalse("玩家导入的 mod 也不该被摘要当成包内容", GameAssetInstaller.recordedInDigest("mods/player.ERB"))
+        assertTrue("普通语料目录的摘要口径不变", GameAssetInstaller.recordedInDigest("CSV/_Rename.csv"))
+    }
+
+    // ------------------------------------------------------------------
+    // RT2-ERBM：.erbm 容器两件套随包投递（双后缀扩面）
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `内置RT2容器erbm首启落盘且二轮幂等`() {
+        val erbm = ByteArray(561) { ((it * 13 + 7) and 0xff).toByte() }
+        asset("mods/rt2/eratw.demo.erbm", erbm)
+
+        val first = install()
+        val target = File(gameRoot, "mods/rt2/eratw.demo.erbm")
+
+        assertEquals("只落 .erbm 这一个文件", 1, first.copiedFiles)
+        assertArrayEquals(erbm, target.readBytes())
+        assertEquals("第二轮一个字节都不该重写", 0, install().copiedFiles)
+    }
+
+    @Test
+    fun `容器与manifest两件套一起投递且玩家同目录文件不碰`() {
+        // 双后缀必须都在投递面：装配侧判据「每容器必有同包名 manifest」，缺一边就旁路/整包拒。
+        asset("mods/rt2/eratw.demo.manifest", "RT2MANIFEST/3".toByteArray())
+        asset("mods/rt2/eratw.demo.erbm", ByteArray(64) { it.toByte() })
+        val playerErbm = File(gameRoot, "mods/rt2/player.erbm").apply {
+            parentFile?.mkdirs()
+            writeBytes("player-owned".toByteArray())
+        }
+        val playerManifest = File(gameRoot, "mods/rt2/player.manifest").apply {
+            writeBytes("player-manifest".toByteArray())
+        }
+
+        val result = install()
+
+        assertEquals("两件套各落一份", 2, result.copiedFiles)
+        assertArrayEquals("玩家 .erbm 不许被碰", "player-owned".toByteArray(), playerErbm.readBytes())
+        assertArrayEquals("玩家 manifest 不许被碰", "player-manifest".toByteArray(), playerManifest.readBytes())
+    }
+
+    @Test
+    fun `erbm容器不进文件级摘要`() {
+        assertFalse(
+            "内置容器同走专用步骤逐字节对账，不进摘要",
+            GameAssetInstaller.recordedInDigest("mods/rt2/eratw.demo.erbm"),
+        )
+    }
+
+    @Test
+    fun `平台侧内置资产形状常量与app侧装配口径同源`() {
+        val assembly = File("../app/src/main/kotlin/com/eratw/port/android/ModRuntimeAssembly.kt")
+        assertTrue("找不到 ModRuntimeAssembly.kt：${assembly.path}", assembly.isFile)
+        val source = assembly.readText()
+        assertEquals("mods/rt2", GameAssetInstaller.BUILTIN_RT2_ASSET_DIR)
+        assertTrue("rt2 子目录名必须与 app 侧一致", source.contains("const val RT2_MANIFEST_DIR_NAME: String = \"rt2\""))
+        assertTrue(
+            "后缀必须与 app 侧一致",
+            source.contains("const val MANIFEST_EXTENSION: String = \"${GameAssetInstaller.BUILTIN_RT2_SUFFIX}\""),
+        )
+    }
+
     private fun install(
         tree: GameAssetTree = DirAssetTree(assetsRoot),
         progress: MutableList<GameAssetInstaller.Progress>? = null,
@@ -600,5 +728,148 @@ class GameAssetInstallerTest {
         override fun listDir(path: String): List<String> = inner.listDir(path)
 
         override fun fileSize(path: String): Long? = inner.fileSize(path)
+    }
+
+    // ------------------------------------------------------------------
+    // 压缩条目的内容对账（STORAGE-1 第二刀：`-PeratwErbcCompress` 包的解包侧契约）
+    //
+    // 压缩条目拿不到字节数（[DirAssetTree.hideSizes] 模拟 `openFd` 必抛），判重拷从
+    // 「字节数对账」退化成「非零即已装」——覆盖安装时旧程序会被永远留在盘上（重切包
+    // 没抬号时版本号也判不出来，0.2.44-71d → 0.2.44-88c 实际发生）。判式改按两侧
+    // 侧车头部声明的 program-sha256 对账，见 [GameAssetInstaller.compressedPairStale]。
+    // 这组用例把四个方向 + 回落口径钉死。
+    // ------------------------------------------------------------------
+
+    /** 压缩口径：整棵树按「`fileSize` 拿不到长度」的 DEFLATE 条目对待。 */
+    private fun compressedTree(): DirAssetTree = DirAssetTree(assetsRoot, hideSizes = true)
+
+    /** 带版本号的解包（C-1：随包解包传本机 versionCode，摘要跟着这个数落盘）。 */
+    private fun installWithVersion(tree: GameAssetTree, version: Long): GameAssetInstaller.Result =
+        GameAssetInstaller(tree, gameRoot, recordDataVersion = version).install { }
+
+    @Test
+    fun `压缩产物在盘上版本落后时强制重拷`() {
+        // 第一版：v1 装盘，摘要标 1。
+        val v1 = bytes(30_000, seed = 61)
+        asset("erbc.v1/program.erbc", v1)
+        asset("erbc.v1/program.meta", meta(sha256(v1)).toByteArray())
+        installWithVersion(DirAssetTree(assetsRoot), 1)
+        assertEquals(1L, GameAssetInstaller.readDataDigest(gameRoot)!!.version)
+
+        // 第二版：内容换掉、条目按压缩口径（拿不到字节数），包版本 2 > 盘上 1 ⇒ 必须重拷。
+        val v2 = bytes(60_000, seed = 62)
+        asset("erbc.v1/program.erbc", v2)
+        asset("erbc.v1/program.meta", meta(sha256(v2)).toByteArray())
+        val result = installWithVersion(compressedTree(), 2)
+
+        assertTrue("版本落后就必须重拷产物", result.copiedFiles >= 2)
+        assertTrue(result.programSha256Verified)
+        assertArrayEquals(v2, File(gameRoot, "erbc.v1/program.erbc").readBytes())
+        assertEquals("摘要要跟着推到新版本", 2L, GameAssetInstaller.readDataDigest(gameRoot)!!.version)
+    }
+
+    @Test
+    fun `压缩条目同版但侧车 sha 不同时重拷（重切包未抬号）`() {
+        val v1 = bytes(30_000, seed = 71)
+        asset("erbc.v1/program.erbc", v1)
+        asset("erbc.v1/program.meta", meta(sha256(v1)).toByteArray())
+        installWithVersion(DirAssetTree(assetsRoot), 1)
+
+        // 重切包没抬号（版本号还是 1）但内容换了：版本号判不出来，侧车 sha 判得出来。
+        // 0.2.44-71d → 0.2.44-88c 覆盖安装就栽在这里 —— 旧 erbc 被留下，语料修复全部落空。
+        val v2 = bytes(50_000, seed = 72)
+        asset("erbc.v1/program.erbc", v2)
+        asset("erbc.v1/program.meta", meta(sha256(v2)).toByteArray())
+        val result = installWithVersion(compressedTree(), 1)
+
+        assertTrue("同版不同内容必须重拷", result.copiedFiles >= 2)
+        assertTrue(result.programSha256Verified)
+        assertArrayEquals(v2, File(gameRoot, "erbc.v1/program.erbc").readBytes())
+        assertEquals("版本号不因内容漂移而虚高", 1L, GameAssetInstaller.readDataDigest(gameRoot)!!.version)
+    }
+
+    @Test
+    fun `压缩条目同版同内容零成本快路径`() {
+        val v1 = bytes(30_000, seed = 75)
+        asset("erbc.v1/program.erbc", v1)
+        asset("erbc.v1/program.meta", meta(sha256(v1)).toByteArray())
+        installWithVersion(DirAssetTree(assetsRoot), 1)
+
+        // 同一版再走一遍（内容逐字节相同）：sha 相同 ⇒ 一个字节都不动。
+        val result = installWithVersion(compressedTree(), 1)
+
+        assertEquals(0, result.copiedFiles)
+        assertArrayEquals(v1, File(gameRoot, "erbc.v1/program.erbc").readBytes())
+    }
+
+    @Test
+    fun `盘上版本更新时不把压缩条目盖回旧包`() {
+        // 镜像数据包已把盘推到 3；随后装一个更旧的包（v2 资产、版本号 2）——不许回盖。
+        val v1 = bytes(30_000, seed = 81)
+        asset("erbc.v1/program.erbc", v1)
+        asset("erbc.v1/program.meta", meta(sha256(v1)).toByteArray())
+        installWithVersion(DirAssetTree(assetsRoot), 3)
+
+        val v2 = bytes(60_000, seed = 82)
+        asset("erbc.v1/program.erbc", v2)
+        asset("erbc.v1/program.meta", meta(sha256(v2)).toByteArray())
+        val result = installWithVersion(compressedTree(), 2)
+
+        assertEquals(0, result.copiedFiles)
+        assertArrayEquals(v1, File(gameRoot, "erbc.v1/program.erbc").readBytes())
+    }
+
+    @Test
+    fun `没有摘要的旧盘按侧车 sha 自愈重拷`() {
+        // C-1 之前的盘：文件在、摘要不在。sha 判据不依赖版本号 ⇒ 照样判出内容不同并重拷，
+        // 拷完写出完整摘要、下一轮回到快路径（首轮「不强制防白拷」挂账的残余面就此关闭）。
+        val v1 = bytes(30_000, seed = 91)
+        File(gameRoot, "erbc.v1").mkdirs()
+        File(gameRoot, "erbc.v1/program.erbc").writeBytes(v1)
+        File(gameRoot, "erbc.v1/program.meta").writeText(meta(sha256(v1)))
+
+        val v2 = bytes(60_000, seed = 92)
+        asset("erbc.v1/program.erbc", v2)
+        asset("erbc.v1/program.meta", meta(sha256(v2)).toByteArray())
+        val result = installWithVersion(compressedTree(), 2)
+
+        assertTrue(result.copiedFiles >= 2)
+        assertArrayEquals(v2, File(gameRoot, "erbc.v1/program.erbc").readBytes())
+        assertEquals("自愈后摘要落地", 2L, GameAssetInstaller.readDataDigest(gameRoot)!!.version)
+    }
+
+    @Test
+    fun `APK 侧车未声明 sha 时压缩条目保持非零即跳过`() {
+        // 侧车没声明 sha（"-"）⇒ 无法判内容 ⇒ 保持旧口径（非零即已装），不凭空重拷。
+        val v1 = bytes(30_000, seed = 95)
+        File(gameRoot, "erbc.v1").mkdirs()
+        File(gameRoot, "erbc.v1/program.erbc").writeBytes(v1)
+        File(gameRoot, "erbc.v1/program.meta").writeText(meta(sha256(v1)))
+
+        val v2 = bytes(50_000, seed = 96)
+        asset("erbc.v1/program.erbc", v2)
+        asset("erbc.v1/program.meta", meta(null).toByteArray())
+        val result = installWithVersion(compressedTree(), 2)
+
+        assertEquals(0, result.copiedFiles)
+        assertArrayEquals(v1, File(gameRoot, "erbc.v1/program.erbc").readBytes())
+    }
+
+    @Test
+    fun `STORED 条目继续按字节数对账不受版本漂移影响`() {
+        val v1 = bytes(10_000, seed = 101)
+        asset("erbc.v1/program.erbc", v1)
+        asset("erbc.v1/program.meta", meta(sha256(v1)).toByteArray())
+        installWithVersion(DirAssetTree(assetsRoot), 1)
+
+        // v2 与 v1 字节数相同、内容不同：STORED 口径仍只按字节数对账（同长即跳过），
+        // 内容对账的门只对压缩条目开——STORED 的换版检测本来就是字节数，不叠加。
+        val v2 = bytes(10_000, seed = 102)
+        asset("erbc.v1/program.erbc", v2)
+        asset("erbc.v1/program.meta", meta(sha256(v2)).toByteArray())
+        val result = installWithVersion(DirAssetTree(assetsRoot), 2)
+
+        assertEquals(0, result.copiedFiles)
+        assertArrayEquals(v1, File(gameRoot, "erbc.v1/program.erbc").readBytes())
     }
 }

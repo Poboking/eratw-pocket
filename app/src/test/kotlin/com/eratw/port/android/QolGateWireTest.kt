@@ -6,17 +6,20 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 四个 QoL 开关的**闸接线哨兵**（CONTRACT-MODERN-T6 §2 闸矩阵 / T6-3 / T6-4）。
+ * QoL 开关与右栏布局档的**闸接线哨兵**（CONTRACT-MODERN-T6 §2 闸矩阵 / T6-3 / T6-4 / RAIL-OPTIONS）。
  *
  * `MainActivity` / `GameHost` 挂在 Android 运行时上，app 的 JVM 单测面实例化不了，
  * 所以照 [EventWiringTest] 的源码面口径钉形状：删掉任一条读点/写点/传值，本类当场红。
  *
- * 四闸各钉「消费点 + 写点」：
+ * 各闸钉「消费点 + 写点」：
  *   * `screenFit`   —— 读点 `appliedScreenFit = UiPrefs.screenFit(this)`、消费点
  *     `columnGuardEnabled = appliedScreenFit`（下一次装配生效）；变更判据两个方向都给 `displaySettingChanged`；
  *   * `optionRail`  —— 初值 `shell.railVisible = UiPrefs.optionRailVisible(this)`、
  *     写点 `UiPrefs.setOptionRailVisible(this@MainActivity, shell.railVisible)`（即时 = 壳状态）；
- *   * `leanOptions` —— 消费点 `chips` 的三元式（关 = `recognized` 原样，开才过过滤）；
+ *   * `chips`       —— 右栏候选必须原样等于 `filtered.options`，显示端不许有第二道裁剪；
+ *   * `railLayout`  —— 设置页写点 `UiPrefs.setRailLayout(context, mode)` → 回前台镜像
+ *     `shell.railLayout = UiPrefs.railLayout(this)` → 消费点 `railLayoutOf(state.chips, state.railLayout, …)`：
+ *     三段缺任何一段，玩家改档位就是「改了没反应」（2026-11-11 玩家问的就是这条接线）；
  *   * `disableBadApple` —— **负向哨兵**：`GameHost`（VM 线程装载链）源码里不许再出现
  *     `UiPrefs.disableBadApple(`，读数必须在 UI 线程取好、经构造函数命名实参传入。
  *   * `echoInput` —— 同一缺陷类（VM 线程现读 `SharedPreferences`）的顺带收口：`GameHost`
@@ -103,17 +106,50 @@ class QolGateWireTest {
     }
 
     // ==================================================================
-    // 闸 3：leanOptions（更精简的游戏选项）—— chips 三元式
+    // 闸 3：右栏候选 = 过滤结果，显示端不许再加第二道裁剪
     // ==================================================================
 
     @Test
-    fun `精简选项的消费点关态原样`() {
+    fun `右栏候选只吃 filterOptions 的结果`() {
         val src = sourceOf("MainActivity.kt")
+        // 「更精简的游戏选项」那道三元式已随开关一起摘掉（判据整族收编 = 右栏过滤卡的
+        // 「隐藏无编号」规则，两者同一条 `RailOptionRules.filterOptions`）。这里钉的是
+        // 摘干净之后的形状：chips 必须原样等于过滤结果，别哪天又冒出第二道裁剪。
         assertTrue(
-            "chips 必须是「缺省关 = recognized 原样；开才过 LeanOptionFilter」的三元式",
-            src.contains(
-                "val chips = if (UiPrefs.leanOptions(this)) LeanOptionFilter.keepCommon(recognized) else recognized",
-            ),
+            "chips 必须直接等于 filtered.options",
+            src.contains("val chips = filtered.options"),
+        )
+    }
+
+    // ==================================================================
+    // 闸 3.5：railLayout（右栏三档布局）—— 写点 → 镜像 → 消费点，三段缺一即「改了没反应」
+    // ==================================================================
+
+    /**
+     * 玩家 2026-11-11 问「三档布局到底接进去没有」。这条闸把整条链一次钉死：
+     * 设置页落盘、`MainActivity.onResume` 回前台镜像进壳状态、右栏渲染按壳状态折算摆法。
+     * 任何一段被改回「读常量」「读缺省档」「走兼容垫片」，本用例当场红。
+     */
+    @Test
+    fun `右栏布局三档的写点镜像点与消费点齐备`() {
+        val settings = sourceOf("SettingsActivity.kt")
+        assertTrue(
+            "设置页必须把选中的档位落盘（随改随存，不必重开会话）",
+            settings.contains("UiPrefs.setRailLayout(context, mode)"),
+        )
+        val activity = sourceOf("MainActivity.kt")
+        assertTrue(
+            "回前台必须把盘上的档位镜像进壳状态，否则设置页改完右栏照旧",
+            activity.contains("shell.railLayout = UiPrefs.railLayout(this)"),
+        )
+        assertTrue(
+            "每行枚数同样要镜像（三档都吃它）",
+            activity.contains("shell.railChipsPerRow = UiPrefs.railChipsPerRow(this)"),
+        )
+        val shell = sourceOf("ShellUi.kt")
+        assertTrue(
+            "右栏渲染必须按壳状态的档位与枚数折算行形状，不许走硬编码缺省的兼容垫片",
+            shell.contains("railLayoutOf(state.chips, state.railLayout, state.railChipsPerRow)"),
         )
     }
 

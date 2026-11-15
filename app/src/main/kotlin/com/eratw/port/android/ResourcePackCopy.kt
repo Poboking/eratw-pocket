@@ -121,6 +121,35 @@ data class ResourcePackCopy(
     val bgmEnabledHint: String,
     /** 结果区「还差一步」小标题：有文件落盘时在重启按钮上方再顶一次启用步骤（无槽位）。 */
     val enableStepsTitle: String,
+
+    // ---- 清理已导入素材（背景图卡 / BGM 卡各一个入口，两段范围分开出词） ----
+
+    /** 背景图卡「清除已导入的背景图」按钮。 */
+    val clearBackgroundButton: String,
+    /** BGM 卡「清除已导入的 BGM」按钮。 */
+    val clearBgmButton: String,
+    /** 清理确认框标题。 */
+    val clearConfirmTitle: String,
+    /** 确认框正文（背景图范围）：点名投放根与自动生成的索引，并说明随包素材不动。 */
+    val clearConfirmBackgroundBody: String,
+    /** 确认框正文（BGM 范围）：点名 sound/ 与自动编号，并说明随包素材不动。 */
+    val clearConfirmBgmBody: String,
+    /** 确认框「清除」按钮（真正动手那一下）。 */
+    val clearConfirmOk: String,
+    /** 确认框「取消」按钮。 */
+    val clearConfirmCancel: String,
+    /** 清理线程跑起来后的进行态那句。 */
+    val clearRunningText: String,
+    /** 清理成功的汇总：{0}=删掉的导入文件数 {1}=顺手剪掉的空目录数。 */
+    val clearSucceededFormat: String,
+    /** 没有需要清理的导入素材（无槽位）。 */
+    val clearNothingFormat: String,
+    /** 有被导入覆盖的随包文件被还原：{0}=还原文件数。 */
+    val clearRestoredFormat: String,
+    /** 整批没做成：{0}=原因原话。 */
+    val clearFailedFormat: String,
+    /** 清理后要重启游戏才生效（无槽位）。 */
+    val clearRestartHint: String,
 ) {
 
     /**
@@ -195,6 +224,19 @@ data class ResourcePackCopy(
                 "要在游戏里听到 BGM，还需在 DLC 设置开启「音乐补丁开关」；曲目只按 上午/下午/晚上 " +
                     "分目录时，再到音乐设置里点「更改音乐目录模式」切到差分模式。",
             enableStepsTitle = "还差一步：在游戏里启用",
+            clearBackgroundButton = "清除已导入的背景图",
+            clearBgmButton = "清除已导入的 BGM",
+            clearConfirmTitle = "清除已导入的素材",
+            clearConfirmBackgroundBody = "只删除 resources/背景图/ 下你导入的图片和索引（含自动生成的 自动索引.csv），游戏自带素材不会动。清除后需要重启游戏。",
+            clearConfirmBgmBody = "只删除 sound/ 下你导入的音频（含自动编号后的曲目），游戏自带素材不会动。清除后重启游戏即可。",
+            clearConfirmOk = "清除",
+            clearConfirmCancel = "取消",
+            clearRunningText = "正在清理…",
+            clearSucceededFormat = "已清除 {0} 个导入文件（顺手清掉 {1} 个空目录）。",
+            clearNothingFormat = "没有找到需要清理的导入素材。",
+            clearRestoredFormat = "有 {0} 个被导入覆盖的游戏自带文件已还原。",
+            clearFailedFormat = "清理没做成：{0}",
+            clearRestartHint = "清理后要重启游戏才会生效。",
         )
 
         /** English：结构与 [ZH] 逐条同形（同样几个读数），措辞另写，不抄中文。 */
@@ -252,6 +294,19 @@ data class ResourcePackCopy(
                 "To hear the imported BGM, enable the music patch in DLC settings; if tracks are only " +
                     "under morning/afternoon/evening folders, switch the music folder mode to differential.",
             enableStepsTitle = "One more step: enable it in game",
+            clearBackgroundButton = "Clear imported background images",
+            clearBgmButton = "Clear imported BGM",
+            clearConfirmTitle = "Clear imported assets",
+            clearConfirmBackgroundBody = "Only the images and index you imported under resources/背景图/ are deleted (including the auto-generated 自动索引.csv); the files that ship with the game are kept. Restart the game after clearing.",
+            clearConfirmBgmBody = "Only the audio you imported under sound/ is deleted (including auto-numbered tracks); the files that ship with the game are kept. Just restart the game after clearing.",
+            clearConfirmOk = "Clear",
+            clearConfirmCancel = "Cancel",
+            clearRunningText = "Clearing...",
+            clearSucceededFormat = "Cleared {0} imported file(s) (and pruned {1} empty folder(s)).",
+            clearNothingFormat = "No imported assets needed clearing.",
+            clearRestoredFormat = "{0} game-provided file(s) that imports had overwritten were restored.",
+            clearFailedFormat = "Clearing did not go through: {0}",
+            clearRestartHint = "The clearing takes effect only after you restart the game.",
         )
 
         /** 日本語：结构与 [ZH] 逐条同形。 */
@@ -305,6 +360,19 @@ data class ResourcePackCopy(
                 "BGM を再生するには、DLC 設定で「音楽パッチ」を有効にしてください。曲が 午前/午後/夜 " +
                     "のフォルダだけにある場合は、音楽設定で「音楽ディレクトリモード」を差分モードに切り替えてください。",
             enableStepsTitle = "あと 1 ステップ：ゲーム内で有効化",
+            clearBackgroundButton = "導入済みの背景画像を削除",
+            clearBgmButton = "導入済みの BGM を削除",
+            clearConfirmTitle = "導入済みの素材を削除",
+            clearConfirmBackgroundBody = "resources/背景图/ 以下に導入した画像と索引（自動生成された 自动索引.csv を含む）だけを削除します。ゲームに同梱の素材は消しません。削除後はゲームの再起動が必要です。",
+            clearConfirmBgmBody = "sound/ 以下に導入した音声（自動で番号を振った曲を含む）だけを削除します。ゲームに同梱の素材は消しません。削除後はゲームを再起動すれば反映されます。",
+            clearConfirmOk = "削除",
+            clearConfirmCancel = "キャンセル",
+            clearRunningText = "削除しています…",
+            clearSucceededFormat = "導入した {0} ファイルを削除しました（空フォルダも {1} 件整理）。",
+            clearNothingFormat = "削除が必要な導入素材は見つかりませんでした。",
+            clearRestoredFormat = "導入で上書きされていた同梱ファイル {0} 件を元に戻しました。",
+            clearFailedFormat = "削除できませんでした：{0}",
+            clearRestartHint = "削除を反映するにはゲームの再起動が必要です。",
         )
     }
 }

@@ -1,5 +1,6 @@
 package com.eratw.port.platform.storage
 
+import com.eratw.port.core.update.UpdatePolicy
 import com.eratw.port.platform.config.ConfigFileStore
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -102,6 +103,107 @@ class DataDigest(
 )
 
 /**
+ * 一次性出厂配置值迁移规则（安装期执行，见 [GameAssetInstaller] 构造参数的 `configMigrations`）。
+ *
+ * 只匹配**盘上当前值恰好等于 [from]** 的行，把该键的值原地替换成 [to]；键名、注释、行序、
+ * 行尾与 BOM 都不动。匹配不到就一个字节都不写 —— 玩家自己调过的值必须尊重。
+ *
+ * @property key 配置键（比较前统一大写；语料与写盘侧都用英文键名）
+ * @property from 随包发行过的历史值（**不是**当前语料值）
+ * @property to 本次要落地的值
+ */
+data class ConfigValueMigration(
+    val key: String,
+    val from: String,
+    val to: String,
+)
+
+/**
+ * 标记文件里这条规则的记账行。
+ *
+ * 同一键可以有多条规则（不同历史值），因此记账粒度是**规则**而不是键：`KEY:from->to`
+ * 三要素任何一项不同都算一条没跑过的新规则。
+ */
+private fun ConfigValueMigration.markerLine(): String = "$key:$from->$to"
+
+/** [migrateConfigText] 的结果：迁移后全文 + 实际改写的行数。 */
+internal data class ConfigMigrationOutcome(val text: String, val applied: Int)
+
+/**
+ * 纯文本形态的出厂值迁移（供 `GameAssetInstaller` 与单测共用）。
+ *
+ * 逐行只做「键名匹配 + 值段原地替换」：行尾 `\r\n` / `\r` / `\n`、BOM、注释、空白与行序
+ * 全部原样保留；值段前有空白也保留。没有命中任何规则时返回的 `text` 与入参相等。
+ *
+ * 同一个键可以登记多条规则（不同历史值各一条）：按值整段匹配，命中哪条用哪条。
+ */
+internal fun migrateConfigText(text: String, migrations: List<ConfigValueMigration>): ConfigMigrationOutcome {
+    if (text.isEmpty() || migrations.isEmpty()) return ConfigMigrationOutcome(text, 0)
+    val rules = HashMap<String, MutableList<ConfigValueMigration>>(migrations.size)
+    for (rule in migrations) {
+        rules.getOrPut(rule.key.trim().uppercase(Locale.ROOT)) { ArrayList(1) } += rule
+    }
+    val out = StringBuilder(text.length)
+    var applied = 0
+    var start = 0
+    while (start < text.length) {
+        val end = lineEnd(text, start)
+        val (rewritten, changed) = migrateConfigLine(text.substring(start, end), rules)
+        if (changed) applied++
+        out.append(rewritten)
+        start = appendLineEnding(text, end, out)
+    }
+    return ConfigMigrationOutcome(out.toString(), applied)
+}
+
+/** 从 [start] 起找行尾下标（不含 `\r`/`\n`）；文末没有行尾时返回 [text] 长度。 */
+private fun lineEnd(text: String, start: Int): Int {
+    var i = start
+    while (i < text.length && text[i] != '\r' && text[i] != '\n') i++
+    return i
+}
+
+/** 把 [index] 处的行尾原样追加到 [out]，返回下一行起点；没有行尾时返回原下标。 */
+private fun appendLineEnding(text: String, index: Int, out: StringBuilder): Int {
+    val hasEol = index < text.length && (text[index] == '\r' || text[index] == '\n')
+    val lfAfterCr = hasEol && text[index] == '\r' && index + 1 < text.length
+    val crlf = lfAfterCr && text[index + 1] == '\n'
+    if (hasEol) {
+        out.append(text[index])
+        if (crlf) out.append('\n')
+    }
+    return if (crlf) index + 2 else if (hasEol) index + 1 else index
+}
+
+/** 从 [start] 起跳过空白后取值的结束下标（空白或行尾注释 `;` 之前）。 */
+private fun valueEnd(line: String, start: Int): Int {
+    var i = start
+    while (i < line.length && !line[i].isWhitespace() && line[i] != ';') i++
+    return i
+}
+
+private fun migrateConfigLine(
+    line: String,
+    rules: Map<String, List<ConfigValueMigration>>,
+): Pair<String, Boolean> {
+    val colon = line.indexOf(':')
+    val key = if (colon > 0) {
+        line.substring(0, colon).removePrefix("\uFEFF").trim().uppercase(Locale.ROOT)
+    } else {
+        null
+    }
+    var valueStart = colon + 1
+    while (valueStart < line.length && line[valueStart].isWhitespace()) valueStart++
+    val end = if (colon > 0) valueEnd(line, valueStart) else 0
+    val rule = key?.let { rules[it] }?.firstOrNull { line.substring(valueStart, end) == it.from }
+    return if (rule == null) {
+        line to false
+    } else {
+        (line.substring(0, valueStart) + rule.to + line.substring(end)) to true
+    }
+}
+
+/**
  * APK 自带数据 → 游戏根的**首启解包器**（M8-ASSETSINSTALL）。
  *
  * ## 为什么需要
@@ -122,7 +224,8 @@ class DataDigest(
  * - `CSV/`、`resources/`、`sound/`：目录递归；
  * - `emuera.config`：原版配置（`ConfigData.cs:33`），**只拷一次**，之后永不覆盖；
  *   但升级路径上做「缺键补齐」（见 [mergeConfigUpgrades]）：新包新增键追加进盘上
- *   旧配置，盘上已有键一律不碰。
+ *   旧配置，盘上已有键一律不碰；另有历史出厂值的一次性迁移（[migrateConfigValues]），
+ *   只把「仍等于随包旧值」的键改到新标定。
  *
  * ## 幂等与「不覆盖用户数据」
  *
@@ -130,13 +233,35 @@ class DataDigest(
  * - 知道资产字节数（STORED 条目，或分片清单）时，目标存在且字节数相同才跳过，不同就重拷
  *   （覆盖上一版产物 / 截断的残留）；**0 字节也是已知长度**——语料 `sound/` 下有 18 个
  *   零字节 `bgm` 标记（`app/build.gradle.kts` 的体积测算段），目标被写成非空同样要重拷；
- * - 拿不到字节数（DEFLATE 条目）时只比存在性 —— 不会为了「比大小」把 328 MB 解压一遍；
+ * - 拿不到字节数（DEFLATE 条目，`-PeratwErbcCompress` 包）时按「存在性 + 盘上数据版本」判：
+ *   同版非零即跳过（不为「比大小」把 400+ MiB 解压一遍），盘上版本落后（手动侧载换了新
+ *   APK）则一律重拷 —— STORED 时代靠字节数对账能查出换版，压缩后这条路由版本号补上，
+ *   见 [compressedPairStale]；
  * - `emuera.config` 是**用户可改**的（游戏内设置直接写回该文件），存在就跳过、不比大小
- *   （升级键由 [mergeConfigUpgrades] 单独补齐，见该函数 KDoc）；
+ *   （升级键由 [mergeConfigUpgrades] 补齐、历史出厂值由 [migrateConfigValues] 迁移，
+ *   后者用 `update/config-migrations.txt` 标记保证只跑一次）；
  * - `sav/` 不在清单里：存档是用户数据，不随包。
  *
  * 这一段判据属于**首启档**。数据更新走 [forceReplace] = true 的**更新档**：长度核对换成
  * 「包里有就重写」，其余（配置只拷一次、逐文件改名、配对事务、跨进程锁）原样不动。
+ *
+ * ## 让位档（CONTRACT-BOOTUNPACK，2026-11-15）
+ *
+ * 盘上数据版本高于 APK 随包版本时（[diskDataVersion] > [recordDataVersion]），本轮进入
+ * **让位档**：盘上内容来自更高版本的数据包，已在位的资产一律不碰 —— 不比长度、不看
+ * sha 漂移。首启档那个「长度不同就重拷」的判据在这种盘上会把更新逐文件打回 APK 内旧版，
+ * 每轮冷启重写整棵约 919 MiB 语料树，并把 digest / 版本标记一起拨回，更新通道从此在
+ * 「提示 → 下载 → 应用 → 打回」里循环。
+ *
+ * 让位与否由 core 的 [UpdatePolicy.unpackSuppressedByNewerDiskData] 判（只看版本大小，
+ * 不猜内容），逐文件怎么让位由 [UpdatePolicy.bundledAssetNeedsCopy] 的**同一张判据表**
+ * 裁决 —— 与既有 [forceReplace] 更新档并列，不再各写一份。这样随包解包复用的是解包器
+ * 自己的档位机制，而不是在更上层（宿主）用一条 if 把整轮解包短路：配置缺键补齐、出厂值
+ * 迁移、内置 RT2 投递、配对事务、摘要维护在让位档下**照常跑**，只有「该拷什么」让位。
+ *
+ * 三条例外按各自既有语义保留：目标缺失的独立资产仍补拷（玩家手删一条 CSV 该补回来）；
+ * 配对产物（program / 侧车 / 偏移表）**整对让位**，缺一条也不拿 APK 旧版去补，否则会
+ * 留下「旧 program + 新 meta」的错配；`emuera.config` 仍是「存在就跳过」。
  *
  * 目标路径按资产名**原样大小写**落盘（不改写、不折叠）：原版跑在大小写不敏感的 NTFS 上，
  * 兜底在读取侧（`EmueraConfigParser.resolveSubDir` 认 `csv`/`CSV`、`GameImageFiles` 建小写索引、
@@ -174,7 +299,8 @@ class DataDigest(
  * 再加一层与发布侧 `devtools/emit_update.py` 的 `NEVER_BUNDLED` **同名单**的保护：路径的任何一段
  * 是 `sav`、`update`、`emuera.config`、`.install.lock` 都不许删。按段判不挡任何合法删除 ——
  * 实测六个随包目录里这四个名字一条都没有
- * （`find CSV resources sound plugins bad ERB \( -name sav -o -name update -o -name emuera.config -o -name .install.lock \)`
+ * （`find CSV resources sound plugins bad ERB`
+ * `\( -name sav -o -name update -o -name emuera.config -o -name .install.lock \)`
  * 空输出；2026-11-01 在游戏根 `eratw-画蛇添足版eratw4.980` 上跑的，2026-11-03 补上 ERB 后
  * 在 4.980 / 4.981 两处游戏根复测仍空输出）。
  *
@@ -257,7 +383,15 @@ class DataDigest(
  *
  * 锁文件本身是 0 字节常驻文件，不算解包产物：`GameStorage.looksLikeGameRoot` 只认
  * `emuera.config` 与 `erbc.v1/program.erbc` 两个标志，不受它影响。
+ *
+ * ## 构造参数为什么是八个
+ *
+ * `@Suppress("LongParameterList")`：尾部几个开关（[recordDataVersion]、`configMigrations`、
+ * [diskDataVersion]）都是「调用点显式决定要不要做这件事」的独立行为，收进 options 对象只会
+ * 把同一组缺省值再抄一遍。新加的 [diskDataVersion] 带缺省 `-1`，所有老调用点逐字不变：
+ * 只有随包解包这一处要读盘上版本，更新档（[forceReplace]）与纯 JVM 测试都不传。
  */
+@Suppress("LongParameterList")
 class GameAssetInstaller(
     private val assets: GameAssetTree,
     private val gameRoot: File,
@@ -305,10 +439,57 @@ class GameAssetInstaller(
      * 见类头「文件级摘要」段。
      */
     private val recordDataVersion: Long = -1L,
+    /**
+     * 历史出厂值的一次性迁移规则（见 [ConfigValueMigration]）；缺省空表 = 完全不碰配置。
+     *
+     * 只有首启/换 APK 的随包解包才带上平台标定；数据包更新通道不传，保持空表。
+     * 执行时机与约束见 [migrateConfigValues]。
+     */
+    private val configMigrations: List<ConfigValueMigration> = emptyList(),
+    /**
+     * 盘上 `update/data-version.txt` 的读数（**只由随包解包的调用方传**，见类头「让位档」段）。
+     * 缺省 `-1` = 调用方不参与版本让位，逐文件判据与加入本参数前逐字相同。
+     *
+     * 与 [recordDataVersion]（本轮 APK 随包数据的版本）配成一对：前者更高就说明盘上是
+     * 数据更新包的产物，本轮不得拿 APK 内旧语料覆盖。判据走 core 纯函数
+     * [UpdatePolicy.unpackSuppressedByNewerDiskData]，不在本类里另写一份比大小。
+     *
+     * 为什么由调用方传而不是自己读：这个标记属于 app 侧的更新通道（`UpdateManager` 的
+     * `DATA_VERSION_FILE`），platform 不该知道那条路径；而且同一个标记必须由
+     * 「读的那个人」和「写的那个人」共用一套只升不降的口径，见 CONTRACT-BOOTUNPACK。
+     */
+    private val diskDataVersion: Long = -1L,
 ) {
 
     /** 本轮要不要为落盘的文件算内容摘要（= 调用方给了合法的版本号）；见 [recordDataVersion]。 */
     private val wantsDigest: Boolean = recordDataVersion >= 0L
+
+    /** 本轮是否为让位档：只有随包解包（非更新档）且盘上数据版本更高时才成立。 */
+    private val defersToNewerDisk: Boolean =
+        !forceReplace && recordDataVersion >= 0L && diskDataVersion >= 0L &&
+            UpdatePolicy.unpackSuppressedByNewerDiskData(diskDataVersion, recordDataVersion)
+
+    /**
+     * 逐文件「本轮要不要重拷」的唯一裁决口（CONTRACT-BOOTUNPACK）。
+     *
+     * [shapeStale] 是首启档的形状判据（长度不符 / 压缩条目为空 / 内容对账不符 / 配对联动），
+     * 由各调用点算好；更新档、让位档、缺文件三档的优先级统一交给 core 的
+     * [UpdatePolicy.bundledAssetNeedsCopy]，本类不再散着写 `forceReplace || needsCopy(...)`。
+     *
+     * 配对产物在让位档下**整对让位**：连缺一条也不拿 APK 旧版去补，否则会留下
+     * 「旧 program + 新 meta」的错配（见类头「配对事务」段）。缺产物由更新通道的全量包
+     * 自愈，装载期 `artifactsOnDisk` 也会先给出可读的失败屏，不会静默跑错语料。
+     */
+    private fun stepNeeded(target: File, shapeStale: Boolean, pairArtifact: Boolean = false): Boolean {
+        // defersToNewerDisk 的定义里已含 !forceReplace，这里不重复判。
+        if (pairArtifact && defersToNewerDisk) return false
+        return UpdatePolicy.bundledAssetNeedsCopy(
+            forceReplace = forceReplace,
+            defersToDisk = defersToNewerDisk,
+            targetPresent = target.isFile,
+            shapeStale = shapeStale,
+        )
+    }
 
     /** 单条进度：`copied` / `total` 都按**资产条目**计（分片各算一条），`label` 是正在落盘的资产名。 */
     class Progress(
@@ -352,9 +533,13 @@ class GameAssetInstaller(
      * 「跳过 N 个」，不会去碰对方的中间文件；等不到则抛可读的 [AssetInstallException]。
      * 锁与中间文件无关：`.tmp` 的清理语义与失败文案保持原样。
      *
+     * 历史出厂值迁移由构造参数的 `configMigrations` 提供：写入发生在缺键补齐之后、
+     * 摘要之前，且受 `update/config-migrations.txt` 标记约束（见 [migrateConfigValues]）。
+     *
      * @param onProgress 每落完一个资产条目回调一次（真机上就是 logcat 的「解包中 N/M」）
      */
-    fun install(onProgress: (Progress) -> Unit = {}): Result = withInstallLock { installLocked(onProgress) }
+    fun install(onProgress: (Progress) -> Unit = {}): Result =
+        withInstallLock { installLocked(onProgress) }
 
     /** [install] 的本体（此时已持有跨进程锁；规划与落盘全在锁内）。 */
     private fun installLocked(onProgress: (Progress) -> Unit): Result {
@@ -433,6 +618,9 @@ class GameAssetInstaller(
         // 配置缺键补齐在配对事务**之外**：它不参与 program/meta 的配对回滚，失败也不该
         // 把已经落好的产物一起回滚掉（两件事的成败互不牵连）。
         mergeConfigUpgrades()
+        // 历史出厂值的一次性迁移在缺键补齐**之后**：补齐先按新资产把旧盘缺的键落好，
+        // 迁移只负责把「旧盘已有、且仍是旧出厂值」的键改到新标定。同样不参与配对回滚。
+        migrateConfigValues()
         // 摘要放在最后一拍：本轮任何一步没成（含配置补齐抛出来）就不会有摘要 ——
         // 宁缺勿错，写一份「说自己是第 N 版却只覆盖了三个文件」的表比没有表更坏。
         val recordProblem = writeDataDigest(
@@ -857,6 +1045,11 @@ class GameAssetInstaller(
     private fun plan(): List<Step> {
         val steps = ArrayList<Step>()
         val artifactDir = File(gameRoot, ARTIFACT_DIR)
+        // 压缩条目（DEFLATE，`-PeratwErbcCompress` 包）没有字节数可对账；盘上程序与本包
+        // 内容不同（按两侧侧车头部声明的 program-sha256 对账）时按「需要重拷」处理 ——
+        // 否则覆盖安装（含重切包没抬号的同 versionCode 换包）会让盘上永远留旧程序，
+        // 语料修复全部落空。见 [compressedPairStale]。
+        val compressedStale = compressedPairStale()
 
         val manifestParts = readPartsManifest()
         val programTarget = File(artifactDir, PROGRAM_FILE)
@@ -875,8 +1068,12 @@ class GameAssetInstaller(
                 target = programTarget,
                 sources = manifestParts,
                 relPath = PROGRAM_ASSET,
-                needed = forceReplace || metaStale ||
-                    needsCopy(programTarget, manifestParts.sumOf { it.expectedBytes ?: 0L }),
+                needed = stepNeeded(
+                    programTarget,
+                    shapeStale = metaStale ||
+                        needsCopy(programTarget, manifestParts.sumOf { it.expectedBytes ?: 0L }),
+                    pairArtifact = true,
+                ),
                 verifyProgram = true,
                 pairArtifact = true,
             )
@@ -884,7 +1081,12 @@ class GameAssetInstaller(
                 target = programTarget,
                 sources = listOf(programSingle),
                 relPath = PROGRAM_ASSET,
-                needed = forceReplace || metaStale || needsCopy(programTarget, programSingle.expectedBytes),
+                needed = stepNeeded(
+                    programTarget,
+                    shapeStale = metaStale || needsCopy(programTarget, programSingle.expectedBytes) ||
+                        (programSingle.expectedBytes == null && compressedStale),
+                    pairArtifact = true,
+                ),
                 verifyProgram = true,
                 pairArtifact = true,
             )
@@ -899,7 +1101,12 @@ class GameAssetInstaller(
                 target = metaTarget,
                 sources = listOf(source),
                 relPath = META_ASSET,
-                needed = forceReplace || programStale || needsCopy(metaTarget, source.expectedBytes),
+                needed = stepNeeded(
+                    metaTarget,
+                    shapeStale = programStale || needsCopy(metaTarget, source.expectedBytes) ||
+                        (source.expectedBytes == null && compressedStale),
+                    pairArtifact = true,
+                ),
                 pairArtifact = true,
             )
         }
@@ -913,7 +1120,12 @@ class GameAssetInstaller(
                 target = stmtIdxTarget,
                 sources = listOf(source),
                 relPath = STMT_IDX_ASSET,
-                needed = forceReplace || programStale || needsCopy(stmtIdxTarget, source.expectedBytes),
+                needed = stepNeeded(
+                    stmtIdxTarget,
+                    shapeStale = programStale || needsCopy(stmtIdxTarget, source.expectedBytes) ||
+                        (source.expectedBytes == null && compressedStale),
+                    pairArtifact = true,
+                ),
                 pairArtifact = true,
             )
         }
@@ -924,7 +1136,11 @@ class GameAssetInstaller(
                 target = manifestTarget,
                 sources = listOf(source),
                 relPath = MANIFEST_ASSET,
-                needed = forceReplace || needsCopy(manifestTarget, source.expectedBytes),
+                needed = stepNeeded(
+                    manifestTarget,
+                    shapeStale = needsCopy(manifestTarget, source.expectedBytes) ||
+                        (source.expectedBytes == null && compressedStale),
+                ),
             )
         }
 
@@ -940,8 +1156,101 @@ class GameAssetInstaller(
             )
         }
 
-        for (dir in DATA_DIRS) walkTree(dir, steps)
+        for (dir in DATA_DIRS) walkTree(dir, steps, compressedStale)
+        planBuiltinRt2Manifests(steps)
         return steps
+    }
+
+    /**
+     * 内置 RT2 资产（载体 manifest + ERB 模块两件套）的**专用投递步骤**
+     * （RT2-B③ 资产投递 / RT2-ERBM 扩双后缀）。
+     *
+     * 为什么不把它并进 [DATA_DIRS]：那个清单同时是「差量删除范围」与「首启递归落盘范围」，
+     * 而 `mods/` 里还住着玩家自己导入的 R7 补丁 —— 并进去之后升级时的陈旧删除就可能抹掉
+     * 玩家文件。这里只搬包内点名的内置资产，路径固定、文件名按 packageId 命名，其余
+     * `mods/` 内容一眼都不看。
+     *
+     * 投递面认**双后缀**（RT2-ERBM）：`.manifest`（载体声明）与 `.erbm`（ERB 模块容器，
+     * 如随包的 `eratw.demo.erbm`）。装配侧的配对判据是「每容器必有同包名 manifest」，
+     * 所以两件套必须都能到游戏根，缺一边装配层就空表旁路或整包拒。
+     *
+     * 判据走**逐字节内容对账**而不是 [needsCopy] 的长度比较：manifest 是几百字节的小文本，
+     * 改一个字段名很可能长度不变，且它未必是 STORED 条目（`fileSize` 可能拿不到长度）。
+     * 每次冷启多读几百字节，换「声明改了就一定生效」。没有这条资产时本函数零接触，
+     * 旧包行为逐位不变。
+     */
+    private fun planBuiltinRt2Manifests(steps: MutableList<Step>) {
+        val dir = BUILTIN_RT2_ASSET_DIR
+        for (name in assets.listDir(dir).sorted()) {
+            requireSafeAssetName(dir, name)
+            if (!name.endsWith(BUILTIN_RT2_SUFFIX) && !name.endsWith(BUILTIN_RT2_ERB_SUFFIX)) continue
+            val assetPath = "$dir/$name"
+            val bytes = assets.openFile(assetPath)?.use { it.readBytes() } ?: continue
+            val target = File(gameRoot, assetPath)
+            // 内容对账只在目标确实存在时读盘；缺文件的判定交给 stepNeeded 的 targetPresent。
+            val shapeStale = target.isFile && !target.readBytes().contentEquals(bytes)
+            val needed = stepNeeded(target, shapeStale = shapeStale)
+            steps += Step(
+                target = target,
+                sources = listOf(Step.Source(assetPath, bytes.size.toLong())),
+                relPath = assetPath,
+                needed = needed,
+            )
+        }
+    }
+
+    /**
+     * 压缩条目（DEFLATE，`-PeratwErbcCompress` 包）要不要按「需要重拷」处理。
+     *
+     * 压缩条目没有字节数可对账（STORED 时代靠字节数能查出换版），判据改走**内容**：
+     * APK 侧车头部声明的 `program-sha256` 与盘上侧车声明的不一致 ⇒ 盘上是旧程序 ⇒ 重拷。
+     * 两侧各只读前 [HEADER_BYTES] 字节（sha 行固定是第 3 条记录），一次冷启微秒级。
+     * 覆盖安装的四个方向（STORAGE-1 第二刀，2026-11-10 真机覆盖安装报错闭环）：
+     * - 盘上数据版本**更新**（镜像数据包先应用了更新的数据）：一律不强制 —— 不能把新数据
+     *   盖回旧包，哪怕 sha 不同；
+     * - 盘上与 APK **同版但内容不同**（重切包没抬号，0.2.44-71d → 0.2.44-88c 实际发生）：
+     *   版本号判不出来，sha 判得出来 ⇒ 重拷。否则 CB-006/008 那类语料修复全部落空，
+     *   旧字节码配新语料照旧报错；
+     * - 盘上**没有摘要**（C-1 之前的旧盘 / 摘要写失败）：sha 判据不依赖版本号 ⇒ 自愈。
+     *   首轮的「不强制防白拷」顾虑不成立：sha 一致就跳过，只有真换了内容才拷一次，
+     *   拷完盘上 sha 对齐、下一轮回到快路径，不会永久白拷；
+     * - APK 侧车没声明 sha（`-` / 缺行）：无法判 ⇒ 返回 false，保持「非零即已装」旧口径。
+     */
+    private fun compressedPairStale(): Boolean {
+        if (recordDataVersion < 0L) return false
+        val diskVersion = readDataDigest(gameRoot)?.version
+        if (diskVersion != null && diskVersion > recordDataVersion) return false
+        val apkSha = declaredProgramSha() ?: return false
+        val diskSha = diskDeclaredProgramSha() ?: return true
+        return !apkSha.equals(diskSha, ignoreCase = true)
+    }
+
+    /**
+     * 盘上侧车（`<gameRoot>/erbc.v1/program.meta`）头部声明的 `program-sha256`；
+     * 文件不存在 / 读不出 / 没声明都返回 null。
+     *
+     * 与 [declaredProgramSha] 共用 [parseShaLine] 同一套头部口径；源从 assets 换成盘上
+     * 文件。sha 相同 ⇒ 同一次编译 ⇒ meta / idx 与 program 同版 —— 装配侧的配对契约本来
+     * 就只认「侧车声明的 sha ↔ program 本体」这一对，本函数复用同一条契约。
+     */
+    private fun diskDeclaredProgramSha(): String? {
+        val file = File(gameRoot, META_ASSET)
+        if (!file.isFile) return null
+        val head = try {
+            file.inputStream().use { stream ->
+                val buf = ByteArray(HEADER_BYTES)
+                var len = 0
+                while (len < buf.size) {
+                    val n = stream.read(buf, len, buf.size - len)
+                    if (n < 0) break
+                    len += n
+                }
+                String(buf, 0, len, StandardCharsets.UTF_8)
+            }
+        } catch (_: IOException) {
+            return null
+        }
+        return parseShaLine(head)
     }
 
     /**
@@ -981,6 +1290,11 @@ class GameAssetInstaller(
      * 代价：真存在 0 字节的**压缩**资产时每次启动会白拷它一次（一次 `openFile`），
      * 而 `sound/` 那 18 个零字节 `bgm` 标记是 **STORED** 条目（`expected == 0`，
      * 走第一条分支、永远判「已装」），不受本改动影响。
+     *
+     * [expected] == null 的**版本漂移**面不在本函数里：调用方在判式上另加
+     * 「盘上程序与本包内容不同 ⇒ 重拷」（[compressedPairStale]，按两侧侧车头部声明的
+     * program-sha256 对账），本函数保持
+     * 「非零即已装」的纯形状判据，两边各管一件事。
      */
     private fun needsCopy(target: File, expected: Long?): Boolean = when {
         !target.isFile -> true
@@ -996,7 +1310,7 @@ class GameAssetInstaller(
      * 顺序一个都不许换（同名既是文件又是目录前缀的畸形 zip 条目按目录优先），
      * 但长度只问一次 —— 修复前这里问两遍，见 [probe]。
      */
-    private fun walkTree(dir: String, steps: MutableList<Step>) {
+    private fun walkTree(dir: String, steps: MutableList<Step>, compressedStale: Boolean) {
         for (name in assets.listDir(dir).sorted()) {
             requireSafeAssetName(dir, name)
             val path = "$dir/$name"
@@ -1007,13 +1321,17 @@ class GameAssetInstaller(
                     target = target,
                     sources = listOf(Step.Source(path, stored)),
                     relPath = path,
-                    needed = forceReplace || needsCopy(target, stored),
+                    needed = stepNeeded(
+                        target,
+                        shapeStale = needsCopy(target, stored) ||
+                            (stored == null && compressedStale),
+                    ),
                 )
                 continue
             }
             val children = assets.listDir(path)
             if (children.isNotEmpty()) {
-                walkTree(path, steps)
+                walkTree(path, steps, compressedStale)
                 continue
             }
             if (stored == null) {
@@ -1148,15 +1466,98 @@ class GameAssetInstaller(
         for (line in missing.values) {
             out.write((line + "\n").toByteArray(Charsets.UTF_8))
         }
-        val tmp = File(target.parentFile, target.name + TMP_SUFFIX)
-        try {
-            FileOutputStream(tmp).use { it.write(out.toByteArray()) }
-            if (!tmp.renameTo(target)) {
-                target.delete()
-                if (!tmp.renameTo(target)) {
-                    throw AssetInstallException("无法落盘 ${target.absolutePath}")
+        writeConfigAtomically(target, out.toByteArray())
+    }
+
+    /**
+     * 盘上 `emuera.config` 的一次性历史出厂值迁移（见 [ConfigValueMigration]）。
+     *
+     * ## 为什么需要
+     *
+     * 4.980 语料把 `MILLISECONDS FOR INFINITE LOOP WARNING` 显式写成 15000
+     * （`emuera.config:31`），而平台层「只填空、不改写」的覆盖策略只对**没写过**的键生效
+     * ⇒ 安卓出厂的 360000 永远进不了生效配置，长链按 15 s 反复弹死循环框。
+     * 新装由构建期出厂校准解决；老玩家盘上那份「只拷一次、之后永不覆盖」的旧配置需要
+     * 本条迁移把随包原值改成新标定。
+     *
+     * ## 口径
+     *
+     * - 只改 `emuera.config`；`_default.config` / `_fixed.config` 不碰（后者本就是玩家/语料
+     *   钉死值的通道，越权改写会破坏 `ConfigData.cs:487-493` 的语义）。
+     * - 只匹配**值恰好等于 [ConfigValueMigration.from] 的行**：玩家自己调的 0、20000、
+     *   120000 一律原样保留；键名、前后空白、行尾注释、行序、BOM、行尾风格都不动。
+     * - 迁移前先看 `update/config-migrations.txt` 标记，标记按「规则行」记账：每一条规则
+     *   最多执行一次。这样玩家在迁移后刻意把值调回 15000 也不会被下一次冷启动再改走；
+     *   而将来新增的规则（同键的新历史值也算新规则）仍能在老盘上执行 —— 旧标记只挡住
+     *   已经执行过的那几条。
+     * - 盘上配置非严格 UTF-8 / 超过 [ConfigFileStore.MAX_CONFIG_BYTES]：**整份跳过且不写标记**，
+     *   下次冷启动再试；不替玩家换码页，也不为一份坏档把启动拖死（与 [mergeConfigUpgrades] 同策）。
+     * - 写盘用同目录 `.tmp` + 改名；失败抛可读的 [AssetInstallException]，不留下半写文件。
+     *   标记写失败不阻断启动（最坏下次再跑一遍；迁移按值匹配，重复执行幂等）。
+     */
+    private fun migrateConfigValues() {
+        if (configMigrations.isEmpty()) return
+        val marker = File(gameRoot, CONFIG_MIGRATION_MARKER)
+        val target = File(gameRoot, CONFIG_FILE)
+        val applied = readAppliedMigrations(marker)
+        val pending = configMigrations.filter { it.markerLine() !in applied }
+        val ready = pending.isNotEmpty() && target.isFile &&
+            target.length() <= ConfigFileStore.MAX_CONFIG_BYTES
+        if (ready) {
+            val decoded = readConfigForMigration(target)
+            if (decoded != null) {
+                val migrated = migrateConfigText(decoded, pending)
+                if (migrated.text != decoded) {
+                    writeConfigAtomically(target, migrated.text.toByteArray(Charsets.UTF_8))
+                }
+                runCatching {
+                    marker.parentFile?.mkdirs()
+                    marker.writeText(
+                        (applied + pending.map { it.markerLine() }).joinToString("\n") + "\n",
+                        Charsets.UTF_8,
+                    )
                 }
             }
+        }
+    }
+
+    /**
+     * 标记文件里**已经执行过**的规则行（`KEY:from->to`）。
+     *
+     * 文件不存在或读不出来一律当空集：宁可让规则再跑一遍（按值匹配，重复执行幂等），
+     * 也不因为一份坏标记把该改的值永远留在老值上。
+     */
+    private fun readAppliedMigrations(marker: File): Set<String> {
+        if (!marker.isFile) return emptySet()
+        return runCatching {
+            marker.readLines(Charsets.UTF_8).filter { it.isNotBlank() }.toSet()
+        }.getOrDefault(emptySet())
+    }
+
+    /**
+     * 读出待迁移配置：严格 UTF-8 才返回文本，非 UTF-8 返回 null（整份跳过）。
+     * 读盘失败抛可读的 [AssetInstallException]。
+     */
+    private fun readConfigForMigration(target: File): String? {
+        val bytes = try {
+            target.readBytes()
+        } catch (e: IOException) {
+            throw AssetInstallException(
+                "无法读取待迁移配置：${target.absolutePath}（${e.javaClass.simpleName}: ${e.message}）",
+                e,
+            )
+        }
+        return runCatching {
+            StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString()
+        }.getOrNull()
+    }
+
+    /** 同目录临时文件 + 改名；见 `mergeConfigUpgrades` 与 `migrateConfigValues` 的写盘纪律。 */
+    private fun writeConfigAtomically(target: File, bytes: ByteArray) {
+        val tmp = File(target.parentFile, target.name + TMP_SUFFIX)
+        try {
+            FileOutputStream(tmp).use { it.write(bytes) }
+            renameConfigIntoPlace(tmp, target)
         } catch (e: AssetInstallException) {
             tmp.delete()
             throw e
@@ -1166,6 +1567,15 @@ class GameAssetInstaller(
                 "升级 ${target.name} 失败（${e.javaClass.simpleName}: ${e.message}）",
                 e,
             )
+        }
+    }
+
+    /** 同目录改名；目标已存在时先删再试（Windows 上 `renameTo` 不覆盖）。 */
+    private fun renameConfigIntoPlace(tmp: File, target: File) {
+        if (tmp.renameTo(target)) return
+        target.delete()
+        if (!tmp.renameTo(target)) {
+            throw AssetInstallException("无法落盘 ${target.absolutePath}")
         }
     }
 
@@ -1294,6 +1704,11 @@ class GameAssetInstaller(
      */
     internal fun declaredProgramSha(): String? {
         val head = readHead(META_ASSET) ?: return null
+        return parseShaLine(head)
+    }
+
+    /** 侧车头部记录里的 `program-sha256` 值；`-`、缺行返回 null（口径与 core 编解码一致）。 */
+    private fun parseShaLine(head: String): String? {
         val line = head.lineSequence()
             .map { it.removeSuffix("\r") }
             .firstOrNull { it.startsWith(SHA_PREFIX) }
@@ -1377,6 +1792,31 @@ class GameAssetInstaller(
 
         /** 原版配置文件名（`ConfigData.cs:33` 的 `Program.ExeDir + "emuera.config"`）。 */
         const val CONFIG_FILE = "emuera.config"
+
+        /**
+         * 历史出厂值迁移的一次性标记（相对游戏根）。
+         *
+         * 放在 `update/` 下：该目录已在差量删除的保护名单里
+         * （见 `deletionIsProtected`），不会被数据更新或清理误删；文件里每行是一条已执行过
+         * 的规则（`KEY:from->to`），玩家此后再改回旧值也不会被同一条规则再次覆盖。
+         */
+        const val CONFIG_MIGRATION_MARKER = "update/config-migrations.txt"
+
+        /**
+         * 内置 RT2 载体 manifest 在 APK assets 里的目录（RT2-B③）。
+         * 与 app 侧 `ModRuntimeAssembly.RT2_MANIFEST_DIR_NAME` 的 rt2 子目录同名；platform
+         * 反向依赖不了 app，形状由 `GameAssetInstallerBuiltinRt2Test` 的点名断言钉住。
+         */
+        const val BUILTIN_RT2_ASSET_DIR = "mods/rt2"
+
+        /** 内置 RT2 manifest 后缀，与 app 侧 MANIFEST_EXTENSION 同源。 */
+        const val BUILTIN_RT2_SUFFIX = ".manifest"
+
+        /**
+         * 内置 RT2 ERB 模块容器后缀（RT2-ERBM）：`planBuiltinRt2Manifests` 投递面认双后缀，
+         * `.erbm` 两件套也要到游戏根（装配侧「每容器必有同包名 manifest」才对得上）。
+         */
+        const val BUILTIN_RT2_ERB_SUFFIX = ".erbm"
 
         /**
          * 首启要递归落盘的语料目录（存档 `sav` 不在内：那是用户数据）。
@@ -1590,6 +2030,10 @@ class GameAssetInstaller(
         internal fun recordedInDigest(relPath: String): Boolean =
             relPath != CONFIG_FILE &&
                 relPath.isNotEmpty() &&
+                // RT2-B③/RT2-ERBM：mods 子树（内置 manifest + .erbm 两件套 + 玩家导入的
+                // R7 补丁）不进文件级摘要。内置资产由 planBuiltinRt2Manifests 每轮冷启
+                // 逐字节对账，本就不靠摘要判新旧；玩家文件更不该被发布侧摘要记成「包内容」。
+                !relPath.startsWith("mods/") &&
                 !relPath.contains('\\') &&
                 relPath.none { it.code < 0x20 }
 

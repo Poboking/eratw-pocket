@@ -751,7 +751,8 @@ class UpdateTelemetryWiringTest {
             service.contains("UpdateTelemetryWiring.flushPending(applicationContext)"),
         )
 
-        val host = sourceOf("GameHost.kt")
+        // W3 后解包域迁 [LoadPipeline]：assetsApplied 两格 / flush / 次序钉随迁。
+        val host = sourceOf("LoadPipeline.kt")
         // 第 7 拍（U10）：Done 与 Failed 两格都发拍 —— U6 时代「Failed 那一格接不了」的注释
         // 在 core 开格后就是假陈述，连同旧的单格调用形状一起不许再出现。
         assertEquals("第 7 拍两格都发（Done + Failed）", 2, occurrences(host, "UpdateTelemetryWiring.assetsApplied("))
@@ -773,7 +774,7 @@ class UpdateTelemetryWiringTest {
         }
         assertTrue(
             "装载前那一拍的冲刷必须走异步（同步一发就是让端点快慢决定首屏时间）",
-            host.contains("UpdateTelemetryWiring.flushPendingAsync(view.context)"),
+            host.contains("UpdateTelemetryWiring.flushPendingAsync(context)"),
         )
         assertFalse("装载前那一拍不许有同步冲刷", host.contains("UpdateTelemetryWiring.flushPending(view.context)"))
 

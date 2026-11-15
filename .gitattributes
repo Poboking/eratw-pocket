@@ -1,0 +1,11 @@
+# 行尾策略（与源仓 eratw-android 根 .gitattributes 的壳层公开范围同源）。
+# 本机 core.autocrlf=true 的 Windows 检出会把下列「逐字节复现凭据」改成 CRLF，
+# 导致测试/出包体检假红。
+
+# RT2-B③：内置 RT2 manifest 是「声明真源 → 编码字节 → APK assets → 设备落盘」四段逐字节对账的
+# 凭据（ManifestCodec.encode 固定产 LF）。autocrlf 会把它检出成 CRLF，首行 magic 变成
+# "RT2MANIFEST/3\r"，解码、资产对账与出包体检会一齐判红 —— 钉 LF 让跨机 checkout 同字节。
+app/src/main/assets/mods/rt2/*.manifest text eol=lf
+
+# ENGCOMPAT：引擎兼容层夹具的 sha256 是闸的判据本身，同上钉 LF。
+devtools/fixtures/engine-compat/** text eol=lf

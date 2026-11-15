@@ -94,4 +94,28 @@ class MouseButtonWireGateTest {
             host.contains("mouseButton = queued.mouseButton"),
         )
     }
+
+    /**
+     * 按钮点击**不补** `VK_RETURN` 沿变（QOL AWAIT 轮询屏「点击回退」案）：原版按钮点击走
+     * `MainWindow.cs:824-849` 的 `mainPicBox_MouseDown`，不经过 `PressEnterKey`、不产生回车。
+     * 补了它，`qol_MAP.ERB:43` 的 `SETTEXTBOX MOUSEB()` + `AWAIT_UI_INPUT` 会把同一笔点击
+     * 消费两次 —— 左键支（`GETKEYTRIGGERED(1)`+`MOUSEB()`）一次、下一轮回车支
+     * （`GETKEYTRIGGERED(13)`+`GETTEXTBOX()`，镜像里是 `SETTEXTBOX MOUSEB()` 写入的同值串）
+     * 再一次，toggle 型按钮（`[预览图切换]` 1997 / `[地图切换]`）翻过去又翻回来。
+     * 键盘提交（`submit`）与跳过（`submitSkip`）不受此守卫影响，照旧补沿变；
+     * 消费次数的凭证契约由 core 侧 `AwaitScreenClickConsumptionTest` 钉。
+     */
+    @Test
+    fun `按钮点击不补回车沿变 键盘与跳过提交仍补`() {
+        val host = codeOf("GameHost.kt")
+        assertTrue(
+            "submitInternal 必须按来源分守卫：只有非按钮提交（mouseButton == null）才补 VK_RETURN 沿变",
+            host.contains("if (mouseButton == null) fireVirtualKeyEdge(AndroidKeyCodes.VK_RETURN)"),
+        )
+        val edgeCalls = Regex("""fireVirtualKeyEdge\(AndroidKeyCodes\.VK_RETURN\)""").findAll(host).count()
+        assertTrue(
+            "VK_RETURN 沿变只许在 submitInternal 的守卫处补一次（实际 $edgeCalls 处 ⇒ 有人旁路了守卫）",
+            edgeCalls == 1,
+        )
+    }
 }

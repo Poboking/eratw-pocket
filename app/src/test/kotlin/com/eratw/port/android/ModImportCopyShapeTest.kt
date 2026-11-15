@@ -70,6 +70,7 @@ class ModImportCopyShapeTest {
         "identityFailedFallback" to ModImportCopy::identityFailedFallback,
         "artifactSaveFailedFormat" to ModImportCopy::artifactSaveFailedFormat,
         "verifyWrittenFailedFormat" to ModImportCopy::verifyWrittenFailedFormat,
+        "modRuntimeOffHint" to ModImportCopy::modRuntimeOffHint,
         "sourceReadFailedFormat" to ModImportCopy::sourceReadFailedFormat,
         "allReadsFailedFormat" to ModImportCopy::allReadsFailedFormat,
         "unexpectedFormat" to ModImportCopy::unexpectedFormat,
@@ -84,11 +85,11 @@ class ModImportCopyShapeTest {
 
     @Test
     fun `三档条目数相等且与显式键清单对账`() {
-        // data class 的 toString 逐个列构造属性：1 个 lang + 45 条键 = 46 个 '='。
+        // data class 的 toString 逐个列构造属性：1 个 lang + 46 条键 = 47 个 '='。
         // 表里的值不许带 '=' 字符（有就换一种计数法，别硬绕）。
         // 断言本体走共享形状闸（T-3 抽取）；本表就是这份工具的口径来源。
-        assertEquals(45, keys.size)
-        CopyShapeGate.assertKeyCount("ModImportCopy", copies, keys, expectedPerCopy = 46)
+        assertEquals(46, keys.size)
+        CopyShapeGate.assertKeyCount("ModImportCopy", copies, keys, expectedPerCopy = 47)
     }
 
     @Test

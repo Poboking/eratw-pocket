@@ -99,13 +99,15 @@ class StabilityL14SaveTest {
         val plan = SaveImport.plan(
             fileName = "save99999999999999999999.sav",
             bytes = slot(0L),
-            config = eraConfig,
-            gameBase = eraBase,
-            slotCount = 20,
-            occupied = {
-                askedForFreeSlot = true
-                null
-            },
+            context = SaveImport.Context(
+                config = eraConfig,
+                gameBase = eraBase,
+                slotCount = 20,
+                occupied = {
+                    askedForFreeSlot = true
+                    null
+                },
+            ),
         )
 
         assertEquals(SaveImport.Reject("存档位编号太大"), plan)

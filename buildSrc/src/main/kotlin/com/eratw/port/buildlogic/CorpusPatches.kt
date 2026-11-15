@@ -28,6 +28,11 @@ import org.gradle.api.logging.Logger
  * 3. 目标在且 sha = fixed-sha256 → 已是修后版，跳过 + 留痕；
  *    两个 sha 都不命中 → 未知漂移，判红（防上游语料换版悄悄绕过补丁）。
  *
+ * 同一 target 允许多条补丁**串成链**（后条 `bad-sha256` == 前条 `fixed-sha256`，见 [buildPatchChains]）：
+ * 判定仍只做一次，但对象是整条链 —— 真语料 == 链尾 fixed（整链已是修后版）⇒ 全跳过；
+ * == 链中某一跳的 fixed（部分已生效，如别的分支先合了前一条）⇒ 从下一跳续套；
+ * == 链头 bad ⇒ 整链按序套用；套用阶段逐环校验 staging 的当前 sha，任一环不符即判红。
+ *
  * 留痕通道：应用成功的补丁在 staging 目录写 marker（每行
  * `corpus-patch <id> <相对路径> <坏版sha> <修后sha>`），compileCorpus 的 doLast 把这些行
  * 追加进产物 manifest.txt（erbcc 的清单解析显式容忍追加字段）；出包期 CMP-66 源 sha 对账
@@ -222,21 +227,125 @@ fun corpusStagingDir(corpusRoot: File, stagingRoot: File): File {
 }
 
 /**
- * 解析补丁索引并对 [corpusRoot] 做三档判定；判「套用」时 staging 副本 + 套补丁 + 留痕 marker
- * 一次做完（返回 [CorpusPatchPlan.Staged]，erbcc 的 corpus 根换成 [CorpusPatchPlan.Staged.corpusRoot]）。
- * 判「跳过」返回 [CorpusPatchPlan.None]，真语料原样直编；sha 双双不命中抛 [GradleException]。
+ * 一条 target 上的**顺序补丁链**：`entries[i].badSha256 == entries[i-1].fixedSha256`。
+ *
+ * 为什么要链：同一份语料文件可能被多笔台账缺陷先后修（CB-006 → CB-008 就是同一处控制流里
+ * 相邻的两跳）。每个补丁资产只描述自己那一跳，串起来才是真实语料「原版 → 修后版」的路径；
+ * 把两跳压成一条并行补丁会让 fixed-sha256 的语义变成「两条都套完」，前一条一旦回退或重排就静默错位。
+ */
+private class CorpusPatchChain(
+    val root: CorpusPatchRoot,
+    val target: String,
+    val entries: List<CorpusPatchEntry>,
+) {
+    val head: CorpusPatchEntry get() = entries.first()
+    val tail: CorpusPatchEntry get() = entries.last()
+
+    /** 留痕/判红用的 id 串（单条就是 id 本身，多条是 `CB-006→CB-008`）。 */
+    fun idsLabel(): String = entries.joinToString("→") { it.id }
+}
+
+/**
+ * 一条待套用的补丁：条目 + 真语料目标 + **本次续套的基准 sha**（铁律自证基准）。
+ *
+ * 基准 = 选择阶段在真语料上实测到的 sha：整链从原版起套时它就是链头 bad-sha256；
+ * 从中间态续套（例如语料已套过 CB-006、只差 CB-008）时它是那个中间态的 fixed-sha256。
+ */
+private class PlannedPatch(
+    val entry: CorpusPatchEntry,
+    val realTarget: File,
+    val expectedRealSha256: String,
+)
+
+/**
+ * 把 index 条目按 `(root, target)` 归组并各自串成链。
+ *
+ * 判红口径（宁红不猜）：同 target 的多条必须**恰好**构成一条首尾相接的链 —— 两条 bad 相同、
+ * 链头不唯一（断链）、某条 fixed 之后接不上（中间断口）都直接判红并点名涉事 id。
+ * 顺序由 `bad == 前条 fixed` 关系**推导**（不信任手写行序：索引里调换两行不该改变语义，
+ * 而真断链在这里必然表现为双头/断口，照样判红）。单条 target 原样成链，
+ * 行为与链式支持前逐字节一致。
+ */
+private fun buildPatchChains(entries: List<CorpusPatchEntry>): List<CorpusPatchChain> {
+    val groups = LinkedHashMap<Pair<CorpusPatchRoot, String>, MutableList<CorpusPatchEntry>>()
+    for (e in entries) groups.getOrPut(e.root to e.target) { mutableListOf() } += e
+    return groups.map { (key, list) -> orderChain(key.first, key.second, list) }
+}
+
+/** 单个 target 的组内排序；见 [buildPatchChains] 的判红口径。 */
+private fun orderChain(
+    root: CorpusPatchRoot,
+    target: String,
+    list: List<CorpusPatchEntry>,
+): CorpusPatchChain {
+    if (list.size == 1) return CorpusPatchChain(root, target, list)
+    val ids = list.joinToString("/") { it.id }
+    fun fail(why: String): Nothing = throw GradleException(
+        "corpus-patches 索引：同一 target（$target）的多条补丁不成一条链 —— $ids：$why。" +
+            "同 target 多条必须按 bad-sha256 == 前条 fixed-sha256 依次相接，断链/双头一律判红",
+    )
+    val dupBad = list.groupBy { it.badSha256.lowercase() }.entries.firstOrNull { it.value.size > 1 }
+    if (dupBad != null) {
+        fail("${dupBad.value.joinToString("/") { it.id }} 的 bad-sha256 相同（${dupBad.key}），先后无从判定")
+    }
+    val dupFixed = list.groupBy { it.fixedSha256.lowercase() }.entries.firstOrNull { it.value.size > 1 }
+    if (dupFixed != null) {
+        fail("${dupFixed.value.joinToString("/") { it.id }} 的 fixed-sha256 相同（${dupFixed.key}），续套位置无从判定")
+    }
+    val fixedSet = list.mapTo(HashSet()) { it.fixedSha256.lowercase() }
+    val heads = list.filter { it.badSha256.lowercase() !in fixedSet }
+    if (heads.size != 1) {
+        fail(
+            "链头不唯一（${heads.joinToString("/") { it.id }}）——" +
+                "一条链只允许一个起点：它的 bad-sha256 不出现在本组任何 fixed-sha256 里",
+        )
+    }
+    val ordered = mutableListOf(heads.single())
+    val used = mutableSetOf(heads.single().id)
+    while (ordered.size < list.size) {
+        val cur = ordered.last()
+        val next = list.filter { it.id !in used && it.badSha256.equals(cur.fixedSha256, ignoreCase = true) }
+        if (next.size != 1) {
+            fail(
+                "${cur.id} 的 fixed-sha256（${cur.fixedSha256}）之后应恰好接一条 bad-sha256 相同的补丁，" +
+                    "实际候选 ${next.size} 条（未接上：${list.filter { it.id !in used }.joinToString("/") { it.id }}）",
+            )
+        }
+        ordered += next.single()
+        used += next.single().id
+    }
+    return CorpusPatchChain(root, target, ordered)
+}
+
+/**
+ * 解析补丁索引并对 [corpusRoot] 做三档判定（**按 target 链**判定，见 [buildPatchChains]）：
+ * 真语料 sha 命中链尾 fixed ⇒ 整链跳过；命中链头 bad ⇒ 整链按序套用；命中链头 skip-sha256 ⇒ 整链跳过；
+ * 都不命中 ⇒ 判红。判「套用」时 staging 副本 + 套补丁 + 留痕 marker 一次做完
+ * （返回 [CorpusPatchPlan.Staged]，erbcc 的 corpus 根换成 [CorpusPatchPlan.Staged.corpusRoot]）。
+ * 判「跳过」返回 [CorpusPatchPlan.None]，真语料原样直编。
  *
  * @param patchesDir 补丁资产目录（index.yaml 与补丁文件都在其下；缺 index 即判红）。
  * @param stagingRoot staging 的父目录（调用方给 erbcc build 下的固定位；内容键控子目录由本函数建）。
+ * @param foreignCorpus 语料根**不是**本补丁表所属的 eraTW 根时的显式声明（pack `--foreign-corpus`
+ *   → `-PeratwForeignCorpus`，ENGC-6 构建期通道）。`true` ⇒ 整表不适用：不 staging、不套用、
+ *   也不要求 `index.yaml` 存在，直接原样直编并留痕。
+ *   **必须显式声明**：从 `-PeratwEngineProfile` 推不出来——用缺省的 snake 档重编 eraTW 是合法组合，
+ *   那种包仍然要吃这批补丁（否则 CB-001/005/006 静默回归）。缺省 `false` = 与今天逐字节相同。
  */
 fun planCorpusPatches(
     corpusRoot: File,
     patchesDir: File,
     stagingRoot: File,
     logger: Logger,
+    foreignCorpus: Boolean = false,
 ): CorpusPatchPlan {
     if (!corpusRoot.isDirectory) {
         throw GradleException("corpus-patches：语料根不是目录：$corpusRoot")
+    }
+    if (foreignCorpus) {
+        return CorpusPatchPlan.None(
+            listOf("整表不适用（显式声明 foreign-corpus：$corpusRoot 不是本补丁表的 eraTW 语料根），原样直编"),
+        )
     }
     val indexFile = File(patchesDir, "index.yaml")
     if (!indexFile.isFile) {
@@ -249,27 +358,45 @@ fun planCorpusPatches(
     val gameRoot = corpusRoot.parentFile
         ?: throw GradleException("corpus-patches：语料根没有父目录，无法解析 root=game 的目标：$corpusRoot")
     val reasons = mutableListOf<String>()
-    val toApply = mutableListOf<Pair<CorpusPatchEntry, File>>()
-    for (entry in entries) {
-        val targetBase = targetBaseFor(entry.root, corpusRoot, gameRoot)
-        val target = resolveUnderRoot(targetBase, entry.target, entry.root)
+    // 同一 target 上允许「顺序多补丁」（链）：后一条的 bad-sha256 == 前一条的 fixed-sha256。
+    // 语料侧判定对**每条链只做一次**（真语料的 sha 与链头 bad / 链上各跳 fixed 比，一次定出从哪一跳续套），
+    // 套用阶段按链序逐环校验 staging 的当前 sha。
+    val toApply = mutableListOf<PlannedPatch>()
+    for (chain in buildPatchChains(entries)) {
+        val targetBase = targetBaseFor(chain.root, corpusRoot, gameRoot)
+        val target = resolveUnderRoot(targetBase, chain.target, chain.root)
         if (!target.isFile) {
-            reasons += "${entry.id} 不适用（目标缺席）：$targetBase 下无 ${entry.target}"
+            reasons += "${chain.idsLabel()} 不适用（目标缺席）：$targetBase 下无 ${chain.target}"
             continue
         }
         val sha = sha256Of(target)
+        // 已套到第几跳：真语料 sha == 某条的 fixed ⇒ 前 0..k 跳都已生效，从 k+1 续套。
+        // 这让「语料只套过前一半补丁」（别的分支先合了 CB-006）也能自然收敛：跳过已生效的、只套剩下的。
+        val resumeAt = chain.entries.indexOfLast { sha.equals(it.fixedSha256, ignoreCase = true) }
         when {
-            sha.equals(entry.fixedSha256, ignoreCase = true) ->
-                reasons += "${entry.id} 不适用（已是修后版）：${entry.target} 的 sha $sha 与 fixed-sha256 一致，跳过套用"
-            sha.equals(entry.badSha256, ignoreCase = true) -> toApply += entry to target
-            entry.skipSha256.any { it.equals(sha, ignoreCase = true) } ->
-                reasons += "${entry.id} 不适用（已知无需补丁的版本）：${entry.target} 的 sha $sha 在 skip-sha256 内，跳过套用"
+            resumeAt == chain.entries.size - 1 ->
+                reasons += "${chain.idsLabel()} 不适用（已是修后版）：${chain.target} 的 sha $sha 与链尾 fixed-sha256 一致，整链跳过"
+            resumeAt >= 0 -> {
+                val remaining = chain.entries.drop(resumeAt + 1)
+                reasons += "${chain.idsLabel()} 部分已生效（停在 ${chain.entries[resumeAt].id}）：" +
+                    "${chain.target} 的 sha $sha 与它的 fixed-sha256 一致，续套 ${remaining.joinToString("→") { it.id }}"
+                remaining.forEach { toApply += PlannedPatch(it, target, sha) }
+            }
+            sha.equals(chain.head.badSha256, ignoreCase = true) ->
+                chain.entries.forEach { toApply += PlannedPatch(it, target, chain.head.badSha256) }
+            chain.head.skipSha256.any { it.equals(sha, ignoreCase = true) } ->
+                reasons += "${chain.idsLabel()} 不适用（已知无需补丁的版本）：${chain.target} 的 sha $sha 在链头 skip-sha256 内，整链跳过"
             else -> throw GradleException(
-                "corpus-patches ${entry.id}：目标 ${entry.target} 的 sha256（$sha）既不是病灶版（${entry.badSha256}）" +
-                    "也不是修后版（${entry.fixedSha256}）→ 语料未知漂移，判红。" +
+                "corpus-patches ${chain.idsLabel()}：目标 ${chain.target} 的 sha256（$sha）既不是链头病灶版" +
+                    "（${chain.head.badSha256}），也不是本链任何一跳的 fixed-sha256（续套起点）→ 语料未知漂移，判红。" +
                     "确认语料换版是有意动作后，同步更新 devtools/corpus-patches/index.yaml 的 sha 与台账；禁止静默跳过",
             )
         }
+    }
+    // 有补丁要套时，跳过的那些（已是修后版 / 部分已生效 / 目标缺席）也必须上屏：
+    // 直编档由调用方打印 reasons，套用档此前不打印 —— 「哪几跳已生效、这次续套哪几跳」是排障第一读数。
+    if (toApply.isNotEmpty()) {
+        reasons.forEach { logger.lifecycle("[corpus-patches] $it") }
     }
     if (toApply.isEmpty()) {
         // 直编档必须撤下上一轮可能残留的补丁 marker：staging 目录按语料路径定键、跨运行复用，
@@ -306,7 +433,8 @@ fun planCorpusPatches(
     }
     val applied = mutableListOf<AppliedPatch>()
     val markerLines = mutableListOf<String>()
-    for ((entry, target) in toApply) {
+    for (planned in toApply) {
+        val entry = planned.entry
         val patchFile = File(patchesDir, entry.patch)
         if (!patchFile.isFile) {
             throw GradleException("corpus-patches ${entry.id}：补丁资产缺席：$patchFile")
@@ -316,8 +444,20 @@ fun planCorpusPatches(
         if (!stagedTarget.isFile) {
             throw GradleException("corpus-patches ${entry.id}：staging 后目标缺席（不该发生）：$stagedTarget")
         }
+        // 逐环校验（链式支持的核心）：套用前 staging 的当前内容必须正好是**这一条**的病灶版。
+        // 只看套完后的 fixed 不够 —— 上一环漏套/套错或链序颠倒时，unified diff 按内容定位仍可能命中，
+        // 于是把错的东西当成本环起点，直到 fixed 对不上才炸（报错点离病灶很远）。
+        val stagedBytes = stagedTarget.readBytes()
+        val stagedSha = sha256Hex(stagedBytes)
+        if (!stagedSha.equals(entry.badSha256, ignoreCase = true)) {
+            throw GradleException(
+                "corpus-patches ${entry.id}：套用前 staging 目标 ${entry.target} 的 sha（$stagedSha）" +
+                    "≠ 该条 bad-sha256（${entry.badSha256}）→ 链上一条未生效或链序错（同 target 多条必须按 " +
+                    "bad-sha256 == 前条 fixed-sha256 串链），判红",
+            )
+        }
         val patched = applyUnifiedDiff(
-            original = stagedTarget.readBytes(),
+            original = stagedBytes,
             diffText = patchFile.readText(Charsets.UTF_8),
             patchLabel = entry.id,
             expectedTargetRel = entry.target,
@@ -340,12 +480,13 @@ fun planCorpusPatches(
         } catch (_: AtomicMoveNotSupportedException) {
             Files.move(tmp.toPath(), stagedTarget.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }
-        // 铁律自证：真语料的目标文件必须仍是病灶版原样。
-        val originalSha = sha256Of(target)
-        if (!originalSha.equals(entry.badSha256, ignoreCase = true)) {
+        // 铁律自证：真语料的目标文件必须仍是**本次续套的基准**原样。
+        // （链中段的 bad-sha256 是合成中间态、真语料上本就不存在，拿它比会把正常链判成语料被改。）
+        val originalSha = sha256Of(planned.realTarget)
+        if (!originalSha.equals(planned.expectedRealSha256, ignoreCase = true)) {
             throw GradleException(
                 "corpus-patches ${entry.id}：真语料目标 ${entry.target} 的 sha 在 staging 期间变成 $originalSha" +
-                    "（应为病灶版 ${entry.badSha256}）→ 语料根被改动，铁律红线",
+                    "（应为续套基准 ${planned.expectedRealSha256}）→ 语料根被改动，铁律红线",
             )
         }
         applied += AppliedPatch(entry.id, entry.target, entry.badSha256, entry.fixedSha256)
@@ -380,8 +521,27 @@ private fun targetBaseFor(root: CorpusPatchRoot, corpusRoot: File, gameRoot: Fil
  * 只对**病灶版**返回字节（已修版返回空、由调用方原样硬链接）；目标缺席与 sha 未知漂移
  * 与编译期同口径判红 —— 出包面与编译面必须吃同一套判据，否则会出现「erbc 修了、随包 CSV 没修」
  * 的半截修复。没有 index 时返回空（staging 照旧，行为与引入本机制前一致）。
+ *
+ * @param foreignCorpus 与 [planCorpusPatches] 同一个显式声明（pack `--foreign-corpus`）：
+ *   `true` ⇒ 整表不适用、返回空映射并留痕，**包括不判「游戏根目标缺席」红**。
+ *   这里比编译面多一道红（编译面按 index 头部判据「目标缺席=跳过留痕」放行）是有意的：
+ *   eraTW 出包根缺 `CSV/_Rename.csv` 意味着语料根指错或补丁表过期，宁红不静默随包
+ *   （`CorpusPatchesTest.出包面_游戏根目标缺席判红` 钉着）。第三方游戏根本来就没有这批文件，
+ *   所以放行只能靠显式声明，不能靠「目标恰好缺席」猜——那会把上面那道红一起取消。
  */
-fun planGameRootPatches(gameRoot: File, patchesDir: File, logger: Logger): Map<String, ByteArray> {
+fun planGameRootPatches(
+    gameRoot: File,
+    patchesDir: File,
+    logger: Logger,
+    foreignCorpus: Boolean = false,
+): Map<String, ByteArray> {
+    if (foreignCorpus) {
+        logger.lifecycle(
+            "[corpus-patches] 整表不适用（显式声明 foreign-corpus：$gameRoot 不是本补丁表的 eraTW 游戏根）" +
+                "——随包数据原样落 staging",
+        )
+        return emptyMap()
+    }
     val indexFile = File(patchesDir, "index.yaml")
     if (!indexFile.isFile) return emptyMap()
     val entries = parseCorpusPatchIndex(indexFile.readText(Charsets.UTF_8))

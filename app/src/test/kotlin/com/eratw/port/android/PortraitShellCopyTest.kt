@@ -62,6 +62,12 @@ class PortraitShellCopyTest {
         Triple("continueButtonA11y", PortraitShellCopy::continueButtonA11y, "继续，翻到下一屏"),
         Triple("settingsButton", PortraitShellCopy::settingsButton, "设置"),
         Triple("railCountFormat", PortraitShellCopy::railCountFormat, "{0} 项可点"),
+        Triple("railHiddenCountFormat", PortraitShellCopy::railHiddenCountFormat, "{0} 项可点 · 已隐藏 {1}"),
+        Triple("railPinnedHeader", PortraitShellCopy::railPinnedHeader, "常用"),
+        Triple("railQuickMacroHeader", PortraitShellCopy::railQuickMacroHeader, "快捷宏"),
+        Triple("railChipMenuPin", PortraitShellCopy::railChipMenuPin, "置顶到常用"),
+        Triple("railChipMenuUnpin", PortraitShellCopy::railChipMenuUnpin, "取消置顶"),
+        Triple("railChipMenuHide", PortraitShellCopy::railChipMenuHide, "从右栏隐藏"),
         Triple("macroGroupFallback", PortraitShellCopy::macroGroupFallback, "宏"),
         Triple("tooltipDismissHint", PortraitShellCopy::tooltipDismissHint, "点任意处关闭"),
         Triple("inputToggleExpanded", PortraitShellCopy::inputToggleExpanded, "键盘(已展开)"),
@@ -115,12 +121,12 @@ class PortraitShellCopyTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `三档条目数相等（56 条加语言档自身）`() {
-        // data class 的 toString 是「key=value」按声明序：等号数 = 54 条文案 + lang 一档。
+    fun `三档条目数相等（62 条加语言档自身）`() {
+        // data class 的 toString 是「key=value」按声明序：等号数 = 62 条文案 + lang 一档。
         // 少补一档词在编译期就过不去，这条钉的是有人往某一档手工多塞一句。
         // 对账走共享形状闸（T-3 抽取）；本表的逐键点名清单（table）由下面几条共用。
-        assertEquals("本表的键数变了（现有 56 条，加键要三档一起加并登记进本清单）", 56, table.size)
-        CopyShapeGate.assertKeyCount("PortraitShellCopy", copies, table.associate { it.first to it.second }, expectedPerCopy = 57)
+        assertEquals("本表的键数变了（现有 62 条，加键要三档一起加并登记进本清单）", 62, table.size)
+        CopyShapeGate.assertKeyCount("PortraitShellCopy", copies, table.associate { it.first to it.second }, expectedPerCopy = 63)
     }
 
     @Test
@@ -132,7 +138,7 @@ class PortraitShellCopyTest {
     }
 
     @Test
-    fun `56 条在三语各自非空并且两两不同`() {
+    fun `62 条在三语各自非空并且两两不同`() {
         CopyShapeGate.assertNonEmptyAndDistinct(copies, table.associate { it.first to it.second })
     }
 

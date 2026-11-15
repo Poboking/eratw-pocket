@@ -277,24 +277,44 @@ object UpdateManager {
      * @param bundledVersion 当前安装包的 versionCode；读不出（<=0）时什么都不写
      */
     fun seedBundledDataVersion(gameRoot: File, bundledVersion: Long) {
-        if (bundledVersion <= 0L) return
-        if (installedDataVersion(gameRoot) >= bundledVersion) return
-        writeVersionMarker(File(gameRoot, DATA_VERSION_FILE), bundledVersion)
+        advanceDataVersion(gameRoot, bundledVersion)
     }
 
     /**
      * 把这份盘的数据版本号记进游戏根 `update/data-version.txt`（C-1 首启版本闭环）。
      *
-     * 调用点只有 `GameHost.ensureAssetsInstalled` 的随包解包收尾，而且**必须**先确认盘上
+     * 调用点只有 `LoadPipeline.ensureAssetsInstalled` 的随包解包收尾，而且**必须**先确认盘上
      * 真有这一版号的完整摘要（`GameAssetInstaller.readDataDigest` 的 version 同值）才调：
      * `data-version.txt` 与 `data-digest.txt` 同源同值，[dataDigestTrustworthy] 那条闸才敢
      * 把差量资格放出去。没有摘要时不动标记（小包 / 旧版升上来的盘保持原样，下次全量自愈）。
      *
-     * 复用 [writeVersionMarker] 的「临时名 + 改名」：半截标记会被 [readVersionMarker] 读成
-     * 0 版（= 从没装过），进而把整份数据包重下一遍。
+     * **只升不降**（CONTRACT-BOOTUNPACK）：本方法原先无条件写，而
+     * [seedBundledDataVersion] 只升不降 —— 同一个标记两套口径。数据包把盘推到 23 之后，
+     * 随包解包收尾仍会把标记拨回 APK 的 22，`UpdatePolicy.unpackSuppressedByNewerDiskData`
+     * 从此恒不成立，冷启全量重写约 919 MiB 的循环不收敛。两条路径现在共用
+     * [advanceDataVersion]，口径合一。
+     *
+     * 底层复用 [writeVersionMarker] 的「临时名 + 改名」：半截标记会被
+     * [readVersionMarker] 读成 0 版（= 从没装过），进而把整份数据包重下一遍。
      */
     internal fun rememberInstalledDataVersion(gameRoot: File, version: Long) {
+        advanceDataVersion(gameRoot, version)
+    }
+
+    /**
+     * `update/data-version.txt` 的**唯一写入口**：只升不降（CONTRACT-BOOTUNPACK）。
+     *
+     * 三条路径都必须经这里：随包解包前的 [seedBundledDataVersion]、随包解包收尾的
+     * [rememberInstalledDataVersion]、镜像数据包应用成功的 [applyStagedBundleIfPresent]。
+     * 少一条就会重新出现「同一个标记两套口径」——高版本标记被低版本随包解包拨回，
+     * 更新通道接着在「提示 → 下载 → 应用 → 打回」里循环，且每轮冷启重写整棵树。
+     *
+     * 非正数版本（读不出 versionCode）一个字节都不写；盘上已经更高时也不写，
+     * 装更早的整包不该把数据读数往回拨。
+     */
+    private fun advanceDataVersion(gameRoot: File, version: Long) {
         if (version <= 0L) return
+        if (installedDataVersion(gameRoot) >= version) return
         writeVersionMarker(File(gameRoot, DATA_VERSION_FILE), version)
     }
 
@@ -932,6 +952,13 @@ object UpdateManager {
                     )
                     if (certProblem == null) {
                         rememberMirrorHealth(context, mirror, success = true, System.currentTimeMillis())
+                        // 整包在下载完成拍就登记「已核对可装」：完成通知会被划掉/被渠道挡/被 ROM 折叠，
+                        // 不登记的话设置页就没有「安装已下载的更新」的读数，玩家只能靠那条通知装包 ——
+                        // 通知一丢，更新流程就死在「下载完成」与「安装」之间（玩家报红「下载完没反应」）。
+                        // 数据包不走这里：它的「待应用」状态由 stageAssetsBundle 单独登记。
+                        if (UpdateDownloadPlan.isApkArtifact(artifact.fileName)) {
+                            rememberHandoff(context, outcome.file!!)
+                        }
                         return outcome
                     }
                     lastProblem = "${hostOf(mirror)}：$certProblem"
@@ -1281,7 +1308,8 @@ object UpdateManager {
                 // U13 upd-baccount：应用成功 ⇒ 拒装账与挡板读数一并清（这版这个包不再是坏件，
                 // 挡板没有再拦的理由）。
                 UiPrefs.clearRejectedBundleState(context)
-                writeVersionMarker(File(gameRoot, DATA_VERSION_FILE), staged.version)
+                // 与随包解包两条路径共用只升不降的写入口（CONTRACT-BOOTUNPACK）。
+                advanceDataVersion(gameRoot, staged.version)
                 staged.file.delete()
                 clearStaged(context, staged.file.absolutePath)
                 Log.i(
@@ -1533,7 +1561,15 @@ object UpdateManager {
         }
     }
 
-    /** 记下「交给安装器」这件事（路径 + 交出时的本机版本）：只有之后版本真的升上去，[pruneHandedOffApk] 才回收它。 */
+    /**
+     * 记下「这个整包已核对可装」这件事（路径 + 登记时的本机版本）：只有之后版本真的升上去，
+     * [pruneHandedOffApk] 才回收它。
+     *
+     * 登记拍有两处，语义同一份（状态 = 「盘上有一份已核对的更新包等装」）：
+     * - [download] 的成功出口（sha + 发布章核对过）：**下载完成拍就登记**，不等玩家点完成通知 ——
+     *   通知会被划掉/被渠道挡/被 ROM 折叠，设置页的「安装已下载的更新」按钮读的就是这里；
+     * - [launchInstaller] 交出时（两档路由共用）：登记内容相同（幂等），codeBefore 不变。
+     */
     private fun rememberHandoff(context: Context, apk: File) {
         runCatching { currentVersionCode(context) }.getOrNull()?.let { codeBefore ->
             prefs(context).edit()
@@ -1541,6 +1577,19 @@ object UpdateManager {
                 .putLong(KEY_HANDOFF_APK_CODE_BEFORE, codeBefore)
                 .apply()
         }
+    }
+
+    /**
+     * 盘上有没有一份「已核对可装」的更新包（只读）：登记过且文件还在才交出，登记没写过、
+     * 文件被 [cleanupStaleDownloads] 清走或盘上没了都不算。设置页「安装已下载的更新」按钮
+     * 的读数与点击目标都从这里取 —— 通知是会丢的（权限/渠道/被划掉），这个状态必须活在
+     * 设置页读数里，不能只活在通知栏一条通知上。
+     */
+    fun handedOffApk(context: Context): File? {
+        val path = prefs(context).getString(KEY_HANDOFF_APK_PATH, "").orEmpty()
+        if (path.isEmpty()) return null
+        val apk = File(path)
+        return if (apk.isFile) apk else null
     }
 
     /** 这台机器有没有给本应用放行「安装未知应用」（API 26 起才有这个查询接口）。 */
@@ -1814,7 +1863,7 @@ object UpdateManager {
         runCatching { downloadDir(context).usableSpace }.getOrDefault(0L)
 
     private fun readVersionMarker(file: File): Long =
-        runCatching { file.readText(Charsets.UTF_8).trim().toLongOrNull() ?: 0L }.getOrDefault(0L)
+        runCatching { UpdatePolicy.sanitizeDataVersionMarker(file.readText(Charsets.UTF_8)) }.getOrDefault(0L)
 
     private fun writeVersionMarker(file: File, version: Long) {
         runCatching {

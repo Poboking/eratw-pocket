@@ -122,18 +122,24 @@ class UiPrefsResetTest {
         "font_columns",
         "option_rail",
         "disable_bad_apple",
-        "lean_options",
         "screen_fit",
         "live_reflow",
         "loading_style",
         "input_knob",
         "rail_button_size",
+        "rail_layout",
+        "rail_chips_per_row",
+        "rail_hide_unnumbered",
+        "rail_hidden_labels",
+        "rail_pinned",
+        "rail_history",
         "auto_update",
         "update_skipped_version_code",
         "settings_language",
         "orientation",
         "font_columns_portrait",
         "command_tray_open",
+        "mod_runtime",
         "sprite_stage_collapsed",
         "rollout_bucket",
         "mirror_health",
@@ -145,7 +151,12 @@ class UiPrefsResetTest {
         "player_stats_enabled",
         "player_stats_id",
         "player_stats_last_day",
+        "tutorial_shown",
         "restore_restart_pending",
+        // 2026-11-11 快捷宏：新偏好键必须登记进这张表，否则「恢复默认清掉每一个设置键」
+        // 的契约对它只是碰巧成立（resetAll 走整表 clear），将来谁把它挪进 KEEP_ON_RESET
+        // 或改成逐键清理，这条闸不会红。
+        "quick_macros",
     )
 
     /**
@@ -163,6 +174,7 @@ class UiPrefsResetTest {
         "update_failed_assets_version",
         "player_stats_id",
         "player_stats_last_day",
+        "tutorial_shown",
     )
 
     /** 把整张表写满非缺省值，模拟「玩家把每一项都调过一遍」。 */
@@ -170,18 +182,26 @@ class UiPrefsResetTest {
         map["font_columns"] = 75
         map["option_rail"] = false
         map["disable_bad_apple"] = false
-        map["lean_options"] = true
         map["screen_fit"] = false
         map["live_reflow"] = true
         map["loading_style"] = "modern"
         map["input_knob"] = 0.2f
         map["rail_button_size"] = "xlarge"
+        map["rail_layout"] = "column"
+        map["rail_chips_per_row"] = 5
+        map["rail_hide_unnumbered"] = true
+        map["rail_hidden_labels"] = setOf("[CONFIG]", "▽[＋] Ex_COM")
+        map["rail_pinned"] = "400%5B400%5D|100"
+        map["rail_history"] = "400%5B400%5D %E7%A7%BB%E5%8A%A8%5B400%5D\n100 %E7%9D%81%E5%BC%80%E7%9C%BC%E7%9D%9B"
+        // 新格式：`repeat|值:名字:次数`（多条换行分条）。会话×5 一条，够验「重置后为空」。
+        map["quick_macros"] = "1|31%3A%E4%BC%9A%E8%AF%9D%3A5"
         map["auto_update"] = false
         map["update_skipped_version_code"] = 42L
         map["settings_language"] = "ja"
         map["orientation"] = "portrait"
         map["font_columns_portrait"] = 90
         map["command_tray_open"] = true
+        map["mod_runtime"] = true
         map["sprite_stage_collapsed"] = true
         map["rollout_bucket"] = 42
         map["mirror_health"] = "https://a.example/\t2\t1700000000000"
@@ -193,6 +213,7 @@ class UiPrefsResetTest {
         map["player_stats_enabled"] = false
         map["player_stats_id"] = "a".repeat(64)
         map["player_stats_last_day"] = "2026-11-08"
+        map["tutorial_shown"] = true
         map["restore_restart_pending"] = true
         return this
     }
@@ -233,12 +254,12 @@ class UiPrefsResetTest {
         assertEquals(UiPrefs.DEFAULT_PLAYER_STATS_ENABLED, UiPrefs.readPlayerStatsEnabled(sp))
         assertEquals("匿名编号不该被重抽", "a".repeat(64), UiPrefs.readPlayerStatsId(sp))
         assertEquals("上次心跳日不该被抹掉", "2026-11-08", UiPrefs.readPlayerStatsLastDay(sp))
+        assertTrue("教程已读是引导完成态，恢复默认不该让老玩家再读一遍", UiPrefs.readTutorialShown(sp))
 
         // 其余键走 getter 的 fallback 形态：缺键时传入的默认值就是出厂缺省
         assertEquals(UiPrefs.DEFAULT_FONT_COLUMNS, sp.getInt("font_columns", UiPrefs.DEFAULT_FONT_COLUMNS))
         assertEquals(UiPrefs.DEFAULT_INPUT_KNOB, sp.getFloat("input_knob", UiPrefs.DEFAULT_INPUT_KNOB))
         assertEquals(UiPrefs.DEFAULT_OPTION_RAIL, sp.getBoolean("option_rail", UiPrefs.DEFAULT_OPTION_RAIL))
-        assertEquals(UiPrefs.DEFAULT_LEAN_OPTIONS, sp.getBoolean("lean_options", UiPrefs.DEFAULT_LEAN_OPTIONS))
         assertEquals(
             UiPrefs.DEFAULT_DISABLE_BAD_APPLE,
             sp.getBoolean("disable_bad_apple", UiPrefs.DEFAULT_DISABLE_BAD_APPLE),
@@ -256,6 +277,33 @@ class UiPrefsResetTest {
         assertEquals(
             UiPrefs.DEFAULT_LOADING_STYLE,
             UiPrefs.LoadingStyle.fromStored(sp.getString("loading_style", null)),
+        )
+        // 右栏布局/每行枚数/过滤/置顶（2026-11-11）：同样缺键回落出厂缺省
+        assertEquals(
+            UiPrefs.DEFAULT_RAIL_LAYOUT,
+            UiPrefs.RailLayoutMode.fromStored(sp.getString("rail_layout", null)),
+        )
+        assertEquals(
+            UiPrefs.DEFAULT_RAIL_CHIPS_PER_ROW,
+            sp.getInt("rail_chips_per_row", UiPrefs.DEFAULT_RAIL_CHIPS_PER_ROW)
+                .coerceIn(UiPrefs.RAIL_CHIPS_PER_ROW_MIN, UiPrefs.RAIL_CHIPS_PER_ROW_MAX),
+        )
+        assertFalse(sp.getBoolean("rail_hide_unnumbered", false))
+        assertTrue(
+            "隐藏名单缺省空集",
+            (sp.getStringSet("rail_hidden_labels", mutableSetOf()) ?: mutableSetOf()).isEmpty(),
+        )
+        assertTrue(
+            "置顶列表缺省空表",
+            RailOptionRules.decodeStringList(sp.getString("rail_pinned", null).orEmpty()).isEmpty(),
+        )
+        assertTrue(
+            "历史候选缺省空表",
+            RailOptionRules.decodeHistory(sp.getString("rail_history", null).orEmpty()).isEmpty(),
+        )
+        assertTrue(
+            "快捷宏缺省空表",
+            RailOptionRules.decodeQuickMacros(sp.getString("quick_macros", null).orEmpty()).isEmpty(),
         )
     }
 
