@@ -12,6 +12,7 @@
 ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)
 ![players](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Poboking/eratw-pocket/main/badges/players.json)
 ![active today](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Poboking/eratw-pocket/main/badges/active-today.json)
+![downloads](https://img.shields.io/github/downloads/Poboking/eratw-pocket/total)
 
 **A native Android port of EraTW.**
 
