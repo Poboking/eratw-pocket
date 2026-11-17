@@ -10,8 +10,8 @@
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.0.20-7F52FF?style=flat-square)
 ![Jetpack Compose](https://img.shields.io/badge/UI-Jetpack_Compose-4285F4?style=flat-square)
 ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)
-![players](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Poboking/eratw-pocket/main/badges/players.json)
-![active today](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Poboking/eratw-pocket/main/badges/active-today.json)
+![players](https://img.shields.io/endpoint?url=https%3A%2F%2Feratw-android.asia%2Fplayers)
+![active today](https://img.shields.io/endpoint?url=https%3A%2F%2Feratw-android.asia%2Fplayers%3Fmetric%3Dactive)
 ![downloads](https://img.shields.io/github/downloads/Poboking/eratw-pocket/total)
 
 **EraTW 的安卓原生移植版。**
@@ -37,7 +37,7 @@
 | `tools/apkpack/` | APK 内容自检：清单 / 分片 / STORED / 压缩口径逐类对账 |
 | `tools/report-endpoint/` | 错误上报 Cloudflare Worker 模板（端点与 KV id 均为占位） |
 | `docs/` | 设计稿、golden 采集手册与可交互原型；索引见 [docs/README.md](docs/README.md) |
-| `badges/` | README 玩家数 / 活跃数徽章的静态数据（≥ 1000 自动按 1000 进制缩写为 k / M / G） |
+| `badges/` | 玩家数 / 活跃数徽章的回退快照（README 现在直连 Worker 的 shields 端点，刷新延迟只有几分钟；这份 JSON 由 CI 定时刷新，端点故障或迁移时可把徽章两行改回 raw.githubusercontent） |
 | `gradle/libs.versions.toml` | 全仓依赖坐标与 Android / Kotlin 版本的单源 |
 
 ## 构建

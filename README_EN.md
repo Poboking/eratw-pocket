@@ -10,8 +10,8 @@
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.0.20-7F52FF?style=flat-square)
 ![Jetpack Compose](https://img.shields.io/badge/UI-Jetpack_Compose-4285F4?style=flat-square)
 ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)
-![players](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Poboking/eratw-pocket/main/badges/players.json)
-![active today](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Poboking/eratw-pocket/main/badges/active-today.json)
+![players](https://img.shields.io/endpoint?url=https%3A%2F%2Feratw-android.asia%2Fplayers)
+![active today](https://img.shields.io/endpoint?url=https%3A%2F%2Feratw-android.asia%2Fplayers%3Fmetric%3Dactive)
 ![downloads](https://img.shields.io/github/downloads/Poboking/eratw-pocket/total)
 
 **A native Android port of EraTW.**
@@ -38,7 +38,7 @@ standalone on desktop.
 | `tools/apkpack/` | APK content self-check: manifest / shards / STORED / compression accounting |
 | `tools/report-endpoint/` | Cloudflare Worker template for the error-report endpoint (placeholder domain and KV id) |
 | `docs/` | Design docs, golden-runbook, and an interactive prototype; indexed in [docs/README.md](docs/README.md) |
-| `badges/` | Static player-count / active-today badge data used by the README (auto-scaled to k / M / G above 1,000) |
+| `badges/` | Fallback snapshot for the player-count / active-today badges (the README reads the live Worker shields endpoint directly, so refreshes are only minutes behind; CI keeps these JSON files fresh so the two badge lines can be pointed back to raw.githubusercontent if the endpoint fails or moves) |
 | `gradle/libs.versions.toml` | Single source for dependency coordinates and Android / Kotlin versions |
 
 ## Build

@@ -10,8 +10,8 @@
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.0.20-7F52FF?style=flat-square)
 ![Jetpack Compose](https://img.shields.io/badge/UI-Jetpack_Compose-4285F4?style=flat-square)
 ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)
-![players](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Poboking/eratw-pocket/main/badges/players.json)
-![active today](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Poboking/eratw-pocket/main/badges/active-today.json)
+![players](https://img.shields.io/endpoint?url=https%3A%2F%2Feratw-android.asia%2Fplayers)
+![active today](https://img.shields.io/endpoint?url=https%3A%2F%2Feratw-android.asia%2Fplayers%3Fmetric%3Dactive)
 ![downloads](https://img.shields.io/github/downloads/Poboking/eratw-pocket/total)
 
 **EraTW の Android ネイティブ移植版。**
@@ -38,7 +38,7 @@
 | `tools/apkpack/` | APK 内容の自己検査：マニフェスト / シャード / STORED / 圧縮口径の照合 |
 | `tools/report-endpoint/` | エラーレポート用 Cloudflare Worker テンプレート（ドメインと KV id はプレースホルダ） |
 | `docs/` | 設計ドキュメント、golden 取得手順、操作可能なプロトタイプ。索引は [docs/README.md](docs/README.md) |
-| `badges/` | README のプレイヤー数 / アクティブ数バッジ用静的データ（1000 以上は k / M / G に自動換算） |
+| `badges/` | プレイヤー数 / アクティブ数バッジのフォールバック用スナップショット（README は Worker の shields 端点を直読みするため反映は数分遅れ。CI がこの JSON を定期更新し、端点の障害・移転時はバッジ 2 行を raw.githubusercontent に戻せる） |
 | `gradle/libs.versions.toml` | 依存座標と Android / Kotlin バージョンの単一ソース |
 
 ## ビルド
