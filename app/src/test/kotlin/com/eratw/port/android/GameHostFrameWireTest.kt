@@ -27,8 +27,8 @@ class GameHostFrameWireTest {
         val candidates = listOf(
             File("src/main/kotlin/com/eratw/port/$relative"),
             File("../app/src/main/kotlin/com/eratw/port/$relative"),
-            // 公开分仓：core-vm 在同级引擎仓 erak-engine（原单体布局作兼容回落）。
-            File("../../erak-engine/core-vm/src/main/kotlin/com/eratw/port/$relative"),
+            // 公开分仓：core-vm 在同级引擎仓 Kotera（原单体布局作兼容回落）。
+            File("../../Kotera/core-vm/src/main/kotlin/com/eratw/port/$relative"),
             File("../core-vm/src/main/kotlin/com/eratw/port/$relative"),
         )
         val file = candidates.firstOrNull { it.isFile }

@@ -27,8 +27,8 @@ class MetricsSingleSourceTest {
     }
 
     private fun cellMetrics(): String = sourceOf(
-        // 公开分仓：render 在同级引擎仓 erak-engine（原单体布局作兼容回落）。
-        "../../erak-engine/render/src/main/kotlin/com/eratw/port/render/glyph/CellMetrics.kt",
+        // 公开分仓：render 在同级引擎仓 Kotera（原单体布局作兼容回落）。
+        "../../Kotera/render/src/main/kotlin/com/eratw/port/render/glyph/CellMetrics.kt",
         "../render/src/main/kotlin/com/eratw/port/render/glyph/CellMetrics.kt",
         "render/src/main/kotlin/com/eratw/port/render/glyph/CellMetrics.kt",
     )

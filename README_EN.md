@@ -18,7 +18,7 @@
 
 Run EraTW natively on your phone, without an emulator. This repo is the shell
 only: Compose UI, asset unpacking, saves, audio, settings. Game semantics are
-handled entirely by [erak-engine](https://github.com/Poboking/erak-engine);
+handled entirely by [Kotera](https://github.com/Poboking/Kotera);
 the two repos have no coupling at the semantic level, and the engine verifies
 standalone on desktop.
 
@@ -32,7 +32,7 @@ standalone on desktop.
 |---|---|
 | `app` | Compose shell + assembly + packaging; settings, input bar, overlays, error reporting, update UI |
 | `platform` | Platform capabilities: asset unpacking / material import, save import-export, audio focus, fonts, settings storage (Android library) |
-| `render-canvas` | Android custom View: hit regions and drawing, consuming erak-engine's display list |
+| `render-canvas` | Android custom View: hit regions and drawing, consuming Kotera's display list |
 | `buildSrc` | Packaging-time tasks and pure helpers: asset staging, corpus patches, erbc freshness, ART profile conversion |
 | `devtools/` | Release health checks, update manifest / delta tools, error-report triage, performance and on-device probes |
 | `tools/apkpack/` | APK content self-check: manifest / shards / STORED / compression accounting |
@@ -50,7 +50,7 @@ repository root.
 
 ```
 parent/
-├── erak-engine/   ← engine (core-vm / render / sqlite-adapter / mod-* / tools/erbcc)
+├── Kotera/   ← engine (core-vm / render / sqlite-adapter / mod-* / tools/erbcc)
 └── eratw-pocket/  ← this repo
 ```
 
@@ -86,7 +86,7 @@ configured through variables / properties:
 | Source | Purpose |
 |---|---|
 | `ERATW_GAMEDIR` / `-PeratwGameRoot` | Game root (`ERB/`, `CSV/`, `resources/`, `sound/`, configs); unset produces an erbc-only small package |
-| `ERATW_ERBC_DIR` / `-PeratwErbcDir` | erbcc output directory; defaults to probing `../erak-engine/tools/erbcc/build/erbc-out/erbc.v1` |
+| `ERATW_ERBC_DIR` / `-PeratwErbcDir` | erbcc output directory; defaults to probing `../Kotera/tools/erbcc/build/erbc-out/erbc.v1` |
 | `-PeratwSkipAssets` | Skip asset bundling entirely (device already unpacked / CI) |
 | `-PeratwRequireComplete` | Release gate: fail if any bundled category is missing or the artifact is stale |
 | `-PeratwErbcChunkMb` | Split `program.erbc` into `program.partNNN.erbc` + a `program.parts` manifest |
@@ -94,7 +94,7 @@ configured through variables / properties:
 | `-PeratwAbi` | Target ABI allow-list (default `arm64-v8a,armeabi-v7a`) |
 | `ERATW_REPORT_ENDPOINT` / `ERATW_REPORT_TOKEN` / `-PeratwReportEndpoint` | Error-report endpoint and token; the release script reads the environment, direct Gradle builds use `-PeratwReportEndpoint` / `-PeratwReportToken`, and `local.report.properties` also works |
 | `ERATW_UPDATE_MIRRORS` / `-PeratwUpdateMirrors` | Update mirror base URLs; the public repo default is empty (auto-update disabled), so configure explicitly |
-| `ERATW_KCORE_ROOT` | Where devtools locate the sibling engine checkout (default `../erak-engine`) |
+| `ERATW_KCORE_ROOT` | Where devtools locate the sibling engine checkout (default `../Kotera`) |
 | `ERATW_T63_PROF_DIR` / `ERATW_T63_DIAG_DIR` | Output directories for the `t63_*` on-device profile / diagnostic scripts |
 
 `local.report.properties` is gitignored; see
@@ -132,16 +132,16 @@ nothing about built-in behavior; it consumes the engine's display lists and
 callbacks only. Upstream semantic fixes therefore sync into this repo at zero
 cost — there is no game logic to chase. If a fix seems to require touching the
 engine, please file the issue on
-[erak-engine](https://github.com/Poboking/erak-engine) instead of working around it
+[Kotera](https://github.com/Poboking/Kotera) instead of working around it
 here — a workaround in the shell is usually the next bug.
 
-**Display-list rendering boundary.** `render-canvas` paints erak-engine's display
+**Display-list rendering boundary.** `render-canvas` paints Kotera's display
 lists onto the Android Canvas; hit testing, scrolling, and input pre-fill all
 come from the engine-side pure-JVM `render` model. Desktop preview and a real
 device run the same layout computation — UI differences can only originate in
 the adapter itself.
 
-**Composite-build wiring + build-time version reconciliation.** erak-engine is
+**Composite-build wiring + build-time version reconciliation.** Kotera is
 wired in via `includeBuild`, so after dependency substitution the engine inside
 the APK is always built from the sibling checkout; the engine-side
 sqlite-adapter (platform wiring of the real SQLite engine) and the RT2 official
@@ -184,7 +184,7 @@ shell or the engine is at fault.
 
 ## Acknowledgments
 
-- The **erak-engine contributors** — the authoritative definitions of game
+- The **Kotera contributors** — the authoritative definitions of game
   semantics live there; this repo is just one of its frontends.
 - **MinorShift** and **妊）|дﾟ)の中の人**, authors of Emuera — the reference for
   game-behavior compatibility.
@@ -199,8 +199,8 @@ third-party material.
 
 ## License
 
-[GPL-3.0](LICENSE). erak-engine is MIT-licensed (the combination is
+[GPL-3.0](LICENSE). Kotera is MIT-licensed (the combination is
 compatible and lawful); see its
-[NOTICE.md](https://github.com/Poboking/erak-engine/NOTICE.md) for Emuera
+[NOTICE.md](https://github.com/Poboking/Kotera/NOTICE.md) for Emuera
 attribution. Game data remains the property of its original authors — neither
 repo includes or replaces it.

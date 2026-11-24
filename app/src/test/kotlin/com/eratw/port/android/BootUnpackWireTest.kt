@@ -102,7 +102,7 @@ class BootUnpackWireTest {
         val candidates = listOf(
             File("../$rel"),
             File(rel),
-            File("../../erak-engine/$rel"),
+            File("../../Kotera/$rel"),
         )
         val found = candidates.firstOrNull { it.isFile }
             ?: error("找不到源码 $rel（工作目录 = ${File(".").absolutePath}）")

@@ -12,12 +12,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 引擎仓必须与本仓同级检出（settings.gradle.kts 的 includeBuild("../erak-engine")）
+      # 引擎仓必须与本仓同级检出（settings.gradle.kts 的 includeBuild("../Kotera")）
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/erak-engine
+          repository: ${{ github.repository_owner }}/Kotera
           ref: main
-          path: erak-engine
+          path: Kotera
 
       - uses: actions/setup-java@v4
         with:
@@ -26,8 +26,8 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: 把 erak-engine 链接到本仓同级
-        run: ln -s "$GITHUB_WORKSPACE/erak-engine" "$GITHUB_WORKSPACE/../erak-engine"
+      - name: 把 Kotera 链接到本仓同级
+        run: ln -s "$GITHUB_WORKSPACE/Kotera" "$GITHUB_WORKSPACE/../Kotera"
 
       - name: 编译 debug 包 + 单测（-PeratwSkipAssets：CI 无语料）
         # 4 个语料 / 真 GAMEBASE 门控用例按 JUnit assumption 跳过；其余全部真跑。

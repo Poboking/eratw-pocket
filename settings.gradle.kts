@@ -1,7 +1,7 @@
 // eratw-pocket 根工程 —— EraTW 安卓移植版（玩家端壳层）
 //
-// 引擎不在这里：core-vm / erbcc / render 在姊妹仓 erak-engine，
-// 以 composite build 方式接入（需与本仓同级检出：../erak-engine）。
+// 引擎不在这里：core-vm / erbcc / render 在姊妹仓 Kotera，
+// 以 composite build 方式接入（需与本仓同级检出：../Kotera）。
 //
 // 模块：
 //   :render-canvas  Android 自绘 View 绑定（ConsoleScreen 命中/绘制）
@@ -35,8 +35,8 @@ include(":platform")
 include(":app")
 
 // 引擎仓：core-vm / render / tools:erbcc / sqlite-adapter / mod-* 都在这边。
-// 自动替换 com.eratw.port:* → erak-engine 的对应工程。
-includeBuild("../erak-engine") {
+// 自动替换 com.eratw.port:* → Kotera 的对应工程。
+includeBuild("../Kotera") {
     dependencySubstitution {
         substitute(module("com.eratw.port:core-vm")).using(project(":core-vm"))
         substitute(module("com.eratw.port:render")).using(project(":render"))

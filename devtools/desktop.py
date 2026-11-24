@@ -49,8 +49,8 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ANDROID_ROOT = SCRIPT_DIR.parent            # eratw-pocket 检出根
-# 公开分仓布局：引擎侧 vmdbg 在姐妹仓 erak-engine；可用 ERATW_KCORE_ROOT 覆盖。
-KCORE_ROOT = Path(os.environ.get("ERATW_KCORE_ROOT") or (ANDROID_ROOT.parent / "erak-engine"))
+# 公开分仓布局：引擎侧 vmdbg 在姐妹仓 Kotera；可用 ERATW_KCORE_ROOT 覆盖。
+KCORE_ROOT = Path(os.environ.get("ERATW_KCORE_ROOT") or (ANDROID_ROOT.parent / "Kotera"))
 VMDBG_CP = str(KCORE_ROOT / "tools" / "vmdbg" / "build" / "install" / "vmdbg" / "lib" / "*")
 MAIN_KT = "com.eratw.port.vmdbg.MainKt"
 
@@ -149,7 +149,7 @@ def active_corpus_dir_name() -> str:
         sys.exit(f"读语料身份需要 PyYAML：先 pip install pyyaml（{spec} 是生成物，"
                  "devtools/desktop.py 不再内联语料根名）")
     if not spec.is_file():
-        sys.exit(f"语料身份表不存在：{spec}（姐妹仓 erak-engine 里 devtools/gen_engine_profiles.py 的生成物，先重生成）")
+        sys.exit(f"语料身份表不存在：{spec}（姐妹仓 Kotera 里 devtools/gen_engine_profiles.py 的生成物，先重生成）")
     with open(spec, "r", encoding="utf-8") as fh:
         try:
             doc = yaml.safe_load(fh)

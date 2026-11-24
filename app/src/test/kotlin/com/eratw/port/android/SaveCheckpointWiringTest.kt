@@ -41,7 +41,7 @@ class SaveCheckpointWiringTest {
     /** core-vm 侧的权威常量文件（跨模块对账用；app 单测工作目录 = app/）。 */
     private fun coreBeginFlow(): String {
         val candidates = listOf(
-            File("../../erak-engine/core-vm/src/main/kotlin/com/eratw/port/core/proc/BeginFlow.kt"),
+            File("../../Kotera/core-vm/src/main/kotlin/com/eratw/port/core/proc/BeginFlow.kt"),
             File("../core-vm/src/main/kotlin/com/eratw/port/core/proc/BeginFlow.kt"),
             File("core-vm/src/main/kotlin/com/eratw/port/core/proc/BeginFlow.kt"),
         )
@@ -165,9 +165,9 @@ class SaveCheckpointWiringTest {
         )
         // 官方链的读口（ProcessRuntime 里 calls.savedataText 的实现）必须还是同一行读法：
         // 两侧漂移会让本路写进去的标签与读档界面显示的不是同一格。
-        val runtime = File("../../erak-engine/core-vm/src/main/kotlin/com/eratw/port/core/proc/ProcessRuntime.kt")
+        val runtime = File("../../Kotera/core-vm/src/main/kotlin/com/eratw/port/core/proc/ProcessRuntime.kt")
         assertTrue(
-            "找不到 ProcessRuntime.kt（app 单测工作目录 = app/，core-vm 在同级引擎仓 ../erak-engine）",
+            "找不到 ProcessRuntime.kt（app 单测工作目录 = app/，core-vm 在同级引擎仓 ../Kotera）",
             runtime.isFile,
         )
         assertTrue(
