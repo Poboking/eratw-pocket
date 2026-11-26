@@ -212,7 +212,13 @@ ENV_ERBC_DIR = "ERATW_ERBC_DIR"
 # `ERATW_GAMEDIR` 缺省回落时现行根优先；`.tooling/env.sh` 的缺省导出仍指旧根（共享基建，
 # 不随换代改），所以「显式设了但指旧根」也要大声点出来 —— 否则出的是内部自洽的
 # 4.980 数据包，却按 4.981 的版本号发出去（体检全绿，无一处拦得住）。
-SPEC_CORPORA_YAML = Path(__file__).resolve().parent.parent / "specs" / "engine-profiles.yaml"
+_PKG_ROOT = Path(__file__).resolve().parent.parent
+# 公开分仓布局：specs/（引擎身份表等引擎侧规格档）归姐妹引擎仓 Kotera，本仓不再带；
+# 可用 ERATW_KCORE_ROOT 覆盖（与 devtools 其余脚本同口径）。
+_KCORE_ROOT = Path(os.environ.get("ERATW_KCORE_ROOT") or (_PKG_ROOT.parent / "Kotera"))
+SPEC_CORPORA_YAML = _PKG_ROOT / "specs" / "engine-profiles.yaml"
+if not SPEC_CORPORA_YAML.is_file():
+    SPEC_CORPORA_YAML = _KCORE_ROOT / "specs" / "engine-profiles.yaml"
 
 
 def load_corpora(path: str = "") -> dict:

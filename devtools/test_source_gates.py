@@ -33,6 +33,12 @@ sys.path.insert(0, HERE)
 import emit_update as eu  # noqa: E402
 import pack_release as pr  # noqa: E402
 
+_PKG_ROOT = os.path.dirname(HERE)
+# 公开分仓布局：core-vm / mod-api 主源集在姐妹引擎仓 Kotera，本仓不再带；
+# 可用 ERATW_KCORE_ROOT 覆盖（与 devtools 其余脚本同口径）。
+_KCORE_ROOT = os.environ.get("ERATW_KCORE_ROOT") or os.path.join(
+    os.path.dirname(_PKG_ROOT), "Kotera")
+
 FAILS = []
 
 
@@ -365,6 +371,20 @@ def _business_word_patterns() -> list:
 _BUSINESS_WORD_PATTERNS = _business_word_patterns()
 
 
+def _scan_base(repo_root: str, scan_dir: str):
+    """扫描目录的绝对路径 + 它所属的仓根（相对路径按该仓根算，形状与单体仓一致）。
+
+    公开分仓布局：core-vm / mod-api 主源集在姐妹引擎仓 Kotera；本仓自己的目录仍在本仓。
+    """
+    rel = scan_dir.replace("/", os.sep)
+    local = os.path.join(repo_root, rel)
+    if os.path.isdir(local):
+        return local, repo_root
+    sibling = os.path.join(_KCORE_ROOT, rel)
+    if os.path.isdir(sibling):
+        return sibling, _KCORE_ROOT
+    return None, repo_root
+
 def business_word_gate(repo_root: str) -> list:
     """扫 core-vm 与 mod-api 主源集的代码行，返回业务词命中问题列表（空 = 绿）。
 
@@ -372,12 +392,12 @@ def business_word_gate(repo_root: str) -> list:
     """
     problems = []
     for scan_dir in BUSINESS_WORD_SCAN_DIRS:
-        base = os.path.join(repo_root, scan_dir.replace("/", os.sep))
-        if not os.path.isdir(base):
+        base, base_root = _scan_base(repo_root, scan_dir)
+        if base is None:
             problems.append(f"扫描目录缺失: {scan_dir}")
             continue
         for dirpath, dirnames, filenames in os.walk(base):
-            rel_dir = os.path.relpath(dirpath, repo_root).replace(os.sep, "/")
+            rel_dir = os.path.relpath(dirpath, base_root).replace(os.sep, "/")
             if any(part in rel_dir + "/" for part in BUSINESS_WORD_EXCLUDED_PATH_PARTS):
                 dirnames[:] = []
                 continue
@@ -492,12 +512,12 @@ def corpus_specific_gate(repo_root: str) -> list:
     """扫 core 与 mod-api 主源集代码行，返回语料专名命中（空 = 绿）。"""
     problems = []
     for scan_dir in BUSINESS_WORD_SCAN_DIRS:
-        base = os.path.join(repo_root, scan_dir.replace("/", os.sep))
-        if not os.path.isdir(base):
+        base, base_root = _scan_base(repo_root, scan_dir)
+        if base is None:
             problems.append(f"扫描目录缺失: {scan_dir}")
             continue
         for dirpath, dirnames, filenames in os.walk(base):
-            rel_dir = os.path.relpath(dirpath, repo_root).replace(os.sep, "/")
+            rel_dir = os.path.relpath(dirpath, base_root).replace(os.sep, "/")
             if any(part in rel_dir + "/" for part in BUSINESS_WORD_EXCLUDED_PATH_PARTS):
                 dirnames[:] = []
                 continue
