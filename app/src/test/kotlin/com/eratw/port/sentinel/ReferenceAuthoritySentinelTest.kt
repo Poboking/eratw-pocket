@@ -207,9 +207,18 @@ class ReferenceAuthoritySentinelTest {
         val roots = scanRoots()
         val baseline = baseline()
         val measured = LinkedHashMap<String, Int>()
-        for (root in roots) {
-            for (file in kotlinSources(root)) {
-                val rel = file.relativeTo(root).invariantSeparatorsPath
+        // 逐模块按「各自所属的仓」定位，键仍是**仓根相对**形态（core-vm/... / app/...），
+        // 与冻结基线同口径。
+        //
+        // 不按「整棵树走一遍」的原因：CI 里对方仓的检出目录可能落在本仓工作树内
+        // （checkout 的 path 参数写在本仓目录下时就会这样），那样本仓的树会把对方仓的源
+        // 连同 "<对方仓>/" 前缀一起收进来 ⇒ 键与基线对不上 ⇒ 假阳性的「新增未标注引用」。
+        for ((module, owner) in MODULE_OWNER) {
+            val repo = if (owner == ENGINE) roots.engine else roots.shell
+            val base = File(repo, module)
+            if (!File(base, "src/main/kotlin").isDirectory) continue
+            for (file in kotlinSources(base)) {
+                val rel = file.relativeTo(repo).invariantSeparatorsPath
                 val n = unmarkedAuthoritySegments(file.readText()).size
                 if (n > 0) measured[rel] = n
             }
@@ -300,7 +309,7 @@ class ReferenceAuthoritySentinelTest {
             )
     }
 
-    /** 全仓 Kotlin 源（跳过 build / reference / .git 三棵不产语义的树）。 */
+    /** 某模块下的 Kotlin 源（跳过 build / reference / .git 三棵不产语义的树）。 */
     private fun kotlinSources(root: File): List<File> =
         root.walkTopDown()
             .onEnter { it.name !in SKIP_DIRS }
@@ -312,7 +321,7 @@ class ReferenceAuthoritySentinelTest {
      * （引擎侧在同级 Kotera、壳层侧在本仓），故扫描面取两仓之和。
      * 引擎仓不在场时跳过本闸（数据缺失不是回归）。
      */
-    private fun scanRoots(): List<File> {
+    private fun scanRoots(): ScanRoots {
         val shell = repoRoot()
         val engine = shell.resolveSibling("Kotera")
         if (!File(engine, "core-vm/src/main/kotlin").isDirectory) {
@@ -321,12 +330,15 @@ class ReferenceAuthoritySentinelTest {
                     "冻结基线覆盖全单体仓，缺引擎侧扫描面 ⇒ 跳过本哨兵",
             )
         }
-        return listOf(engine, shell)
+        return ScanRoots(engine = engine, shell = shell)
     }
 
+    /** 扫描面：引擎仓与壳层仓各一份。 */
+    private data class ScanRoots(val engine: File, val shell: File)
+
     /** 某个「仓根相对路径」落在哪个仓里。 */
-    private fun resolveIn(roots: List<File>, relative: String): File? =
-        roots.asSequence().map { File(it, relative) }.firstOrNull { it.isFile }
+    private fun resolveIn(roots: ScanRoots, relative: String): File? =
+        listOf(roots.engine, roots.shell).asSequence().map { File(it, relative) }.firstOrNull { it.isFile }
 
     private fun baseline(): Map<String, Int> {
         val stream = javaClass.getResourceAsStream(BASELINE_RESOURCE)
@@ -343,6 +355,23 @@ class ReferenceAuthoritySentinelTest {
     }
 
     private companion object {
+        /** 引擎侧仓根标记。 */
+        const val ENGINE = "engine"
+
+        /**
+         * 冻结基线覆盖的模块 → 归属哪一仓。
+         *
+         * 引擎侧：core-vm / mod-api / render / tools；壳层侧：app / platform / render-canvas。
+         */
+        val MODULE_OWNER: Map<String, String> = mapOf(
+            "core-vm" to ENGINE,
+            "mod-api" to ENGINE,
+            "render" to ENGINE,
+            "tools" to ENGINE,
+            "app" to "shell",
+            "platform" to "shell",
+            "render-canvas" to "shell",
+        )
         const val AUTHORITY_TREE = "emuera-cs"
         const val RETIRED_MARKER = "已退役"
         const val TARGET_VERSION = "4.981"
