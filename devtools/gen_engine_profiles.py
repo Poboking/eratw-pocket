@@ -69,8 +69,21 @@ _SOURCES_ORDER = ("v24", "em_ee", "snake", "cs_reference")
 _KOTLIN_ORDER = ("snake", "em_ee", "v24")
 
 
+_HERE = Path(__file__).resolve().parent
+_PKG_ROOT = _HERE.parent
+# 公开分仓布局：specs/（引擎身份表等引擎侧规格档）归姐妹引擎仓 Kotera，本仓不再带；
+# 可用 ERATW_KCORE_ROOT 覆盖（与 devtools 其余脚本同口径）。
+_KCORE_ROOT = Path(os.environ.get("ERATW_KCORE_ROOT") or (_PKG_ROOT.parent / "Kotera"))
+
+
+def _specs_root() -> Path:
+    """specs/ 落点：本仓有就用本仓的，否则用姐妹引擎仓的。"""
+    local = _PKG_ROOT / "specs"
+    return local if local.is_dir() else _KCORE_ROOT / "specs"
+
+
 def _input_path() -> Path:
-    return Path(__file__).resolve().parent.parent / INPUT_REL
+    return _specs_root() / INPUT_REL.name
 
 
 def _validate_input(doc, path: Path) -> None:
@@ -1192,8 +1205,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args(argv)
 
-    repo = Path(__file__).resolve().parent.parent
-    out = Path(args.out) if args.out else repo / OUT_REL
+    repo = _specs_root()
+    out = Path(args.out) if args.out else repo / OUT_REL.name
     kotlin_out = Path(args.emit_kotlin) if args.emit_kotlin else None
     if kotlin_out is not None and (out.resolve() == kotlin_out.resolve() or
                                   (out.exists() and kotlin_out.exists() and out.samefile(kotlin_out))):

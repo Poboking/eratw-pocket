@@ -39,8 +39,15 @@ ENGINE_CONFIG_KEYS = ("schema", "engine", "version")
 # 印章在 APK 内的落点（StageGameAssetsTask 写 staging 根，Lane C 接线）。
 STAMP_ASSET_PATH = "assets/engine-profile.json"
 
-# 引擎身份表的仓库相对落点（相对 eratw-android/）。
+# 引擎身份表的仓库相对落点（相对仓根）。
 INPUT_SPEC_REL = os.path.join("specs", "engine-profiles.input.yaml")
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+APP_ROOT = os.path.dirname(HERE)
+# 公开分仓布局：specs/（引擎身份表等引擎侧规格档）归姐妹引擎仓 Kotera；
+# 可用 ERATW_KCORE_ROOT 覆盖（与 devtools 其余脚本同口径）。
+KCORE_ROOT = (os.environ.get("ERATW_KCORE_ROOT") or
+              os.path.join(os.path.dirname(APP_ROOT), "Kotera"))
 
 
 class EngineConfigError(ValueError):
@@ -48,9 +55,15 @@ class EngineConfigError(ValueError):
 
 
 def input_spec_path() -> str:
-    """手写引擎身份表的绝对路径（<repo>/specs/engine-profiles.input.yaml）。"""
-    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        INPUT_SPEC_REL)
+    """手写引擎身份表的绝对路径。
+
+    公开分仓后 `specs/` 归引擎仓：本仓下有就用本仓的，没有则用姐妹引擎仓（Kotera）的
+    —— 单体仓时代两者同树，分仓后本仓不再带 `specs/`。
+    """
+    local = os.path.join(APP_ROOT, INPUT_SPEC_REL)
+    if os.path.isfile(local):
+        return local
+    return os.path.join(KCORE_ROOT, INPUT_SPEC_REL)
 
 
 def load_targets(path: str = "") -> list:
