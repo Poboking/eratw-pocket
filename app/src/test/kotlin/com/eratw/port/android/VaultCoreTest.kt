@@ -85,4 +85,23 @@ class VaultCoreTest {
         core.install(host)
         assertSame("判据为真才接回", host, core.takeover({ vmAlive }, { it.closed = true }))
     }
+
+    /**
+     * 2026-11-17「切后台卡回主菜单 + 当日存档不见」的槽内核回归：takeover 清槽后，
+     * 接回壳自己再被系统销毁时必须**重新 install**，否则会话无主，下一实例只能冷启。
+     * （冻结/入槽的归属判据在 GameHost.isBoundToView，由 SessionHandoverWireTest 钉。）
+     */
+    @Test
+    fun `接回后再次销毁 重新入槽恢复下一棒的接手能力`() {
+        val core = VaultCore<FakeHost>()
+        val host = FakeHost(8)
+        core.install(host)
+        assertSame("第一壳被接回", host, core.takeover({ true }, { it.closed = true }))
+        assertNull("takeover 清槽——壳持有期间槽本就为空", core.peek())
+
+        core.install(host) // 接回壳自己系统销毁时的重新入槽
+        assertSame("无壳期间会话必须有主", host, core.peek())
+        assertSame("下一实例仍能接回同一局，不回标题", host, core.takeover({ true }, { it.closed = true }))
+        assertNull("二次接回同样清槽", core.peek())
+    }
 }

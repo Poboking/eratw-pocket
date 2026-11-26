@@ -1,6 +1,7 @@
 package com.eratw.port.android
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -229,6 +230,83 @@ class RunDiagnosticsTest {
         val effective = RunDiagnostics.summarize(listOf(line(400L, phase = "turn.trim.unused n=3 freed=64MiB used=400MiB/512")))
         assertNull("真收回过就不必点名", RunDiagnostics.trimNote(effective))
         assertNull("没有压力信号就没有这句话", RunDiagnostics.trimNote(RunDiagnostics.summarize(listOf(line(100L)))))
+    }
+
+    // ---- trim 的 native 账面分项（0.2.47 / OPPO PEHM00 玩家轨迹实样）----
+
+    /** 玩家 2026-11-16 轨迹里那三行：freed 全是 0，bitmap/view 却在交还。 */
+    private val playerTrimLines = listOf(
+        line(
+            300L, native = 160L,
+            phase = "trim=runningCritical freed=0MiB bitmap=2->0MiB view=24->9MiB native=104->104MiB",
+            sys = 2634L, lmk = 648L,
+        ),
+        line(
+            133L, native = 105L,
+            phase = "trim=background freed=0MiB bitmap=0->0MiB view=9->0MiB native=105->105MiB deep",
+            sys = 2650L, lmk = 648L,
+        ),
+        line(
+            149L, native = 71L,
+            phase = "trim=uiHidden freed=0MiB bitmap=0->0MiB view=0->0MiB native=71->71MiB deep",
+            sys = 2745L, lmk = 648L,
+        ),
+    )
+
+    @Test
+    fun `箭头分项读成 native 账面交还量而不是零`() {
+        val sample = RunDiagnostics.parseSample(playerTrimLines[0])!!
+        assertEquals(0L, sample.trimFreedMiB)
+        assertEquals("bitmap 交还 2、view 交还 15", 17L, sample.trimNativeFreedMiB)
+        assertEquals(17L, sample.trimRecoveredMiB)
+
+        val both = RunDiagnostics.parseSample(
+            line(400L, phase = "trim=runningCritical freed=10MiB bitmap=80->40MiB view=30->12MiB native=310->260MiB"),
+        )!!
+        assertEquals(10L, both.trimFreedMiB)
+        assertEquals("两种资源相加，不互相顶替", 58L, both.trimNativeFreedMiB)
+        assertEquals(68L, both.trimRecoveredMiB)
+    }
+
+    @Test
+    fun `没有箭头分项是缺而不是零`() {
+        val old = RunDiagnostics.parseSample(line(300L, phase = "trim=uiHidden freed=0MiB"))!!
+        assertNull("旧轨迹没有这一列 ⇒ null，不许冒充没收到", old.trimNativeFreedMiB)
+        assertEquals(0L, old.trimRecoveredMiB)
+
+        val grew = RunDiagnostics.parseSample(
+            line(300L, phase = "trim=background freed=0MiB bitmap=0->3MiB view=5->1MiB"),
+        )!!
+        assertEquals("箭头反向（缓存涨了）按 0 计，不能倒扣", 4L, grew.trimNativeFreedMiB)
+    }
+
+    @Test
+    fun `玩家轨迹不再被误报成回收一无所获`() {
+        val summary = RunDiagnostics.summarize(playerTrimLines)
+        assertEquals(3, summary.trimEvents)
+        assertEquals(0L, summary.trimFreedMiB)
+        assertEquals("三行合计交还 17+9+0 MiB", 26L, summary.trimNativeFreedMiB)
+        assertEquals(26L, summary.trimRecoveredMiB)
+        assertNull("已经交还了 26 MiB，不能再写「没有退回任何 MiB」", RunDiagnostics.trimNote(summary))
+
+        val text = RunDiagnostics.headline(summary)
+        assertTrue("读数要带上真实交还量", text.contains("共收回 26 MiB"))
+        assertTrue("两种资源分列，别把 native 账面冒充 Java 像素", text.contains("Java 像素 0 + native 账面 26"))
+    }
+
+    @Test
+    fun `后台收尾的判读不把正常管控说成异常退出`() {
+        val text = RunDiagnostics.reportText(
+            state = "background since=1794800330136",
+            trail = playerTrimLines,
+            headerLines = listOf("设备：OPPO PEHM00"),
+            buildStamp = "ce7f9f7",
+            generatedAtText = "2026-11-16 17:57:24",
+        )
+        assertTrue("收尾标记要参与判读，不能只原文带过", text.contains("收尾判读："))
+        assertTrue(text.contains("正常管控，不计异常退出"))
+        assertTrue("水位判读仍在，不能因为后台就抹掉", text.contains("死因判读：native 驻留偏高"))
+        assertFalse(text.contains("都没有退回任何 MiB"))
     }
 
     // ---- 可分享文本 ----

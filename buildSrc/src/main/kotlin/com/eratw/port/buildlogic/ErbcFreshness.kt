@@ -215,6 +215,29 @@ fun verifyErbcFreshness(
                 "$currentCompilerDigest（$compilerFileCount 个）→ 先跑 ./gradlew :tools:erbcc:compileCorpus 再出包",
         )
     }
+    // ---- 1c. 语料补丁资产指纹 ------------------------------------------------
+    // 只改 devtools/corpus-patches 的提交既不动编译器源码树（compiler-digest 不变）也不动
+    // 语料树（源 sha 不变），产物自带旧补丁时上面两条判据都看不见 —— 2026-11-20 的
+    // CB-020/021/022 就是这样一包都没进（玩家 0.2.483 做料理缺材料仍崩 NO:CHARA）。
+    // 判据：manifest 的 corpus-patches-digest 必须等于当前 corpus-patches 整树指纹；
+    // 目录缺席（第三方语料根）⇒ 该判据不适用，与探针/编译期 doLast 三处同口径。
+    val currentPatchesDigest = corpusPatchesDigest(repoRoot)
+    if (currentPatchesDigest != null) {
+        val declaredPatchesDigest = field("corpus-patches-digest")
+        if (declaredPatchesDigest == null) {
+            return reject(
+                "manifest 没有 corpus-patches-digest 行（旧编译器产物）→ 无法证明产物含当前语料补丁" +
+                    "（当前 ${currentPatchesDigest.second} 个补丁文件）；先跑 ./gradlew :tools:erbcc:compileCorpus 再出包",
+            )
+        }
+        if (!declaredPatchesDigest.equals(currentPatchesDigest.first, ignoreCase = true)) {
+            return reject(
+                "产物由旧补丁资产产出：manifest corpus-patches-digest $declaredPatchesDigest，" +
+                    "当前 ${currentPatchesDigest.first}（${currentPatchesDigest.second} 个文件）→ " +
+                    "语料补丁改过但没重编、补丁没进包；先跑 ./gradlew :tools:erbcc:compileCorpus 再出包",
+            )
+        }
+    }
     val program = File(dir, "program.erbc")
     if (!program.isFile) return reject("erbc 目录缺 program.erbc：$dir")
     val declaredContainerVersion = field("container-version")?.toIntOrNull()

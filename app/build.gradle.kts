@@ -32,6 +32,13 @@ val abiList: List<String> = (providers.gradleProperty("eratwAbi").orNull ?: "arm
 // 缺产物**不失败**（CI 与新人 clone 直接 assembleDebug 要能过），要「必须完整」就用
 //   -PeratwRequireComplete=1 —— 组长出正式包时用它，缺任一类条目当场挡住。
 //
+// 预置图数据（「跳过首次建图」包）：-PeratwSeedQolDb=<绝对路径 qol_data.db>
+//   出包期由 devtools/gen_qol_seeddb.py 建好库，staging 时整份覆盖 plugins/qol_data.db
+//   （先 delete 断开指向只读语料的硬链接再写），玩家首装即拿到建好的库，不必真机跑
+//   36418 行 INSERT + VACUUM；report 留 seed-qol-db / seed-qol-db-source 两行自证。
+//   缺省不给 = 随包字节与改前逐字节相同。第三方语料（-PeratwForeignCorpus）自带自己的图，
+//   给了 seed 也忽略并 warn；-PeratwRequireComplete 下非第三方语料缺 seed 直接判红。
+//
 // 新鲜度（CMP-66）：给了 erbc 目录就必须能自证「出自当前编译器 + 当前语料」——按
 // erbcc 的 manifest 对账 version / build-mode（受限档拒随包）/ 容器版本 / program.erbc
 // 摘要 / 逐文件源 sha / **编译器指纹 compiler-digest**（编译器源码改过没重编 ⇒ 拒）。
@@ -93,6 +100,18 @@ fun requireDir(label: String, path: String): File {
 }
 
 val skipBundledAssets = providers.gradleProperty("eratwSkipAssets").isPresent
+// SHELL-PROFILE：第三方移植目标的独立身份与版本线。无 `-P` 时三值逐字回落 eraTW 现值
+// （包名 com.eratw.port.android / 0.2.47 / 23），保证 eraTW 出包路径零变化。
+// 第三方包必须换 applicationId：否则 versionCode 从 1 起算会低于已装的 eraTW 而装不上，
+// 且两款游戏共用一条版本线只会互相压号。
+val appIdOverride: String = providers.gradleProperty("eratwApplicationId").orNull
+    ?.trim()?.takeIf { it.isNotEmpty() } ?: "com.eratw.port.android"
+// 版本号缺省留空 ⇒ defaultConfig 里的 eraTW 字面量原样生效；第三方包由账本给值。
+// 不把缺省值写进这里，是为了一键出包工具（pack_one）仍能按 `versionCode = 23` 字面量抬号。
+val versionNameOverride: String = providers.gradleProperty("eratwVersionName").orNull
+    ?.trim().orEmpty()
+val versionCodeOverride: Int = providers.gradleProperty("eratwVersionCode").orNull
+    ?.trim()?.toIntOrNull() ?: 0
 // 程序条目（program.erbc / program.parts / program.meta）是否允许 DEFLATE。缺省 false = STORED。
 val erbcCompressed = providers.gradleProperty("eratwErbcCompress").isPresent
 // 正式包用：随包五类条目缺任一项就 fail，免得静默出一个「装上也玩不了」的包。
@@ -129,6 +148,26 @@ val bundledErbcDir: File? = when {
     ).firstOrNull { it.isDirectory }
 }
 val erbcChunkMiB = providers.gradleProperty("eratwErbcChunkMb").orNull?.trim()?.toIntOrNull() ?: 0
+
+/**
+ * 出包期预置的 qol_data.db（`-PeratwSeedQolDb=<绝对路径>`，见文件头的「跳过首次建图」段）。
+ *
+ * 给了就必须是已存在的非空文件：空文件 / 路径写错会让 staging 静默「预置了空库」，
+ * 首启照样建图却报告里留一条成功痕迹 —— 所以在配置期就挡（执行期任务里再挡一次）。
+ * 生成器：`devtools/gen_qol_seeddb.py`。
+ */
+val bundledSeedQolDb: File? = providers.gradleProperty("eratwSeedQolDb").orNull
+    ?.trim()
+    ?.takeIf { it.isNotEmpty() }
+    ?.let { raw ->
+        val f = File(raw).absoluteFile
+        if (!f.isFile || f.length() == 0L) {
+            throw GradleException(
+                "-PeratwSeedQolDb 指向的文件不存在或为空：$f；先跑 devtools/gen_qol_seeddb.py 生成预置库",
+            )
+        }
+        f
+    }
 
 /**
  * erbc 目录是不是**兜底找到的** erbcc 输出（既没给 `-PeratwErbcDir` 也没给有效的 `ERATW_ERBC_DIR`）。
@@ -177,6 +216,15 @@ val stagedSuffixes: Set<String> =
     if (bundlingEnabled) bundledSuffixes(bundledGameRoot, stagedDataDirs(!skipBadFrames), stagedConfigFiles)
     else emptySet()
 
+// 给了预置库却不随包（-PeratwSkipAssets / 既没游戏根也没 erbc）：说明它的开关意图落空了，
+// 不静默（不失败：日常小包形态本来就允许只随 erbc 或什么都不随）。
+if (!bundlingEnabled && bundledSeedQolDb != null) {
+    logger.warn(
+        "eratw: -PeratwSeedQolDb 已给但本次不随包（-PeratwSkipAssets 或没给游戏根/产物）" +
+            "⇒ 预置 qol_data.db 不会进 APK",
+    )
+}
+
 // ===========================================================================
 // 上报链 / 自动更新三条通道：缺参数要大声，包内要留不含机密的读数（OBS2-L4 packguard）
 // ===========================================================================
@@ -214,6 +262,16 @@ val channelHostPattern = Regex("^[a-z0-9][a-z0-9.-]{0,252}$")
 /** 三条通道的原始读数（空串 = 整条关）。令牌单列，只以「有/无」形态往下走。 */
 val reportEndpointRaw: String = providers.gradleProperty("eratwReportEndpoint").orNull ?: ""
 val reportTokenRaw: String = providers.gradleProperty("eratwReportToken").orNull ?: ""
+
+// 壳层品牌（SHELL-PROFILE）：pack_release.py --shell-profile 把这五项烙进 resources.arsc。
+// 缺省值与「没有本机制时的字面量」逐字一致：app 名 eraTW、加载页空覆盖（走原三语表）、
+// 教程 full（eraTW 原七页）。无配置路径因此与改动前逐字相同（I7 零干扰）。
+val shellGameName = providers.gradleProperty("eratwShellGameName").orNull?.takeIf { it.isNotBlank() } ?: "eraTW"
+val shellAppLabel = providers.gradleProperty("eratwAppLabel").orNull?.takeIf { it.isNotBlank() } ?: "eraTW"
+val shellLoadingHeadline = providers.gradleProperty("eratwLoadingHeadline").orNull ?: ""
+val shellLoadingDetail = providers.gradleProperty("eratwLoadingDetail").orNull ?: ""
+val shellTutorialMode = providers.gradleProperty("eratwTutorialMode").orNull
+    ?.takeIf { it in setOf("full", "basic") } ?: "full"
 val updateMirrorsRaw: String = providers.gradleProperty("eratwUpdateMirrors").orNull
     ?: providers.environmentVariable("ERATW_UPDATE_MIRRORS").orNull
     ?: ""
@@ -324,7 +382,8 @@ android {
 
 
     defaultConfig {
-        applicationId = "com.eratw.port.android"
+        // SHELL-PROFILE：第三方移植目标各自成独立应用（见文件头的 appIdOverride 说明）。
+        applicationId = appIdOverride
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
         // 0.2.0：从「能跑」到「能装给人玩」的第一版 —— 带设置页导入已有存档。
@@ -387,14 +446,30 @@ android {
         //        内联默认开 + ART MappedByteBuffer 兼容 + CALLSHARP 通用处置。
         // 0.2.45 / 21（2026-11-11）：一键出包工具按发版要求自动抬号。
         // 0.2.46 / 22（2026-11-15）：一键出包工具按发版要求自动抬号。
-        versionCode = 22
-        versionName = "0.2.46"
+        // 0.2.47 / 23（2026-11-15）：一键出包工具按发版要求自动抬号。
+        // 0.2.48 / 24（2026-11-19）：一键出包工具按发版要求自动抬号。
+        // 0.2.481 / 25（2026-11-20）：一键出包工具按发版要求自动抬号。
+        // 0.2.484 / 28（2026-11-26）：一键出包工具按发版要求自动抬号。
+        versionCode = 28
+        versionName = "0.2.484"
+        // SHELL-PROFILE：第三方包用版本账本的值覆盖上面的 eraTW 号段（缺省 -P 时空 ⇒ 不覆盖）。
+        // 覆盖写在字面量之后，pack_one 仍按第一处 `versionCode = <n>` 抬 eraTW 的号，互不干扰。
+        if (versionCodeOverride > 0) versionCode = versionCodeOverride
+        if (versionNameOverride.isNotEmpty()) versionName = versionNameOverride
 
         // 方案③ 报错上报端点（服务端模板见 tools/report-endpoint/）：缺省空 =
         // 上报通道整体关闭（零网络行为）；要启用在出包时带这两个 -P 参数：
         //   -PeratwReportEndpoint=https://<上报域名> -PeratwReportToken=<令牌>
         // 「缺参数就静默关闭」这件事由文件头的 channel-guard 兜：release 构建缺它会打一条大声警告，
         // 并且无论开不开，包内都留一条不含机密的读数 eratw_report_channel_stamp（见 reportChannelStamp）。
+        // 壳层品牌资源（SHELL-PROFILE）：app label 与运行期取品牌值的唯一构建期落点。
+        // strings.xml 不再定义 app_name，避免 duplicate resource；Manifest 仍引 @string/app_name。
+        resValue("string", "app_name", shellAppLabel)
+        resValue("string", "shell_game_name", shellGameName)
+        resValue("string", "shell_loading_headline", shellLoadingHeadline)
+        resValue("string", "shell_loading_detail", shellLoadingDetail)
+        resValue("string", "shell_tutorial_mode", shellTutorialMode)
+
         resValue("string", "eratw_report_endpoint", reportEndpointRaw)
         resValue("string", "eratw_report_token", reportTokenRaw)
 
@@ -555,13 +630,12 @@ dependencies {
     implementation("com.eratw.port:core-vm")
     implementation(project(":render-canvas"))
     implementation(project(":platform"))
-    // RT2-B②：Kotlin mod 载体注册表的组合根。:mod-family 只 api :mod-api（F1 判据），
-    // 经它进 app 的只有 EraMod 公开面，core-vm 不从这里漏进宿主。
-    implementation("com.eratw.port:mod-family")
-    // RT2-M91：记忆 Mod 参考实现（M9-1）载体，同上只经 EraMod 公开面进宿主。
-    implementation("com.eratw.port:mod-memory")
-    // M10-1：Living World Demo 四载体（eratw.lw.*），同上只经 EraMod 公开面进宿主。
-    implementation("com.eratw.port:mod-livingworld")
+    // RT2-B②：Kotlin mod 载体注册表的组合根。2026-11-16 起名单由 :mod-registry 构建期
+    // 扫 @ModCarrier 生成（ModRegistry.carriers），不再在 app 里逐个点名载体模块；
+    // 各载体模块仍只 api :mod-api（F1 判据），core-vm 不从它们漏进宿主。
+    // 引用走发布坐标（不是本仓 project(":...")）——引擎在姆妹仓 Kotera，
+    // composite build 把 com.eratw.port:* 替换到那边的工程。
+    implementation("com.eratw.port:mod-registry")
     coreLibraryDesugaring(libs.desugar.jdk.libs.nio)
     // 壳层 Compose：只用于输入条 / 右侧选项栏 / 覆盖层 / 设置入口；游戏画面仍是
     // CanvasConsoleView（经 AndroidView 嵌入），渲染与命中路径零改动。
@@ -599,9 +673,21 @@ dependencies {
 // 传的是原始端点/镜像串（它们本来就是包内明文资源，不是机密）；令牌只传布尔「有/无」，
 // 值绝不出现在系统属性、测试输出或任何产物里。
 tasks.withType<Test>().configureEach {
+    // 2026-11-26 判词 20 收口时接线：本模块测试此前无 maxHeapSize ⇒ 吃 Gradle 缺省 512 MB，
+    // 真口上整包导入链（KojoTranscodeChainEndToEndTest 判据3-3）在 30.02s 处以「补丁产物编码失败：Java heap space」中止。
+    // 同一条命令把堆抬到 2 GB 后该格 46.691s 真跑完、整套件 5/0 绿（读数归档 /d/DSH/.gate2c-evidence/heap2g-green/，
+    // XML sha256 ad17c68ca5…；改前红 XML 快照在 /d/DSH/.gate2c-evidence/0417-baseline/）。
+    // 这是容量配置不是语义：堆上限抬高的同时把「真包体积」这条测得动，缺省值不动 core-vm/render 各模块的 3g/1g 口径。
+    maxHeapSize = "2g"
     systemProperty("eratw.build.reportEndpoint", reportEndpointRaw)
     systemProperty("eratw.build.reportTokenPresent", reportTokenRaw.isNotBlank().toString())
     systemProperty("eratw.build.updateMirrors", updateMirrorsRaw)
+    // RT2 闭环夹具自刷新旋钮（与 :tools:modgen 同一口径）：命令行 -D 进不了 test worker JVM，
+    // 这里转发；缺省 "false" ⇒ 未指定时照旧逐字节比对。
+    systemProperty(
+        "eratw.refreshPackFixture",
+        System.getProperty("eratw.refreshPackFixture") ?: "false",
+    )
 }
 
 // T2-63 的 ConvertArtProfileTask 类已抽到 buildSrc（com.eratw.port.buildlogic.ConvertArtProfileTask）：
@@ -707,6 +793,9 @@ if (bundlingEnabled) {
     // ⇒ root=game 补丁整表不适用。缺省关（任何其它写法也算关，宁可按旧口径判红也不静默放行）。
     val cfgForeignCorpus = providers.gradleProperty("eratwForeignCorpus").orNull
         ?.trim()?.lowercase() in setOf("1", "true")
+    // 「跳过首次建图」预置库（可选）：配置期已校验存在/非空，这里只做接线。
+    // 任务侧 @InputFile 会把它算进增量指纹（换了 seed 必重跑 staging）。
+    val cfgSeedQolDb = bundledSeedQolDb
     val stageGameAssets = tasks.register<StageGameAssetsTask>("stageGameAssets") {
         group = "eratw"
         description = "把 erbc 产物 + CSV/resources/sound/plugins/配置搬进 assets staging（装机即玩随包）"
@@ -725,6 +814,7 @@ if (bundlingEnabled) {
         foreignCorpus.set(cfgForeignCorpus)
         apkOverheadAllowance.set(cfgApkOverhead)
         cfgEngineStampFile?.let { engineStampFile.set(File(it)) }
+        cfgSeedQolDb?.let { seedQolDb.set(it) }
         outRoot.set(gameAssetsRoot)
         // 输入指纹（与旧 inputs.dir/file 逐条同义）：erbcDir 已在上面 set（@Optional @InputDirectory），
         // 这里补语料目录/配置文件；语料是 335 MB，Gradle 每次要 xxhash 一遍（实测几十秒内）；

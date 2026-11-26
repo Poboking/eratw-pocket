@@ -83,6 +83,22 @@ def real_demo_erbm() -> bytes:
         return fh.read()
 
 
+def corrupt_magic(data: bytes) -> bytes:
+    """把 manifest 首行的版本号换成阶梯外的 /9，用于「坏 magic 必判红」的反向证明。
+
+    不能用 `data.replace(b"RT2MANIFEST/3", ...)` 写死某个版本：阶梯
+    （pr.RT2_MANIFEST_MAGICS，/3../8）会随能力位演进加宽，逐只载体各自落在不同版本上
+    （demo 仍 /3，family/memory 已 /5，lw 四只 /4）。写死 /3 的替换对非 /3 的档是**静默
+    落空的空操作**——被测字节与真资产逐字节相同，坏档那条断言于是永远拿不到输入，反向
+    证明失效。这里按行取首行重写，并对「确实换掉了」当场断言。
+    """
+    head, sep, rest = data.partition(b"\n")
+    assert head.startswith(b"RT2MANIFEST/"), f"manifest 首行不是版本阶梯：{head!r}"
+    broken = b"RT2MANIFEST/9" + sep + rest
+    assert broken != data, "替换没生效，反向证明不成立"
+    return broken
+
+
 def check(assets: dict) -> list:
     tmp = tempfile.mkdtemp(prefix="rt2-pack-")
     saved = pr.APK_PATH
@@ -138,9 +154,20 @@ def test_stale_bytes_fails() -> None:
 
 
 def test_bad_magic_fails() -> None:
-    broken = real_asset().replace(b"RT2MANIFEST/3", b"RT2MANIFEST/9", 1)
+    broken = corrupt_magic(real_asset())
     problems = check({pr.RT2_BUILTIN_ASSET_PREFIX + ASSET_NAME: broken})
     assert any("坏档" in p for p in problems), f"坏档必须判红：{problems}"
+
+
+def test_bad_magic_helper_covers_every_ladder_version() -> None:
+    # 反向证明的守卫：阶梯里每一个合法版本都要能被 corrupt_magic 真正换成坏档。
+    # 缺这条，某只载体升档后 replace 落空又会被前端那条悄悄放过。
+    for magic in pr.RT2_MANIFEST_MAGICS:
+        data = magic.encode() + b"\n@meta\nS65726174772e66616d696c79\n/\n"
+        broken = corrupt_magic(data)
+        assert broken.split(b"\n", 1)[0] not in pr.RT2_MANIFEST_MAGICS, magic
+        package_id, err = pr.parse_rt2_manifest_package_id(broken)
+        assert err is not None and package_id is None, f"{magic} 的坏档没被拒：{package_id}"
 
 
 def test_extra_unknown_manifest_fails() -> None:

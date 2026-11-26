@@ -46,7 +46,7 @@ class PortFactoryConfigTest {
             PortFactoryConfig.INFINITE_LOOP_ALERT_MS in range!!,
         )
         assertTrue(
-            "0 = 关闭的开关位必须仍在值域内（Process.cs:989 的 Config.InfiniteLoopAlertTime > 0）",
+            "0 = 关闭的开关位必须仍在值域内（skia Process.ScriptProc.cs:35、1.824 Process.cs:1012 的 Config.InfiniteLoopAlertTime > 0）",
             0 in range,
         )
         assertTrue(

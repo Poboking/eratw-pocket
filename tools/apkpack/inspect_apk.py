@@ -64,6 +64,14 @@ BUNDLED_DIRS = ("CSV", "resources", "sound", "plugins")
 # staging 落在 assets 根的配置件（与 app/build.gradle.kts 的 stagedConfigFiles 同源）。
 BUNDLED_CONFIGS = ("emuera.config", "default.config", "fixed.config")
 
+# 预置 qol_data.db（「跳过首次建图」包）：staging 期整份覆盖 plugins/qol_data.db，让玩家首启
+# 不再跑语料的 GRAPH_DB_REBUILD（36,418 行 INSERT + VACUUM）。产物侧自证 = package.report 的
+# `seed-qol-db <sha256> <bytes>` 行（buildSrc StageGameAssetsTask）；这里既核条目存在/STORED/
+# 字节数/SHA-256，也接受「没有这一行」的旧包（只告警，--strict-seed 才升级成失败）。
+SEED_DB_ENTRY = "assets/plugins/qol_data.db"
+SEED_REPORT_KEY = "seed-qol-db"
+SEED_SOURCE_KEY = "seed-qol-db-source"
+
 DEFAULT_MAX_MB = 420      # 报告缺席时的兜底上限（程序条目 DEFLATE 那一档）
 
 
@@ -250,7 +258,8 @@ def full_entry(rel: str) -> str:
 
 
 def check(apk: Path, require_erbc: bool, allow_compressed: bool,
-          require_bundled: bool, max_mb: int | None) -> Report:
+          require_bundled: bool, max_mb: int | None,
+          strict_seed: bool = False) -> Report:
     rep = Report()
     if not apk.is_file():
         rep.fail(f"APK 不存在：{apk}")
@@ -648,7 +657,8 @@ def check(apk: Path, require_erbc: bool, allow_compressed: bool,
                         "manifest-sha256", "staged-entries", "staged-bytes",
                         "linked-files", "copied-files",
                         "extensionless-files", "align-slack-bytes", "apk-ceiling-bytes",
-                        "game-root", "erbc-source"):
+                        "game-root", "erbc-source",
+                        SEED_REPORT_KEY, SEED_SOURCE_KEY):
                 if key in pkg:
                     rep.out(f"  {key:<20} {pkg[key]}")
             if "_error" in pkg:
@@ -693,6 +703,55 @@ def check(apk: Path, require_erbc: bool, allow_compressed: bool,
                 "上架需要 Play Asset Delivery / 分包"
             )
 
+        # ---------------- 8. 预置 qol_data.db（跳过首次建图） ----------------
+        # 口径与第 3 段 STORED 检查同源：staging 期把生成库整份覆盖到 plugins/qol_data.db，
+        # 解包端要按包内长度直拷（DEFLATE 条目会让「随包字节数」与真实库字节数脱钩）。
+        seed_line = (pkg.get(SEED_REPORT_KEY, "") or "").strip()
+        rep.out("")
+        rep.out("预置 qol_data.db（跳过首次建图）")
+        if not pkg:
+            rep.out("  （package.report 缺席：无从判断，旧口径构建没有这一列）")
+        elif not seed_line:
+            msg = ("package.report 没有 seed-qol-db 行：这个包没带预置图库，玩家首启要自己建图"
+                   "（语料 GRAPH_DB_REBUILD 36,418 行 + VACUUM，秒级卡顿）")
+            if strict_seed:
+                rep.fail(msg + "（--strict-seed）")
+            else:
+                rep.warn(msg + "；旧包或刻意不带时属预期，--strict-seed 可升级为失败")
+        else:
+            fields = seed_line.split()
+            seed_sha = fields[0].strip().lower() if fields else ""
+            seed_bytes = None
+            if len(fields) >= 2:
+                try:
+                    seed_bytes = int(fields[1])
+                except ValueError:
+                    seed_bytes = None
+            if len(seed_sha) != 64 or seed_bytes is None:
+                rep.fail(f"package.report 的 seed-qol-db 行格式不对：{seed_line!r}"
+                         "（应为 <sha256> <bytes>）")
+            elif SEED_DB_ENTRY not in names:
+                rep.fail(f"package.report 声明了预置库（{seed_sha[:16]}… / {seed_bytes} 字节），"
+                         f"但 APK 里没有 {SEED_DB_ENTRY}")
+            else:
+                info = zf.getinfo(SEED_DB_ENTRY)
+                problems: list[str] = []
+                if info.compress_type != 0:
+                    problems.append(
+                        f"预置库条目是 {METHODS.get(info.compress_type, info.compress_type)}："
+                        "必须 STORED（解包端按包内长度直拷，压缩条目要多一次 inflate 且体积读数失真）")
+                if info.file_size != seed_bytes:
+                    problems.append(f"字节数不符：APK {info.file_size} / 报告 {seed_bytes}")
+                actual_sha = entry_sha256(zf, SEED_DB_ENTRY)
+                if actual_sha != seed_sha:
+                    problems.append(f"SHA-256 不符：APK {actual_sha[:16]}… / 报告 {seed_sha[:16]}…")
+                if problems:
+                    for item in problems:
+                        rep.fail(item)
+                else:
+                    rep.ok(f"{SEED_DB_ENTRY} STORED / {seed_bytes} 字节 / sha256 {seed_sha[:16]}…"
+                           "（与 package.report 一致）")
+
     if rep.fails:
         rep.out(f"结论：{len(rep.fails)} 项失败，{len(rep.warns)} 项告警")
     elif rep.warns:
@@ -722,10 +781,16 @@ def main(argv: list[str]) -> int:
         default=None,
         help="体积上限（MB，十进制）；缺省用 package.report 的 apk-ceiling-bytes，报告缺席时 420",
     )
+    ap.add_argument(
+        "--strict-seed",
+        action="store_true",
+        help="预置 qol_data.db 口径升级为强制：package.report 缺 seed-qol-db 行也判失败"
+             "（正式包用；缺省只告警，兼容旧包与刻意精简的包）",
+    )
     args = ap.parse_args(argv)
 
     rep = check(args.apk, args.require_erbc, args.allow_compressed,
-                args.require_bundled, args.max_mb)
+                args.require_bundled, args.max_mb, args.strict_seed)
     print("\n".join(rep.lines))
     return 1 if rep.fails else 0
 

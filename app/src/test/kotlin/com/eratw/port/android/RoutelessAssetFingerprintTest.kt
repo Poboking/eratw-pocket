@@ -58,7 +58,10 @@ class RoutelessAssetFingerprintTest {
 
     @Test
     fun `memory资产指纹逐字节不变`() {
-        val pin = "970edd0cd58699048cbe62a7fdce10df412fe44b3207e2ad661b76dc598bcf52"
+        // MODDX4-B4（组装线）重钉：`@relationship-schemas` I1→I2 并追加 acquaintance 无向边声明，
+        // 派生资产 eratw.memory.manifest 的关系段随之变化 —— 指纹按新资产重钉；
+        // 该波只改声明面，实体/变量/内置面逐字节不变，故只有这一枚 pin 变动。
+        val pin = "6e63b1f26d9585fd2b958d843511b2717116781f4fdd35cfdb753ad2004f68da"
         assertEquals(pin, fingerprintOf("eratw.memory.manifest"))
     }
 

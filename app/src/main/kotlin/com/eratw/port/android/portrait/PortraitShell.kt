@@ -172,13 +172,18 @@ internal fun PortraitShellContent(
             onSettings = onSettings,
             hudColsPerRow = hudCols(size),
             contentMaxHeight = contentMaxHeight,
-            // 锚点跳转（§4.1 M1 形态）：M1 拿不到 render 的行映射（折行后的渲染行号在
-            // ConsoleScreen 内部），精确锚到 [Status]/[Palam] 行属 M2/需组长接线；这里用
-            // 控制台视图**自己**的公开滚动口（CanvasConsoleView.scrollRows，单入口、
-            // 不外包 Compose 滚动）上翻一屏，让玩家把更早的正文拉进视野。
+            // 锚点跳转（§4.1 精化版）：先按快照行找「状态区头」（日期行 / 地点时间行，退一步
+            // 认数值行首），命中就把那一行顶到视口顶部（差值为负 = 往下滚，视口自夹）；
+            // 一屏里认不出状态区才退回 M1 的「上翻一屏」，不拿 0 或末行冒充锚点。
             onScrollToSections = {
-                val rows = consoleView.consoleScreen()?.heightLines?.coerceAtLeast(1) ?: 24
-                consoleView.scrollRows(rows)
+                val screen = consoleView.consoleScreen()
+                val anchor = statusAnchorOffset(consoleView)
+                if (screen != null && anchor != null) {
+                    consoleView.scrollRows(screen.visibleRowBase - anchor)
+                } else {
+                    val rows = screen?.heightLines?.coerceAtLeast(1) ?: 24
+                    consoleView.scrollRows(rows)
+                }
             },
             onScrollToLatest = {
                 // scrollRows 负数 = 回底方向；大步长由视口自夹（滚动范围有限）。
@@ -230,4 +235,22 @@ internal fun PortraitShellContent(
             onQuickMacro = onQuickMacro,
         )
     }
+}
+
+/**
+ * 状态区头在**保留区行窗口**里的下标：`log.rowsAt(firstIndex, size)` 的行序与
+ * `ConsoleScreen.visibleRowBase` 是同一个基准（两者都相对保留区起点），所以调用侧
+ * 「`visibleRowBase - 本值`」就是 `scrollRows` 要的偏移，不需要再换算绝对行号。
+ *
+ * 只读口：`ConsoleScreen.log` 是既有公开面（`rowsAt` / `firstIndex` / `size` 均为公开），
+ * 本函数不碰 render 内部状态，也不改视口。
+ */
+private fun statusAnchorOffset(view: CanvasConsoleView): Int? {
+    val screen = view.consoleScreen() ?: return null
+    val log = screen.log
+    val rows = if (log.size > 0) log.rowsAt(log.firstIndex, log.size) else emptyList()
+    return PortraitAnchorJump.anchorOffset(
+        texts = rows.map { row -> row.runs.joinToString("") { run -> run.text } },
+        logicalStart = rows.map { row -> row.isLogicalLine },
+    )
 }

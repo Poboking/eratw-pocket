@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "gameName": "eratohoReverse",
+  "appLabel": "eratohoReverse",
+  "applicationId": "com.eratw.port.eratohoreverse",
+  "loadingHeadline": "― e r a t o h o R e v e r s e ―",
+  "loadingDetail": "正在进入 eratohoReverse…",
+  "tutorialMode": "basic"
+}

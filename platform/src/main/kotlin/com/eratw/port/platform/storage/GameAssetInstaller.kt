@@ -480,10 +480,18 @@ class GameAssetInstaller(
      * 「旧 program + 新 meta」的错配（见类头「配对事务」段）。缺产物由更新通道的全量包
      * 自愈，装载期 `artifactsOnDisk` 也会先给出可读的失败屏，不会静默跑错语料。
      */
-    private fun stepNeeded(target: File, shapeStale: Boolean, pairArtifact: Boolean = false): Boolean {
+    private fun stepNeeded(
+        target: File,
+        shapeStale: Boolean,
+        pairArtifact: Boolean = false,
+        healContent: Boolean = false,
+    ): Boolean {
         // defersToNewerDisk 的定义里已含 !forceReplace，这里不重复判。
         if (pairArtifact && defersToNewerDisk) return false
-        return UpdatePolicy.bundledAssetNeedsCopy(
+        // [healContent]：名字表内容与随包不一致时**越过让位档**重写，理由见 [nameTableStale] 段 ——
+        // 盘上旧 CSV 配上随包 erbc 会让脚本以「下标 -1 越界」中止回合（玩家进不去游戏），
+        // 这比「让位档保留了一份更新的名字表」昂贵得多。更新档（forceReplace）本就一律重写，不走这里。
+        return healContent || UpdatePolicy.bundledAssetNeedsCopy(
             forceReplace = forceReplace,
             defersToDisk = defersToNewerDisk,
             targetPresent = target.isFile,
@@ -1001,7 +1009,19 @@ class GameAssetInstaller(
                 "（例如 ${uncovered.first()}）：宁可不写，也不写只覆盖 ${merged.size} 条的半张表"
         }
         return try {
-            writeDataDigestAtomic(merged, recordDataVersion)
+            // 让位档的版本头**只升不降**（CONTRACT-BOOTUNPACK 的 digest 半边，与
+            // `UpdateManager.advanceDataVersion` 的 marker 半边同一纪律、两源各守各的）：
+            // 本轮补拷的是 APK 随包旧内容，盘上主体仍是更高版本的数据包语料。若把版本头
+            // 随本轮拨回随包版，marker 失效的盘（应用段 data-version.txt 改名失败只记日志的
+            // 在册可达中间态，见 UpdatePolicy.effectiveDiskDataVersion KDoc）下一班
+            // max(marker, digest) 塌回随包版 ⇒ 让位判定恒不成立 ⇒ 首启档长度判据把整棵
+            // 数据包语料打回 APK 旧版（真机约 919 MiB），「下载完更新、重启后还是旧版」
+            // 以同形复发。非让位档逐字保持原口径：随包调用点由让位判定保证
+            // previous ≤ recordDataVersion；更新档与本轮换语料的调用点本就以随包版为准。
+            val headerVersion =
+                if (defersToNewerDisk) maxOf(recordDataVersion, previous?.version ?: 0L)
+                else recordDataVersion
+            writeDataDigestAtomic(merged, headerVersion)
             null
         } catch (e: Throwable) {
             // 摘要写不下去不牵动本轮：数据已经落对，缺的只是下一轮的凭据（下一轮回落全量）。
@@ -1303,6 +1323,119 @@ class GameAssetInstaller(
     }
 
     /**
+     * 换代里**长度不变但内容变了**的文本数据文件，必须按内容判陈旧，不看长度。
+     *
+     * 根因（0.2.46 换代实测）：261017 → 261111 把 `CSV/Palam.csv` 的属性名从繁体
+     * `眠姦` 简体化为 `眠奸` —— 两字都是 3 字节 UTF-8，**整文件同为 228 字节**；
+     * 同时 `plugins/tw_csv_chs.xml` 删掉了繁体键 `<k>眠姦</k>`（长度从 413877 变
+     * 410050，按长度能正常更新）。覆盖安装后若长度判据把等长的 `Palam.csv` 误判成
+     * 「已装好」而跳过，`PALAMNAME` 仍是繁体 `眠姦`，而新翻译表只有简体键 `眠奸`，
+     * `CSV.ERB` 的 `PALAM_TR` 查不到即上屏「※未能找到眠姦翻译，请保存日志报错」。
+     * 这是**新旧语料混装**，长度判据对「等长换代」先天失明。
+     *
+     * 只对 [CONTENT_CHECK_DIRS] 开、且只在**随包档**（非 [forceReplace]）走：
+     * - 这两类目录是运行期直接读的小体量数据（名字表 / 翻译表 / 配置 / 预置库），换代常做
+     *   逐字繁简、错字订正等同长修改；`resources`/`sound`/`bad` 是图片音频，等长重编码
+     *   虽也可能（webp），但那是[更新档][forceReplace]「包里有就重写」的职责，不在
+     *   首启档叠加逐字节读（几百 MiB 每次冷启读一遍不可接受）；
+     * - CSV 236 文件共 1.3 MiB、plugins 17 文件共约 2 MiB，逐字节对账总代价可忽略。
+     *
+     * ## 让位档为何不让位（2026-11-20 真机判例）
+     *
+     * 让位档的本意是「盘上数据来自更高版本的数据包，随包语料不得把它打回旧版」。但名字表
+     * 与随包 erbc 是**同一代**的耦合：erbc 里的 `GETNUM(CFLAG, "名字")` 与 `CSVCFLAG(no, 下标)`
+     * 都在运行期靠 `CSV/CFLAG.csv` 把名字换成下标，盘上留了一份旧 CSV（旧编号 / 旧繁简 /
+     * 第三方整合包改过编号）时，`GETNUM` 查不到就回 `-1`，随后 `CSVCFLAG(no, -1)` 抛
+     * `函数 CSVCFLAG: 下标 -1 越界（CFLAG 长度 10000）（UPDATE_MAIN_CHARA 行432）`，
+     * **开局就中止回合、玩家进不去游戏**，且换个存档也没用（名字表是全局的）。
+     *
+     * 让位档护住的是「更新的语料」，代价却是「引擎与名字表不在同一代」，这条代价不对称：
+     * 让位档下名字表错一代 = 游戏不可进；名字表被随包覆盖回 APK 版 = 至多多丢几条新增别名，
+     * 且数据包应用段（[LoadPipeline] 里紧跟本轮解包的 `applyStagedBundleIfPresent`）会用
+     * 更新包里的 CSV 再覆盖一遍，把「本轮恰好有更高版本数据包在排队」的情况纠正回来。
+     *
+     * 判据语义：目标已在位且 APK 侧能读到字节 ⇒ 逐字节比；读不到（异常资产）交回
+     * [needsCopy] 的长度判据，不把它误判成陈旧而反复重拷。
+     */
+    private fun contentStale(path: String, target: File): Boolean {
+        if (!CONTENT_CHECK_DIRS.any { path == it || path.startsWith("$it/") } || !target.isFile) return false
+        val apkBytes = assets.openFile(path)?.use { it.readBytes() }
+        return apkBytes != null && !target.readBytes().contentEquals(apkBytes)
+    }
+
+    /**
+     * 盘上的 CSV 名字表与随包**同一下标对不上号**（缺行或名字不同）时判陈旧，且**越过让位档**补齐。
+     *
+     * ## 判据为什么是「逐个下标比名字」而不是「整文件逐字节比」
+     *
+     * 让位档的既定纪律是「盘上数据版本更高 ⇒ 一个字节都不碰」（见 [stepNeeded] 与
+     * `GameAssetInstallerDeferTest`）。名字表要开一个例外，就必须让例外的方向只有一种：
+     * **随包有的下标，盘上名字不同（缺行或改名）就按随包补齐；随包没有的下标（数据包新增行）
+     * 一律不动**。这样既不会把更新的名字表打回旧版，也不会因为盘上多几行就把整份文件盖掉 ——
+     * 只有「随包这份认得的某个下标，在盘上对不上号」时才动手。
+     *
+     * 改名为什么也算：`GETNUM` 是按名字换下标的，盘上把 33 号改成别的译名、而 erbc 里问的
+     * 仍是原名，等价于「查不到」—— 一样回 -1、一样崩。改名与缺行在运行期是同一个后果，
+     * 判据就不该把它们分开处理。盘上的额外下标不受影响（只增不改）。
+     *
+     * ## 缺条目为什么必须立刻补（2026-11-20 真机判例）
+     *
+     * 语料 `ERB/fromEN/NEW_UPDATE/UPDATE_MAIN.ERB:432` 用
+     * `CSVCFLAG(NO, GETNUM(CFLAG, "居住必要信赖度"))` 按名字迁列号。erbc 里这个名字要在
+     * 运行期由 `CSV/CFLAG.csv` 换成下标；盘上那份 CSV 少了这一行时 `GETNUM` 回 `-1`，
+     * 随后 `CSVCFLAG` 抛「下标 -1 越界（CFLAG 长度 10000）」把整个回合中止 —— 玩家**进不去
+     * 游戏**，换存档也没用（名字表是全局的）。玩家侧看不到任何「修数据」的入口，
+     * 只能靠这里自愈。
+     *
+     * 只认 `CSV/` 下的 `.csv`：解析为 `序号,名字`，序号解析不出的行（注释、空行）跳过 —
+     * 这里只判「某个序号在不在」，不参与语料加载，故重复序号取首个即可，不影响判据。
+     */
+    /** 本轮是否按「名字表自愈」越过让位档重拷该条目：档位前置 + [nameTableStale] 的判定。 */
+    private fun healsNameTable(path: String, target: File): Boolean = !forceReplace && nameTableStale(path, target)
+
+    /** 首启档的形状判据：长度不符 / 压缩条目为空 / 名字表自愈 / 内容对账不符（后者只在非让位档）。 */
+    private fun shapeStale(
+        path: String,
+        target: File,
+        stored: Long?,
+        compressedStale: Boolean,
+        healNameTable: Boolean,
+    ): Boolean {
+        val contentMismatch = !forceReplace && !defersToNewerDisk && contentStale(path, target)
+        return needsCopy(target, stored) || (stored == null && compressedStale) || healNameTable || contentMismatch
+    }
+
+    private fun nameTableStale(path: String, target: File): Boolean {
+        val candidate = path.startsWith("CSV/") && path.endsWith(".csv") && target.isFile
+        val apkNames = if (!candidate) {
+            emptyMap()
+        } else {
+            runCatching { assets.openFile(path)?.use { parseNameTable(it.readBytes()) } }.getOrNull().orEmpty()
+        }
+        val diskNames = if (apkNames.isEmpty()) {
+            emptyMap()
+        } else {
+            runCatching { parseNameTable(target.readBytes()) }.getOrDefault(emptyMap())
+        }
+        // 只按「随包认得的下标」比：盘上多出来的行（数据包新增）不进判据，保住让位档方向。
+        return apkNames.any { (index, name) -> diskNames[index] != name }
+    }
+
+    /** `序号,名字` 两列解析：序号列解析不出（注释行、空行、表头）即跳过，与语料加载同口径。 */
+    private fun parseNameTable(bytes: ByteArray): Map<Int, String> {
+        val names = LinkedHashMap<Int, String>()
+        String(bytes, Charsets.UTF_8).lineSequence().forEach { line ->
+            val comma = line.indexOf(',')
+            if (comma <= 0) return@forEach
+            val index = line.substring(0, comma).trim().toIntOrNull() ?: return@forEach
+            val name = line.substring(comma + 1).trim()
+            if (name.isEmpty()) return@forEach
+            names.putIfAbsent(index, name)
+        }
+        return names
+    }
+
+    /**
      * 递归收集 [dir] 下的文件（按名字排序，落盘顺序稳定、日志可复现）。
      *
      * 资产里没有「列目录」之外的元信息：文件与空目录在 `AssetManager.list` 下同为空表，
@@ -1316,6 +1449,7 @@ class GameAssetInstaller(
             val path = "$dir/$name"
             val target = File(gameRoot, path)
             val stored = assets.fileSize(path)
+            val healNameTable = healsNameTable(path, target)
             if (target.isFile) {
                 steps += Step(
                     target = target,
@@ -1323,8 +1457,8 @@ class GameAssetInstaller(
                     relPath = path,
                     needed = stepNeeded(
                         target,
-                        shapeStale = needsCopy(target, stored) ||
-                            (stored == null && compressedStale),
+                        shapeStale = shapeStale(path, target, stored, compressedStale, healNameTable),
+                        healContent = healNameTable,
                     ),
                 )
                 continue
@@ -1841,6 +1975,15 @@ class GameAssetInstaller(
          */
         val DATA_DIRS: List<String> =
             listOf("CSV", "resources", "sound", "plugins", "bad", "ERB")
+
+        /**
+         * 首启档要按**内容**而非长度判陈旧的文本目录（见 [GameAssetInstaller.contentStale]）。
+         *
+         * 只含运行期直接读、换代常做等长逐字修改的小体量目录：CSV 236 文件 1.3 MiB、
+         * plugins 17 文件约 2 MiB。图片音频目录（resources/sound/bad）的等长重编码属
+         * 更新档职责，不在这里逐字节读。
+         */
+        val CONTENT_CHECK_DIRS: List<String> = listOf("CSV", "plugins")
 
         /** 拷贝块大小：1 MiB，整轮复用一块（见类头「内存」段）。 */
         const val BUFFER_BYTES = 1 shl 20

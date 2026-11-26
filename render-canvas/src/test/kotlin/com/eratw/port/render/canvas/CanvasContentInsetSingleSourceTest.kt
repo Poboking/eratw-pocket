@@ -17,7 +17,7 @@ import kotlin.test.assertTrue
  * [CanvasTapOutcomeAuditTest] / [CanvasMemoryReleaseAuditTest] 的做法：剥掉注释后按行断言，
  * 并复核一次纯函数的「绘制原点 = 取色本地原点」代数关系。
  *
- * ## 钉的五件事（R4.2 单一权威）
+ * ## 钉的六件事（R4.2 单一权威）
  *
  * 1. **内容左沿唯一**：代码里不许再把 `paddingLeft.toFloat()` 当内容左沿；所有 `paddingLeft`
  *    读数只能是内容宽算式（`w - paddingLeft - paddingRight`）或 [CanvasConsoleView.debugHits]
@@ -27,9 +27,13 @@ import kotlin.test.assertTrue
  *    原点 `originX`（div 子行：`contentLeft + rect.x`；烤行位图：相对行位图 0 并被整体贴到
  *    内容左沿），不许出现 padding 直算；
  * 4. **命中/取色同源**：`cellHitAt` / `setPointer` / `drawScreen` / `mappingColorOrNull` 的内容
- *    左沿都读 `contentLeftPx()`；`clientX` / `buttonAtClient` 与绘制同一左沿；
+ *    左沿都读 `contentLeftPx()`；`clientX` / `buttonAtClient` 与绘制同一左沿。CANVASTAP2 之后
+ *    cellHitAt 的体逐字搬在文件末尾的 PixelTapMetrics 扩展上（CanvasConsoleView.kt:5322），
+ *    View 里只剩一行转发（体内无花括号）=> 锚签名跟着体走，判定规则一字未动；
  * 5. **客户区读数**：`layoutWidthPx()` 是 `ScreenLayout.layoutWidthPx` 的唯一权威读口，
  *    `clientWidthPx()` / `windowColumns()` / `drawableWidthPx()` / `clientSizePx()` 全部从它派生。
+ * 6. **居中偏移全文点名**（CANVASTAP2 按组长裁决加）：resolvedContentInsetLeftPx 只许「声明 +
+ *    publishLayoutGeometry 写入 + contentLeftPx 唯一算式」三处，第四处即平行左沿口径。
  *
  * 真机视觉（调窄后左右对称留白、点击/取色不偏）仍是 `TODO(verify)`：本机 `adb devices` 为空，
  * 本夹具不冒充真机读数。
@@ -132,8 +136,11 @@ class CanvasContentInsetSingleSourceTest {
             "内容左沿的唯一来源必须是 contentLeftPx() = paddingLeft + 居中偏移",
         )
         // 左沿的四个消费面都读它（钉住「绘制/命中/取色/坐标换算同一偏移」）。
+        // CANVASTAP2：cellHitAt 的体逐字搬到文件末尾的 PixelTapMetrics 扩展（CanvasConsoleView.kt:5322），
+        // View 里那个私有方法只剩一行转发、体内无花括号 —— bodyOf 的 indexOf 会越过它抓到下一个
+        // 函数（tooltipAt）的体。锚签名跟着体走，判定规则一字未动（组长裁决 2026-11-26）。
         for (signature in listOf(
-            "private fun cellHitAt(",
+            "internal fun PixelTapMetrics.cellHitAt(",
             "fun setPointer(",
             "private fun drawScreen(",
             "fun mappingColorOrNull(",
@@ -143,6 +150,30 @@ class CanvasContentInsetSingleSourceTest {
                 "$signature 里的内容左沿必须读 contentLeftPx()",
             )
         }
+        // 加钉一：View 侧匿名度量实现必须把左沿一行转发回唯一算式。少这句 = 有人在实现里
+        // 就地重算左沿，画/点/取色立刻分家（AGENTS 3.1 说的「掩盖」）。
+        assertTrue(
+            code.contains("override fun contentLeftPx(): Float = this@CanvasConsoleView.contentLeftPx()"),
+            "tapMetrics 的 contentLeftPx 只能一行转发回 View 的唯一算式，不许另算",
+        )
+    }
+
+    @Test
+    fun `居中偏移读数全文件只有声明-写入-唯一算式三处`() {
+        // 加钉二：把「唯一算式」从「在某个体里」升级为全文面 —— 剥注释后逐行点名
+        // resolvedContentInsetLeftPx 的每一处出现。第四处就是绕过 contentLeftPx() 的平行左沿口径。
+        val readings = codeLines.mapIndexedNotNull { _, line ->
+            line.trim().takeIf { it.contains("resolvedContentInsetLeftPx") }
+        }
+        assertEquals(
+            listOf(
+                "private var resolvedContentInsetLeftPx: Int = 0",
+                "resolvedContentInsetLeftPx = layout.contentInsetLeftPx",
+                "private fun contentLeftPx(): Float = (paddingLeft + resolvedContentInsetLeftPx).toFloat()",
+            ),
+            readings,
+            "居中偏移只许「声明 + publishLayoutGeometry 写入 + contentLeftPx 唯一算式」三处",
+        )
     }
 
     // ------------------------------------------------------------------

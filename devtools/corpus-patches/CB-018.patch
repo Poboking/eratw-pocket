@@ -1,0 +1,204 @@
+--- a/魔改内容/QOL_IMAGE.ERB
++++ b/魔改内容/QOL_IMAGE.ERB
+@@ -27,6 +27,20 @@
+ ;=========================================================
+ 
+ ;-------------------------------------------------
++; [CB-018] 安卓无鼠标悬停：引擎的 srcb 实时代换（参考 Emuera ConsoleImagePart.cs
++; DrawTo：鼠标压在 img 上时绘制 srcb 悬停帧）在触屏设备上永不触发，动态立绘
++; （悬停帧 / 脸红效果层）对玩家永久不可见。本补丁以「当页停留时间」替代：
++; 立绘页停留超过 3 秒时随机挑一个角色启用悬停帧——单角色页 50% 掷币
++; （惊喜在动不动），多角色页按好感度降序秩加权随机挑一个（惊喜在谁动）。
++; 判定按页粘滞（LINECOUNT 作页键），同页重绘复用判定，避免帧间闪烁；
++; 随机取 GETMILLISECOND 与 LINECOUNT 混合种子，不触碰游戏 RNG 流（RAND 会改玩法数值）。
++; 判定用的三个全局变量 QOL_DYN_PAGE_KEY / QOL_DYN_PAGE_START_MS / QOL_DYN_PAGE_DEC
++; 声明在同目录 QOL_IMAGE.ERH（补丁 CB-019）：ERB 函数外的 #DIM 原版按
++; InvalidSharp 丢弃（ErbLoader.cs:413-423），全局用户变量只从 ERH 装载
++; （Process.cs:309/:313），故声明不得落在本文件。
++;-------------------------------------------------
++
++;-------------------------------------------------
+ ; 主函数：打印立绘交互UI
+ ;-------------------------------------------------
+ @QOL_PRINT_TARGET_IMAGE(TARGET_LIST)
+@@ -44,6 +58,8 @@
+ #DIM  DYNAMIC SYS_FLAGS
+ #DIM  DYNAMIC W_100
+ #DIM  DYNAMIC H_100
++#DIM  DYNAMIC L_DYN_NOW
++#DIM  DYNAMIC L_DYN_KEY
+ 
+ SIF !(TARGET_LIST || (自机立绘显示 && 自机立绘开关)) || !FLAG:画像表示
+ 	RETURN RESULT
+@@ -51,6 +67,23 @@
+ CALL CALC_IMAGE_PAGINATION(TARGET_LIST, PRINT_LIST, PRINT_COUNT)
+ SIF PRINT_COUNT == 0
+ 	RETURN RESULT
++
++; [CB-018] 停留判定（全局变量声明见 QOL_IMAGE.ERH / CB-019）：新页按上一页停留时间决定——
++; 上一页停留 >3s ⇒ 立即选定本页悬停角色；<3s ⇒ 留待未定，
++; 同页重绘（CLEARLINE 循环 UI）时本页停留超 3s 再就地选定一次，之后粘滞
++L_DYN_NOW = GETMILLISECOND()
++L_DYN_KEY = LINECOUNT
++IF L_DYN_KEY != QOL_DYN_PAGE_KEY
++	IF QOL_DYN_PAGE_START_MS > 0 && L_DYN_NOW - QOL_DYN_PAGE_START_MS > 3000
++		CALL QOL_DYN_PICK_HOVER(PRINT_LIST, PRINT_COUNT)
++	ELSE
++		QOL_DYN_PAGE_DEC = -1
++	ENDIF
++	QOL_DYN_PAGE_KEY = L_DYN_KEY
++	QOL_DYN_PAGE_START_MS = L_DYN_NOW
++ELSEIF QOL_DYN_PAGE_DEC == -1 && L_DYN_NOW - QOL_DYN_PAGE_START_MS > 3000
++	CALL QOL_DYN_PICK_HOVER(PRINT_LIST, PRINT_COUNT)
++ENDIF
+ 
+ SYS_FLAGS = GET_DEFAULT_IMAGE_FLAGS()
+ 
+@@ -424,7 +457,7 @@
+ 
+ ;DEBUGPRINTFORML 【QOL_PrintOnanismImage】最终BASE_IMG=%BASE_IMG% SPRITECREATED={SPRITECREATED(BASE_IMG)} EFF_CNT={EFF_CNT}
+ IMG_H_PX = GET_DEFAULT_IMAGE_HEIGHT(BASE_IMG)
+-HTML_STR '= ASSEMBLE_HTML_IMAGE_LAYERS(BASE_IMG, "", EFF_IMGS, HOVER_EFF_IMGS, EFF_CNT, IMG_H_PX)
++HTML_STR '= ASSEMBLE_HTML_IMAGE_LAYERS(BASE_IMG, "", EFF_IMGS, HOVER_EFF_IMGS, EFF_CNT, IMG_H_PX, -1, C_ID)
+ CALL HTML_PRINTL_PX, HTML_STR, IMG_H_PX
+ 
+ FLAG:立绘种类 = PREV_FACE_TYPE
+@@ -729,7 +762,7 @@
+ 	HTML_BLOCK '= @"<nonbutton title='%IMAGE_TITLE%'>"
+ ENDIF
+ 
+-HTML_BLOCK += ASSEMBLE_HTML_IMAGE_LAYERS(BASE_IMG, HOVER_IMG, LAYERS, HOVER_LAYERS, LAYER_CNT, MAX_H_PX, SCALE)
++HTML_BLOCK += ASSEMBLE_HTML_IMAGE_LAYERS(BASE_IMG, HOVER_IMG, LAYERS, HOVER_LAYERS, LAYER_CNT, MAX_H_PX, SCALE, CHARA)
+ HTML_BLOCK += GETBIT(IMG_FLAGS, 6) ? "</button>" # "</nonbutton>"
+ 
+ ; 6. 拼接 Xray 模块（恢复基线侧边模块化拓扑；&3==1 时纵向（侧栏）独占显示；叠层方案冻结）
+@@ -877,7 +910,7 @@
+ 	HTML_BLOCK '= @"<nonbutton title='モブ子'>"
+ ENDIF
+ 
+-HTML_BLOCK += ASSEMBLE_HTML_IMAGE_LAYERS(BASE_IMG, HOVER_IMG, LAYERS, HOVER_LAYERS, LAYER_CNT, MAX_H_PX, SCALE)
++HTML_BLOCK += ASSEMBLE_HTML_IMAGE_LAYERS(BASE_IMG, HOVER_IMG, LAYERS, HOVER_LAYERS, LAYER_CNT, MAX_H_PX, SCALE, 0) ; [CB-018] 路人块无角色 CID，恒不命中页判定
+ HTML_BLOCK += GETBIT(IMG_FLAGS, 6) ? "</button>" # "</nonbutton>"
+ 
+ RESULTS '= HTML_BLOCK
+@@ -919,6 +952,72 @@
+ RETURNF EFFECT_BUILDER_STRING
+ 
+ ;-------------------------------------------------
++; [CB-018] 当页悬停角色选定：结果写全局 QOL_DYN_PAGE_DEC
++; （-1 未定 / 0 本页无角色换帧 / >0 = 选中角色 CID，声明见 CB-019）。
++; 单角色页 50% 掷币；多角色页按好感度（CFLAG:角色ID:好感度）降序插入排序，
++; 再按秩加权随机挑一个（秩 i 权重 = N-i，好感度越高越易被挑中）。
++; 随机种子取 GETMILLISECOND/997 + LINECOUNT*31 + 角色数，零消耗游戏 RNG。
++; 选中角色若无可用悬停帧，ASSEMBLE 守卫链自然回退基础帧（本页无人动），可接受。
++;-------------------------------------------------
++@QOL_DYN_PICK_HOVER(PICK_LIST, PICK_COUNT)
++#LOCALSIZE 1
++#LOCALSSIZE 1
++#DIM REF PICK_LIST
++#DIM PICK_COUNT
++#DIM DYNAMIC L_DYN_ORDER, 50
++#DIM DYNAMIC L_DYN_AFF, 50
++#DIM DYNAMIC L_DYN_CID
++#DIM DYNAMIC L_DYN_AFFI
++#DIM DYNAMIC L_DYN_I
++#DIM DYNAMIC L_DYN_J
++#DIM DYNAMIC L_DYN_K
++#DIM DYNAMIC L_DYN_TOTAL
++#DIM DYNAMIC L_DYN_R
++#DIM DYNAMIC L_DYN_ACC
++
++IF PICK_COUNT <= 0
++	QOL_DYN_PAGE_DEC = 0
++	RETURN RESULT
++ENDIF
++IF PICK_COUNT == 1
++	QOL_DYN_PAGE_DEC = (GETMILLISECOND() % 100) < 50 ? PICK_LIST:0 # 0
++	RETURN RESULT
++ENDIF
++; 插入排序：按好感度降序把 PICK_LIST 排入 L_DYN_ORDER
++; （CFLAG 第 1 下标须先落标量变量：数组元素 PICK_LIST:i 直接写会解析成三级下标）
++L_DYN_CID = PICK_LIST:0
++L_DYN_ORDER:0 = L_DYN_CID
++L_DYN_AFF:0 = CFLAG:L_DYN_CID:好感度
++FOR L_DYN_I, 1, PICK_COUNT-1
++	L_DYN_CID = PICK_LIST:L_DYN_I
++	L_DYN_AFFI = CFLAG:L_DYN_CID:好感度
++	L_DYN_J = L_DYN_I - 1
++	WHILE L_DYN_J >= 0 && L_DYN_AFF:L_DYN_J < L_DYN_AFFI
++		L_DYN_K = L_DYN_J + 1
++		L_DYN_ORDER:L_DYN_K = L_DYN_ORDER:L_DYN_J
++		L_DYN_AFF:L_DYN_K = L_DYN_AFF:L_DYN_J
++		L_DYN_J = L_DYN_J - 1
++	WEND
++	L_DYN_K = L_DYN_J + 1
++	L_DYN_ORDER:L_DYN_K = L_DYN_CID
++	L_DYN_AFF:L_DYN_K = L_DYN_AFFI
++NEXT
++; 秩加权随机：秩 i 权重 = PICK_COUNT - i，总权重 = N*(N+1)/2
++L_DYN_TOTAL = PICK_COUNT * (PICK_COUNT + 1) / 2
++L_DYN_R = (GETMILLISECOND()/997 + LINECOUNT*31 + PICK_COUNT) % L_DYN_TOTAL
++L_DYN_ACC = 0
++QOL_DYN_PAGE_DEC = L_DYN_ORDER:0
++FOR L_DYN_I, 0, PICK_COUNT-1
++	L_DYN_ACC += PICK_COUNT - L_DYN_I
++	IF L_DYN_R < L_DYN_ACC
++		QOL_DYN_PAGE_DEC = L_DYN_ORDER:L_DYN_I
++		BREAK
++	ENDIF
++NEXT
++RETURN RESULT
++
++
++;-------------------------------------------------
+ ; 内部工具：ASSEMBLE_HTML_IMAGE_LAYERS
+ ; 概  述：将一张底图和多个图层（特效/边框/蒙版）按顺序拼合成重叠的 HTML 字符串。
+ ; 参  数：BASE_IMG = 底图, HOVER_IMG = 悬停图
+@@ -926,9 +1025,10 @@
+ ;         EFF_CNT  = 附加图层数量
+ ;         MAX_H_PX = 容器最大高度 (用于计算下沉对齐的 YPOS)
+ ;         SCALE    = 缩放比例
++;         DYN_CID  = [CB-018] 悬停判定目标 CID（与全局 QOL_DYN_PAGE_DEC 相等才换帧，缺省 -1 永不命中）
+ ; 返回值：拼合好的 HTML 字符串
+ ;-------------------------------------------------
+-@ASSEMBLE_HTML_IMAGE_LAYERS(BASE_IMG, HOVER_IMG, EFF_IMGS, HOVER_EFF_IMGS, EFF_CNT, MAX_H_PX, SCALE = -1)
++@ASSEMBLE_HTML_IMAGE_LAYERS(BASE_IMG, HOVER_IMG, EFF_IMGS, HOVER_EFF_IMGS, EFF_CNT, MAX_H_PX, SCALE = -1, DYN_CID = -1)
+ #LOCALSIZE 1
+ #LOCALSSIZE 1
+ #FUNCTIONS
+@@ -939,6 +1039,7 @@
+ #DIM           EFF_CNT
+ #DIM           MAX_H_PX
+ #DIM           SCALE
++#DIM           DYN_CID
+ #DIMS DYNAMIC  HTML_STR
+ #DIM  DYNAMIC  IMG_W_PX
+ #DIM  DYNAMIC  IMG_H_PX
+@@ -960,7 +1061,13 @@
+ IMG_H_PX = GET_DEFAULT_IMAGE_HEIGHT(BASE_IMG, SCALE)
+ Y_OFF = MAX_H_PX - IMG_H_PX
+ 
+-HTML_STR '= @"<img src='%BASE_IMG%' \@ HOVER_IMG != "" ? srcb='%HOVER_IMG%' # \@ width='{IMG_W_PX}px' height='{IMG_H_PX}px' ypos='{Y_OFF}px'>"
++; [CB-018] 悬停帧启用：仅当页判定选中的角色（QOL_DYN_PAGE_DEC == DYN_CID）换帧；
++; 直接以底图矩形绘制悬停帧并去掉 srcb（与引擎悬停实时代换同矩形）
++IF QOL_DYN_PAGE_DEC > 0 && QOL_DYN_PAGE_DEC == DYN_CID && HOVER_IMG != ""
++	HTML_STR '= @"<img src='%HOVER_IMG%' width='{IMG_W_PX}px' height='{IMG_H_PX}px' ypos='{Y_OFF}px'>"
++ELSE
++	HTML_STR '= @"<img src='%BASE_IMG%' \@ HOVER_IMG != "" ? srcb='%HOVER_IMG%' # \@ width='{IMG_W_PX}px' height='{IMG_H_PX}px' ypos='{Y_OFF}px'>"
++ENDIF
+ FOR LOCAL, 0, EFF_CNT
+ 	;DEBUGPRINTFORML 【DBG】ASSEMBLE eff{LOCAL}=[%EFF_IMGS:LOCAL%] created={SPRITECREATED(EFF_IMGS:LOCAL)} hover=[%HOVER_EFF_IMGS:LOCAL%] base=[%BASE_IMG%]
+ 	SIF EFF_IMGS:LOCAL == "" || !SPRITECREATED(EFF_IMGS:LOCAL)
+@@ -968,7 +1075,11 @@
+ 		
+ 	HTML_STR += @"<shape type='space' param='-{IMG_W_PX}px'>"
+ 	IF HOVER_EFF_IMGS:LOCAL != "" && SPRITECREATED(HOVER_EFF_IMGS:LOCAL)
+-		HTML_STR += @"<img src='%EFF_IMGS:LOCAL%' srcb='%HOVER_EFF_IMGS:LOCAL%' width='{IMG_W_PX}px' height='{IMG_H_PX}px' ypos='{Y_OFF}px'>"
++		IF QOL_DYN_PAGE_DEC > 0 && QOL_DYN_PAGE_DEC == DYN_CID
++			HTML_STR += @"<img src='%HOVER_EFF_IMGS:LOCAL%' width='{IMG_W_PX}px' height='{IMG_H_PX}px' ypos='{Y_OFF}px'>"
++		ELSE
++			HTML_STR += @"<img src='%EFF_IMGS:LOCAL%' srcb='%HOVER_EFF_IMGS:LOCAL%' width='{IMG_W_PX}px' height='{IMG_H_PX}px' ypos='{Y_OFF}px'>"
++		ENDIF
+ 	ELSE
+ 		HTML_STR += @"<img src='%EFF_IMGS:LOCAL%' width='{IMG_W_PX}px' height='{IMG_H_PX}px' ypos='{Y_OFF}px'>"
+ 	ENDIF

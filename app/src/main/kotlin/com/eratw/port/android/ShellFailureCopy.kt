@@ -181,9 +181,13 @@ data class ShellFailureCopy(
     val restoreDefaultsDialogTitle: String,
     /** 恢复默认设置后「重开生效」确认框正文。 */
     val restoreDefaultsDialogBody: String,
-    /** 三枚确认框共用的「现在重开」。 */
+    /** mod 面变更（启停 / 导入成功）后「重开生效」确认框标题。 */
+    val modChangedDialogTitle: String,
+    /** mod 面变更（启停 / 导入成功）后「重开生效」确认框正文。 */
+    val modChangedDialogBody: String,
+    /** 四枚确认框共用的「现在重开」。 */
     val dialogRestartNow: String,
-    /** 三枚确认框共用的「下次启动生效」。 */
+    /** 四枚确认框共用的「下次启动生效」。 */
     val dialogApplyNextLaunch: String,
 
     // ---------------------------------------------------------------- 报告复制 / 分享 Toast 组
@@ -212,6 +216,9 @@ data class ShellFailureCopy(
     val bootstrapInstruction: String,
     /** 建壳失败最后一屏：「重启应用」按钮。 */
     val bootstrapRestartButton: String,
+
+    /** 报错页版本号小字：{0} 版本名、{1} versionCode。截图反馈要带上，别让玩家再来回问版本。 */
+    val versionLineFormat: String,
 ) {
 
     /**
@@ -226,6 +233,10 @@ data class ShellFailureCopy(
             val arg = match.groupValues[1].toIntOrNull()?.let { args.getOrNull(it) }
             arg?.toString() ?: match.value
         }
+
+    /** 报错页版本号小字（{0} 版本名、{1} versionCode）。 */
+    fun versionLine(versionName: String, versionCode: Int): String =
+        fill(versionLineFormat, versionName, versionCode)
 
     companion object {
         private val SLOT = Regex("[{](\\d+)[}]")
@@ -317,6 +328,9 @@ data class ShellFailureCopy(
             restoreDefaultsDialogTitle = "设置已恢复默认",
             restoreDefaultsDialogBody =
                 "恢复的设置已写入磁盘，其中字号、显示档位等要重开一局才生效。现在重开吗？未存档的进度会丢失。",
+            modChangedDialogTitle = "Mod 已变更",
+            modChangedDialogBody =
+                "Mod 的启用状态或内容已变更，要重开一局才生效。现在重开吗？未存档的进度会丢失。",
             dialogRestartNow = "现在重开",
             dialogApplyNextLaunch = "下次启动生效",
             toastNoReportFile = "没有可用的报告文件",
@@ -330,6 +344,7 @@ data class ShellFailureCopy(
             bootstrapReassure = "存档都在存储卡上，不会丢失。\n\n",
             bootstrapInstruction = "请先点下面的「重启应用」；若仍然停在这一屏，把这段文字截图发给开发者即可定位。",
             bootstrapRestartButton = "重启应用",
+            versionLineFormat = "版本 {0}（build {1}）",
         )
 
         /** English：结构与 [ZH] 逐条同形（槽位序列一致），措辞另写，不抄中文。 */
@@ -431,6 +446,10 @@ data class ShellFailureCopy(
             restoreDefaultsDialogBody =
                 "The restored settings are on disk. Some of them (font size, display options and more) " +
                     "only take effect after restarting the game. Restart now? Unsaved progress will be lost.",
+            modChangedDialogTitle = "Mods changed",
+            modChangedDialogBody =
+                "A mod's enablement or content changed and only takes effect after restarting " +
+                    "the game. Restart now? Unsaved progress will be lost.",
             dialogRestartNow = "Restart now",
             dialogApplyNextLaunch = "Next launch",
             toastNoReportFile = "No report file available",
@@ -445,6 +464,7 @@ data class ShellFailureCopy(
             bootstrapInstruction = "Tap \"Restart app\" below first; if it still stops on this screen, " +
                 "screenshot this text and send it to the developer to pinpoint the cause.",
             bootstrapRestartButton = "Restart app",
+            versionLineFormat = "Version {0} (build {1})",
         )
 
         /** 日本語：结构与 [ZH] 逐条同形。 */
@@ -551,6 +571,10 @@ data class ShellFailureCopy(
             restoreDefaultsDialogBody =
                 "復元した設定は保存済みです。文字サイズや表示設定などはゲームの再起動後に反映されます。" +
                     "今すぐ再起動しますか？未保存の進行状況は失われます。",
+            modChangedDialogTitle = "Mod が変更されました",
+            modChangedDialogBody =
+                "Mod の有効状態または内容が変更されました。ゲームを再起動すると反映されます。" +
+                    "今すぐ再起動しますか？未保存の進行状況は失われます。",
             dialogRestartNow = "今すぐ再起動",
             dialogApplyNextLaunch = "次回起動時に反映",
             toastNoReportFile = "利用できる報告ファイルがありません",
@@ -565,6 +589,7 @@ data class ShellFailureCopy(
             bootstrapInstruction = "まず下の「アプリを再起動」をタップしてください。それでもこの画面のままなら、" +
                 "この文章をスクリーンショットして開発者に送れば原因を特定できます。",
             bootstrapRestartButton = "アプリを再起動",
+            versionLineFormat = "バージョン {0}（ビルド {1}）",
         )
     }
 }

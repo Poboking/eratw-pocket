@@ -32,11 +32,18 @@ class ModCarrierRegistryTest {
         return file.readText()
     }
 
+    /**
+     * 无停用标记的游戏根：目录不存在 ⇒ [ModEnablement.disabledPackageIds] 空集 ⇒
+     * providers 走「全量」分支，与批2-3 之前的读数逐项一致。
+     */
+    private fun gameRootWithoutMarkers(): File =
+        File(System.getProperty("java.io.tmpdir"), "eratw-modcarrier-${System.nanoTime()}")
+
     // ---- 注册表行为 ----
 
     @Test
     fun `名单非空且 packageId 与载体声明常量一致`() {
-        val providers = ModCarrierRegistry.providers()
+        val providers = ModCarrierRegistry.providers(gameRootWithoutMarkers())
         assertTrue("注册表不许是空表（空表 = B② 等于没落）", providers.isNotEmpty())
         for ((packageId, mod) in providers) {
             assertTrue("packageId 不许空白：$packageId", packageId.isNotBlank())
@@ -71,11 +78,41 @@ class ModCarrierRegistryTest {
 
     @Test
     fun `逐次调用取新实例 EraMod 不跨会话共享`() {
-        val a = ModCarrierRegistry.providers()
-        val b = ModCarrierRegistry.providers()
+        val root = gameRootWithoutMarkers()
+        val a = ModCarrierRegistry.providers(root)
+        val b = ModCarrierRegistry.providers(root)
         assertEquals("名单内容逐项一致（静态点名，不是探测）", a.map { it.first }, b.map { it.first })
         for (i in a.indices) {
             assertNotSame("载体实例必须逐会话新建：${a[i].first}", a[i].second, b[i].second)
+        }
+    }
+
+    @Test
+    fun `停用标记生效 该载体连实例都不建`() {
+        val root = File(System.getProperty("java.io.tmpdir"), "eratw-modcarrier-off-${System.nanoTime()}")
+        val rt2Dir = ModEnablement.rt2Dir(root)
+        try {
+            assertTrue(
+                "写停用标记必须成功（目录由 setEnabled 自建）",
+                ModEnablement.setEnabled(rt2Dir, FamilyDeclarations.PACKAGE_ID, enabled = false),
+            )
+            val disabled = ModCarrierRegistry.providers(root).map { it.first }
+            assertTrue(
+                "被停用的载体不许出现在 providers 里：$disabled",
+                FamilyDeclarations.PACKAGE_ID !in disabled,
+            )
+            assertTrue("其余载体必须不受影响", disabled.isNotEmpty())
+
+            assertTrue(
+                "删标记必须成功",
+                ModEnablement.setEnabled(rt2Dir, FamilyDeclarations.PACKAGE_ID, enabled = true),
+            )
+            assertTrue(
+                "恢复启用后载体必须回到名单",
+                FamilyDeclarations.PACKAGE_ID in ModCarrierRegistry.providers(root).map { it.first },
+            )
+        } finally {
+            rt2Dir.deleteRecursively()
         }
     }
 
@@ -85,9 +122,36 @@ class ModCarrierRegistryTest {
     fun `装配点惰性取注册表 总闸关不建载体对象`() {
         val host = sourceOf("GameHost.kt")
         assertTrue(
-            "attach 调用点必须经注册表取载体，且用 if (modRuntime) 惰性守门" +
+            "attach 调用点必须经注册表取载体，且用 if (modActive) 惰性守门" +
                 "（关态一个对象都不建的 B1 判据延伸到载体实例）",
-            host.contains("modProviders = if (modRuntime) ModCarrierRegistry.providers() else emptyList(),"),
+            host.contains("modProviders = if (modActive) {"),
+        )
+        assertTrue(
+            "装配点必须走两参重载，把内置 id 集交给代码包来源（ADR-013 S6b）",
+            host.contains("ModCarrierRegistry.providers(gameRoot) { builtinIds ->") &&
+                host.contains("modCodeCarriers?.carriersFor(builtinIds).orEmpty()"),
+        )
+    }
+
+    @Test
+    fun `代码包来源由壳层 UI 线程一次取好且关态不建工厂`() {
+        val main = sourceOf("MainActivity.kt")
+        assertTrue(
+            "开发态读点只有壳层一处：总闸关 ⇒ null（连 DexClassLoader 工厂都不建）",
+            main.contains("host.modCodeCarriers = if (UiPrefs.modDexLoaderEnabled(this)) {"),
+        )
+        assertTrue(
+            "开态经 forGate 把已定死的工厂交给装配期（装配期不再读偏好）",
+            main.contains("ModCodeCarrierProvider.forGate("),
+        )
+        assertTrue(
+            "对外只暴露 fun interface 缝（GameHost 是 public 类，不能带 internal 类型形参）",
+            main.contains("ModCodeCarrierSource { builtinIds -> codeProviders.collect(builtinIds).carriers }"),
+        )
+        assertTrue(
+            "赋值点照 loadPhaseSink 惯例在构造后（不进 baseline 冻结的构造参数表）",
+            main.contains("host.loadPhaseSink = { progress ->") &&
+                main.indexOf("host.modCodeCarriers =") > main.indexOf("host.loadPhaseSink ="),
         )
     }
 

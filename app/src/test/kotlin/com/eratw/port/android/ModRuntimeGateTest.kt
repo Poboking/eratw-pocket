@@ -10,10 +10,12 @@ import org.junit.Test
 /**
  * RT2 Mod 运行时总闸（`mod_runtime`）的壳层偏好钉子 + 生产开闸读点接线钉。
  *
- * 缺省必须是**关**（B1 裁定：关态装配链一次都不进、磁盘都不碰，行为与无 mod 支持逐字节等价）。
+ * 缺省是**开**（2026-11-17 主人裁定「翻成 true，开箱可用」；RT2-GATE-OPEN 波）。
+ * 关态仍必须保持「装配链一次都不进、磁盘都不碰、行为与无 mod 支持逐字节等价」这一判据
+ * （关态由 `ModRuntimeAssemblyWireTest` 的反向证明①直测，不因缺省翻面而失效）。
  * 总闸已接玩家面（modswitch 波 `a6e7bff9f`：设置页开关 + 三语文案，接线形状由
  * `ModRuntimeSwitchWiringTest` 钉）；G2 波后开态走 `ModChainAssembly.assemble` 真装配链
- * （空表旁路 / 有容器真装配），「开闸也装 0 个 mod」的前提已不成立。
+ * （空表旁路 / 有容器真装配）。
  * 旧禁令「设置页不许出现开关」随合法化撤销，翻转成**存在钉**（摘除 = modswitch 波倒车）。
  *
  * 偏好口径照 `BusyIndicatorPrefTest`：注入内存版 SharedPreferences 桩直测 internal read/write 层；
@@ -105,10 +107,10 @@ class ModRuntimeGateTest {
     // ---- 偏好层 ----
 
     @Test
-    fun `缺省是关`() {
+    fun `缺省是开（开箱可用）`() {
         val sp = FakeSharedPreferences()
-        assertFalse("缺省必须是 DEFAULT_MOD_RUNTIME（关）", UiPrefs.DEFAULT_MOD_RUNTIME)
-        assertFalse("从来没写过 ⇒ 总闸关（装配链一次都不进）", UiPrefs.readModRuntime(sp))
+        assertTrue("缺省必须是 DEFAULT_MOD_RUNTIME（开）", UiPrefs.DEFAULT_MOD_RUNTIME)
+        assertTrue("从来没写过 ⇒ 总闸开（随包 Mod 开箱装载）", UiPrefs.readModRuntime(sp))
     }
 
     @Test
@@ -134,11 +136,11 @@ class ModRuntimeGateTest {
     }
 
     @Test
-    fun `resetAll 清掉总闸回到缺省关`() {
+    fun `resetAll 清掉总闸回到缺省开`() {
         val sp = FakeSharedPreferences()
-        UiPrefs.writeModRuntime(sp, true)
+        UiPrefs.writeModRuntime(sp, false)
         UiPrefs.resetAll(sp)
-        assertFalse("clear 后读侧必须自带缺省关（开发者闸不该在恢复默认后残留开启）", UiPrefs.readModRuntime(sp))
+        assertTrue("clear 后读侧必须自带缺省开（恢复默认 = 回到开箱可用）", UiPrefs.readModRuntime(sp))
     }
 
     // ---- 接线层（生产开闸读点：单路与越权面）----
@@ -156,7 +158,13 @@ class ModRuntimeGateTest {
             host.contains("UiPrefs.modRuntime("),
         )
         assertTrue("宿主必须吃构造参数", host.contains("private val modRuntime: Boolean = false,"))
-        assertTrue("装配段必须把总闸原样透传给 attach", host.contains("enabled = modRuntime,"))
+        // COMPAT-3P-MOD：透传给 attach 的是会话有效总闸 modActive（玩家总闸 ∧ 非第三方档），
+        // 第三方档被强制旁路；构造参数与 MainActivity 传参原文仍保持原样（上面两条钉）。
+        assertTrue(
+            "装配段必须把会话有效总闸 modActive 透传给 attach",
+            host.contains("private val modActive: Boolean = modRuntime && engineStamp !is EngineStampRead.Present") &&
+                host.contains("enabled = modActive,"),
+        )
     }
 
     @Test
@@ -172,8 +180,54 @@ class ModRuntimeGateTest {
     @Test
     fun `闸的缺省值在 KDoc 与常量里一致且 GameHost 不自带开启`() {
         val prefs = sourceOf("UiPrefs.kt")
-        assertTrue("缺省常量必须存在且为 false", prefs.contains("const val DEFAULT_MOD_RUNTIME: Boolean = false"))
+        assertTrue("缺省常量必须存在且为 true", prefs.contains("const val DEFAULT_MOD_RUNTIME: Boolean = true"))
         val host = sourceOf("GameHost.kt")
-        assertTrue("GameHost 构造参数缺省必须仍是 false（关态逐字节等价）", host.contains("private val modRuntime: Boolean = false,"))
+        assertTrue(
+            "GameHost 构造参数缺省必须仍是 false（测试哨兵：生产值由 MainActivity 单路传入）",
+            host.contains("private val modRuntime: Boolean = false,"),
+        )
+    }
+
+    @Test
+    fun `诊断读数源只读且与设置页共用一处`() {
+        val devtools = sourceOf("DevToolsHost.kt")
+        assertTrue(
+            "modgate 命令必须接诊断读数源",
+            devtools.contains("\"modgate\" -> ModGateDiagnostics.report(view.context)"),
+        )
+        val settings = sourceOf("SettingsActivity.kt")
+        assertTrue(
+            "设置页诊断卡必须复用同一个读数源（不许第二套拼装），且与列表同一次扫描",
+            settings.contains("ModGateDiagnostics.snapshot(context, modManageScan)"),
+        )
+        val diagnostics = sourceOf("ModGateDiagnostics.kt")
+        assertTrue(
+            "会话装配判定必须读 core 公开接缝 entityRuntimeOf(session.store.aux)",
+            diagnostics.contains("entityRuntimeOf(session.store.aux)"),
+        )
+        assertFalse(
+            "诊断面禁止反射读私有字段（读数源不得依赖 isMinifyEnabled=false）",
+            diagnostics.contains("getDeclaredField") ||
+                diagnostics.contains("modRuntimeSession") ||
+                devtools.contains("modRuntimeSession"),
+        )
+        assertFalse(
+            "读数源不许寄居在仅 debug 包的 DevToolsHost.kt 里（release 玩家面同源）",
+            devtools.contains("object ModGateDiagnostics"),
+        )
+        assertFalse(
+            "文件名/目录形状不许在 app 层另立第二份知识（不得出现 \\\".rt2\\\" / \\\"sav\\\" 字面量）",
+            diagnostics.contains("\".rt2\"") || diagnostics.contains("\"sav\""),
+        )
+        assertTrue(
+            "存档目录名必须取 core 的 SaveFolderMigration.SAV_FOLDER",
+            diagnostics.contains("SaveFolderMigration.SAV_FOLDER"),
+        )
+        assertFalse(
+            "读数源必须只读：不得出现偏好/启停的写面",
+            diagnostics.contains("UiPrefs.set") ||
+                diagnostics.contains("writeModRuntime") ||
+                diagnostics.contains("ModEnablement.setEnabled"),
+        )
     }
 }

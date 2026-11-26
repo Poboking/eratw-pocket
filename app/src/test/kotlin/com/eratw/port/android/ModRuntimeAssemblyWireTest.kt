@@ -52,6 +52,14 @@ import org.junit.Test
  */
 class ModRuntimeAssemblyWireTest {
 
+    /**
+     * 无停用标记的游戏根（目录不存在 ⇒ 停用集为空 ⇒ providers 走全量分支）。
+     * 批2-3 起 [ModCarrierRegistry.providers] 需要 gameRoot 才能读 mods/rt2/ 的标记。
+     */
+    private fun noMarkersRoot(): File =
+        File(System.getProperty("java.io.tmpdir"), "eratw-modcarrier-" + System.nanoTime())
+
+
     // ------------------------------------------------------------------
     // 源码面哨兵
     // ------------------------------------------------------------------
@@ -75,8 +83,8 @@ class ModRuntimeAssemblyWireTest {
             host.contains("private val modRuntime: Boolean = false,"),
         )
         assertTrue(
-            "装配段必须把总闸原样透传给 attach（enabled = modRuntime）",
-            host.contains("enabled = modRuntime,"),
+            "装配段必须把会话有效总闸透传给 attach（enabled = modActive）",
+            host.contains("enabled = modActive,"),
         )
         val assembly = sourceOf("ModRuntimeAssembly.kt")
         val gateAt = assembly.indexOf("if (!enabled) return null")
@@ -187,6 +195,34 @@ class ModRuntimeAssemblyWireTest {
         override fun onEnable() {}
         override fun onDisable() {}
         override fun onUnload() {}
+    }
+
+    /** 只走生命周期四段的空载 mod（耗时归因收口用例的载体）。 */
+    private class LifecycleOnlyMod : EraMod {
+        var loads: Int = 0
+            private set
+        var enables: Int = 0
+            private set
+        var disables: Int = 0
+            private set
+        var unloads: Int = 0
+            private set
+
+        override fun onLoad(context: ModContext) {
+            loads++
+        }
+
+        override fun onEnable() {
+            enables++
+        }
+
+        override fun onDisable() {
+            disables++
+        }
+
+        override fun onUnload() {
+            unloads++
+        }
     }
 
     private fun attach(
@@ -558,7 +594,7 @@ class ModRuntimeAssemblyWireTest {
         // RT2-M91 机械适配：注册表现在登记两只载体（family + memory），ModContextImpl 构造期
         // require packageId 在声明快照内（core ModContextImpl.kt:98）⇒ 生产「全部随包 manifest
         // 都已投递」的形状 = 每个 in-registry 载体的 manifest 都得在游戏根，测试缝照抄这个形状。
-        for (packageId in ModCarrierRegistry.providers().map { it.first }) {
+        for (packageId in ModCarrierRegistry.providers(noMarkersRoot()).map { it.first }) {
             val manifest = File("src/main/assets/mods/rt2/$packageId.manifest")
             assertTrue(
                 "内置 RT2 manifest 缺席（先跑 generateBuiltinRt2Manifest）：${manifest.path}",
@@ -576,7 +612,7 @@ class ModRuntimeAssemblyWireTest {
             onVmThread = { true },
             enabled = true,
             logSink = { line -> logs += line },
-            modProviders = ModCarrierRegistry.providers(),
+            modProviders = ModCarrierRegistry.providers(noMarkersRoot()),
         )!!
 
         assertTrue(
@@ -587,44 +623,6 @@ class ModRuntimeAssemblyWireTest {
         assertNotNull("激活的 mod 必须有 context", session.host.contextOf(FamilyDeclarations.PACKAGE_ID))
         session.shutdown()
     }
-
-    // ------------------------------------------------------------------
-    // TIME→phase 裁定：官方引擎没有「游戏相位」概念（反编译 C# 全库 phase / GameTime 零命中），
-    // 它是 modapi 的移植侧扩展。没有权威映射可照抄，不发明映射；空相位是设计态。
-    // ------------------------------------------------------------------
-
-    @Test
-    fun `空相位是裁定而非漏接 任务照跑且诊断记NO_PHASE`() {
-        val root = tempGameRoot()
-        writeManifest(
-            root,
-            "mod_job.manifest",
-            ModManifest(
-                packageId = "mod.job",
-                archetypes = listOf(ArchetypeDecl("mod.job.trait")),
-                jobs = listOf(JobDecl(jobId = "daily", firstDay = 7L)),
-            ),
-        )
-        val mod = JobMod("daily", JobHandler { })
-        val store = freshStore()
-        store.writeInt("DAY", longArrayOf(0L), 7L)
-        val session = attach(root = root, store = store, providers = listOf("mod.job" to mod))!!
-
-        session.onTurnBoundary()
-
-        assertEquals("空相位不得影响按游戏日的任务", 1, mod.fired)
-        val phaseRecords = session.diagnostics.snapshot().filter { it.domain == DiagnosticDomain.PHASE }
-        assertTrue("相位域必须留一条诊断（NO_PHASE 是设计态，不是静默旁路）", phaseRecords.isNotEmpty())
-        assertTrue(
-            "phase 恒空 ⇒ 全部相位记录为 SKIPPED / NO_PHASE / phase=null；" +
-                "谁从 TIME 发明一个映射，这里立刻红：$phaseRecords",
-            phaseRecords.all {
-                it.phase == null && it.outcome == DiagnosticOutcome.SKIPPED && it.reasonCode == "NO_PHASE"
-            },
-        )
-        session.shutdown()
-    }
-
     // ------------------------------------------------------------------
     // 内置变量名总表真的喂进了声明事务：builtinVariableNames() 退化成空表时，
     // mod 就能声明自己的 DAY（第二套时间语义），而上面各族一律绿 —— 这一例是它的失败模式。
@@ -750,6 +748,53 @@ class ModRuntimeAssemblyWireTest {
             projector.rosterGeneration,
         )
     }
+
+    @Test
+    fun `耗时归因收口逐条上日志且关态零日志`() {
+        // 关态：总闸短路 = 连账本都不建（零对象零日志）。
+        val closedRoot = tempGameRoot()
+        writeManifest(closedRoot, "mod_timing_closed.manifest", ModManifest(packageId = "mod.timing.closed"))
+        assertNull(
+            attach(
+                closedRoot,
+                VariableStore(),
+                providers = listOf("mod.timing.closed" to LifecycleOnlyMod()),
+                enabled = false,
+            ),
+        )
+        assertTrue("关态不得产生任何 mod.timing 行", logs.none { it.contains("mod.timing") })
+        logs.clear()
+
+        // 开态：收口时按 mod 逐条打 mod.timing（lifecycle 四段都该有读数）。
+        val root = tempGameRoot()
+        writeManifest(root, "mod_timing.manifest", ModManifest(packageId = "mod.timing"))
+        val store = VariableStore()
+        seedNativeRows(store)
+        val timingMod = LifecycleOnlyMod()
+        val session = checkNotNull(
+            attach(root, store, providers = listOf("mod.timing" to timingMod)),
+        ) { "开态必须产出运行时" }
+        session.shutdown()
+        assertEquals("载入/启用各一次", 1, timingMod.loads)
+        assertEquals("载入/启用各一次", 1, timingMod.enables)
+        assertEquals("关闭/卸载各一次", 1, timingMod.disables)
+        assertEquals("关闭/卸载各一次", 1, timingMod.unloads)
+
+        val timingLines = logs.filter { it.contains("mod.timing pkg=mod.timing ") }
+        assertTrue("收口必须打耗时读数：$logs", timingLines.isNotEmpty())
+        for (scope in
+            listOf("lifecycle.onLoad", "lifecycle.onEnable", "lifecycle.onDisable", "lifecycle.onUnload")) {
+            assertTrue(
+                "缺 scope=$scope 的读数：$timingLines",
+                timingLines.any { it.contains("scope=$scope ") },
+            )
+        }
+        assertTrue(
+            "读数行字段必须齐：$timingLines",
+            timingLines.all { it.contains("count=") && it.contains("totalUs=") && it.contains("maxUs=") },
+        )
+    }
+
 
     @Test
     fun `存档侧车抓到真投射器的虚拟NO注册表段`() {

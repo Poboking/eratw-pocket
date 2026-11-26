@@ -15,7 +15,7 @@ import org.junit.Test
  * 在端点侧一个都不在（上报链当年就没接上）。`devtools/pack_release.py` 的 resValues/arsc 回读
  * 体检只护住走脚本那条路，手敲 `:app:assembleRelease` 无人管。
  *
- * 本文件钉的四格（逐格对应交付要求）：
+ * 本文件钉的五格（逐格对应交付要求）：
  * 1. 读数形状封闭（[stamp_has_closed_grammar]）：只有 `v1;endpoint=…;token=…;mirrors=…` 这一种形状，
  *    取值只可能是 host 级读数或 `off` / `invalid` / `on`；
  * 2. 读数不含机密（[stamp_carries_no_secret] + [token_never_leaves_the_build_script]）：
@@ -26,7 +26,10 @@ import org.junit.Test
  *    与生成的 resValues 落点逐字对账 ⇒ 不带参数跑一次、带参数跑同一条命令，两臂都必须绿；
  * 4. 闸的形状不许回退（[guard_warns_and_never_fails] / [guard_covers_all_three_channels]）：
  *    守卫区必须有 `logger.warn`、必须覆盖三个参数、必须一个 `throw` 都没有
- *    （`--offline` 与刻意内测要能照常出包，AGENTS 第 8 节点名允许）。
+ *    （`--offline` 与刻意内测要能照常出包，AGENTS 第 8 节点名允许）；
+ * 5. 本文件自身的卫生闸（[res_values_arm_stays_variant_scoped_and_never_skips]，2026-11-25 HYGIENE1）：
+ *    变体路径必须是插值、产物缺失必须判红而不是记 skipped —— 钉的是「这格会不会因为
+ *    看不见就自动绿」，判据与实测证据写在该用例的 KDoc 里。
  *
  * 令牌的纪律（契约 §2 L4 第 2 条）：本文件不读 `local.report.properties`，也从没拿到令牌值 ——
  * gradle 只把「有没有带」传成布尔系统属性 `eratw.build.reportTokenPresent`；断言消息一律过
@@ -121,10 +124,59 @@ class ReportChannelBuildStampTest {
     private fun findLineStartingWith(text: String, head: String): String? =
         text.lines().firstOrNull { it.trimStart().startsWith(head) }
 
-    /** AGP 生成的 resValues 落点（debug 变体：跑本用例的 testDebugUnitTest 必然生成过它）。 */
-    private fun resValuesText(): String =
-        findModuleFile("build/generated/res/resValues/debug/values/gradleResValues.xml")
-            .readText()
+    /**
+     * 当前单测跑在哪个变体下：AGP 把被测变体的 BuildConfig 编进单测运行类路径，DEBUG 位即变体身份
+     * （testDebugUnitTest 读到 DEBUG=true，testReleaseUnitTest 读到 DEBUG=false），产物路径随它走。
+     * 反编译 reference 树里没有 AGP 行为的 C# 锚（这是构建管线不是游戏语义）——该论断以实证收口：
+     * 2026-11-20 钉 release 跑 testDebugUnitTest，唯一 resValues 对账格转 skipped（缺 release 产物走
+     * 假设失效分支，非任意异常，XML 读数 7/6 过 1 skipped 0 败见 BURN/PROGRESS.md）；
+     * 还原本实现后同命令全绿，证明 DEBUG 位把路径带到了 debug 落点。
+     *
+     * 2026-11-25 HYGIENE1 复核（同工作树实测，不是推断）：`:app:testReleaseUnitTest` 跑完后
+     * app/build/generated/res/resValues/release/values/gradleResValues.xml 存在（1,187 字节，
+     * mtime 2026-11-25 23:28:21），内容与 debug 那份逐字相同（含 eratw_report_channel_stamp =
+     * `v1;endpoint=off;token=off;mirrors=off`）；同次运行本格 XML 读数 tests=7 skipped=0 failures=0
+     * （timestamp 2026-11-25T15:31:53Z）⇒ 两个变体都能真跑这格，于是产物缺失改判红（见
+     * [requireResValuesFile]），本用例不再有「跑不了就算跳过」的分支。
+     */
+    private val testedVariant: String
+        get() = if (BuildConfig.DEBUG) "debug" else "release"
+
+    /** AGP 生成的 resValues 落点，按**当前被测变体**取：debug / release 各自生成在各自目录。 */
+    private fun resValuesRelativePath(): String =
+        "build/generated/res/resValues/$testedVariant/values/gradleResValues.xml"
+
+    /**
+     * 在盘上找当前被测变体的 resValues 产物，找不到返回 null（产物缺失）。
+     * 写死 debug 路径是本用例的旧病：release 全量跑因缺 debug 产物必红，与本用例要钉的东西无关。
+     * 返回 null 由 [requireResValuesFile] 直接转硬红（2026-11-25 起不再有跳过臂）。
+     */
+    private fun findResValuesFile(): File? {
+        val candidates = MODULE_ROOTS.map { File(it, resValuesRelativePath()) }
+        return candidates.firstOrNull { it.isFile }
+    }
+
+    /**
+     * 取当前被测变体的 resValues 产物，**缺失即判红**（2026-11-25 HYGIENE1：这里原先抛
+     * [AssumptionViolatedException] 记 skipped，等于「只要产物不在盘上，这格对账就自动通过」——
+     * 契约 §2.1 点名禁止的永远绿形态）。改成硬断言的前提是实测：release 变体的单测链路确实
+     * 会生成该产物（见 [testedVariant] 的 KDoc），所以「缺了」只可能是真出问题（没经 gradle 跑
+     * 本变体、产物被 clean、或 resValue 接线被摘），没有合法的「跳过」可言。
+     *
+     * 判红消息把前提写全，让人一眼知道该补哪道闸而不是以为代码坏了。若日后把 release 变体挪出
+     * 验收面（release 单测不再进定向闸），本条必须退回「变体守卫 + 该变体至少一条真跑起来的
+     * 断言臂」，不许退回成 assumption 跳过。
+     */
+    private fun requireResValuesFile(): File {
+        val tried = MODULE_ROOTS.joinToString { File(it, resValuesRelativePath()).absolutePath }
+        val task = if (testedVariant == "debug") ":app:testDebugUnitTest" else ":app:testReleaseUnitTest"
+        return findResValuesFile() ?: throw AssertionError(
+            "被测变体 $testedVariant 的 resValues 产物不在盘上（试过：$tried）。" +
+                "本用例的前提是 $task 已被执行：该变体的 gradleResValues.xml 只在跑过它的 test 任务后由 AGP 生成，" +
+                "只跑了另一个变体就会撞这条红。刚 clean 过就重跑 $task；重跑仍在 ⇒ 说明 resValue 接线被摘" +
+                "（app/build.gradle.kts 的 channel-guard 落点段），那才是本用例要钉的缺陷。",
+        )
+    }
 
     private fun pickResString(xml: String, name: String): String? =
         Regex("<string name=\"$name\"[^>]*>([^<]*)</string>").find(xml)?.groupValues?.get(1)
@@ -206,9 +258,16 @@ class ReportChannelBuildStampTest {
         assertEquals(expectedStamp(), mask(BuildConfig.eratwReportChannelStamp))
     }
 
+    /**
+     * 包内判读点对账（四格里的第 3 格）。这格不许永远绿的依据是两条独立的臂：
+     * 读数来源是 AGP 真正写进 resources.arsc 的那份产物（不是测试自己拼的字符串），
+     * 期望值则由 [expectedStamp] 按构建期注入的三条参数复算；产物缺失直接判红（2026-11-25 起，
+     * 原先记 skipped 的分支就是契约 §2.1 点的病）。反向证明见交付：改坏 app/build.gradle.kts:472
+     * 的 resValue 名字 ⇒ 本格必须红。
+     */
     @Test
     fun stamp_matches_generated_res_values() {
-        val xml = resValuesText()
+        val xml = requireResValuesFile().readText()
         val fromRes = pickResString(xml, "eratw_report_channel_stamp")
             ?: throw AssertionError(
                 "resValues 里没有 eratw_report_channel_stamp：包内判读点（aapt2 dump resources 拿得到的那条）没了，" +
@@ -224,6 +283,47 @@ class ReportChannelBuildStampTest {
         listOf("eratw_report_endpoint", "eratw_report_token", "eratw_update_mirrors").forEach {
             assertTrue("resValues 少了既有条目 $it", xml.contains("<string name=\"$it\""))
         }
+    }
+
+    // ------------------------------------------------------------------
+    // 3b 本文件自身的卫生闸：变体无关 + 绝不许用跳过顶绿
+    // ------------------------------------------------------------------
+
+    /**
+     * 靶 1 的回归闸（2026-11-25 HYGIENE1）：钉死本文件的两个卫生性质，防以后有人为了省事
+     * 把变体路径写回死值、或把对账臂重新改成 assumption 跳过 —— 两种改法都会让
+     * [stamp_matches_generated_res_values] 变成「看不见就绿」。锚的是自己这份源码：
+     * 变体路径必须是插值（resValues/<变体>/values）而不是硬编码 debug/release，
+     * 产物缺失必须走 AssertionError 而不是 AssumptionViolatedException 的构造/导入。
+     * KDoc 里提到旧行为（散文里写出类名）不算，所以锚的是 `import org.junit.Assumption...`
+     * 与 `throw Assumption...` 这两种可执行写法。
+     */
+    @Test
+    fun res_values_arm_stays_variant_scoped_and_never_skips() {
+        val self = findModuleFile(
+            "src/test/kotlin/com/eratw/port/android/ReportChannelBuildStampTest.kt",
+        ).readText()
+        val interp = "resValues/" + '\u0024' + "testedVariant/values"
+        assertTrue(
+            "resValues 路径必须是按被测变体插值，写死就退回靶 1 的病：实际锚 = $interp",
+            self.contains(interp),
+        )
+        listOf("resValues/debug/values", "resValues/release/values").forEach { hardcoded ->
+            val hits = self.lines().filter { it.trimStart().startsWith("\"") && it.contains(hardcoded) }
+            assertTrue("出现写死的变体产物路径 $hardcoded（$hits）：只跑另一变体就会假绿/假红", hits.isEmpty())
+        }
+        //  needles 本身拼出来：源码里若直接写出整串，本用例就成了自己判自己的假红。
+        listOf(
+            "import org.junit." + "Assumption" + "ViolatedException",
+            "throw " + "Assumption" + "ViolatedException",
+            "org.junit." + "Assume",
+        ).forEach { banned ->
+            assertFalse("对账臂不许用假设跳过顶绿（发现可执行写法 $banned）", self.contains(banned))
+        }
+        assertTrue(
+            "产物缺失必须是 AssertionError 硬红（requireResValuesFile 里的抛点被摘了？）",
+            self.contains("return findResValuesFile() ?: throw AssertionError("),
+        )
     }
 
     // ------------------------------------------------------------------

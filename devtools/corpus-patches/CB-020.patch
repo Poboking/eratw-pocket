@@ -1,0 +1,11 @@
+--- a/魔改内容/qol/qol_dish.ERB
++++ b/魔改内容/qol/qol_dish.ERB
+@@ -846,5 +846,6 @@
+ NEXT
+-;slot 1 特殊：401..400+CHARANUM（现行视野；含钩子供菜槽）
+-FOR L_I, 401, QOL_DISH_DISPLAY_TOP(1) + 1
++;slot 1 特殊：401..TOP(1)-1（＝400+CHARANUM-1；与 COOKING_UI slot1 枚举域逐号一致）
++;⛔ 别写 TOP(1)+1：TOP 是**开区间**上界，末号 400+CHARANUM 是幻影号（owner=CHARANUM 无此人），入池必崩 NO 越界
++FOR L_I, 401, QOL_DISH_DISPLAY_TOP(1)
+ 	QOL_DISH_POOL_ID:L_N = L_I
+ 	L_N ++

@@ -249,3 +249,309 @@ patches:
     status: 已修（补丁 CB-017，主人 11-15 指令）——编译期应用，玩家获得修复=重新出包
     summary: 好意 source 正反馈倍率封顶 —— SOURCE_1.ERB（@SOURCE_歓楽 :444/:446 亲密项 ×(親密*5+100)/100、:477/:479/:482 好感度项 ×(好感/50+100)/100；@SOURCE_受動 :651/:653 亲密项 ×(親密*10+70)/100）三组倍率无衰减：亲密 100+ 级（CB-016 病灶产物）时亲密项 ×6~7.2 / 受動 ×10.7~13.6、好感 50 万（该分段上限）时好感度项 ×101，CUP:好意 单回合以百万~千万计 → 调教结束 AFTERTRA.ERB JUEL_CHECK 高档位一次转 2 亿宝珠、FAVOR_CALC 好感度单次 +几千跨三级（MAX_50000 表 B→SS，COMMON.ERB:2122-2153）——玩家报红「随便一个选项就加几千万/B级跳SS/亲密升级吞光好意珠」的另一半根。7 行表达式各套 MIN（親密项 MIN(親密,15) 对齐 NASIKUZUSI 消费锚、好感度项 MIN(CFLAG:2,50000) 对齐 MAX_50000 Ex 锚=评级天花板处倍率 ×11 无缝衔接）+ 2 行注记；:484 的 10 亿分支是作者既有硬帽（好感>5 万且 LOCAL>=1e7 时直接置 1e9，非本波新增放大，改它需裁定官方意图，留上游）、欲望项不封（欲望无补正通道），只砍失控段保留正反馈手感；CFLAG:2 <= 50000 的既有分段（:466/:473 TIMES 段）逐字不动
     evidence: docs/UPSTREAM-BUG-PR.md CB-017 行；specs/corpus-bugs.md §1 CB-017 行；同一玩家报红链（0.2.46）；正反馈链锚 SOURCE_1.ERB:417-490/:596-665、AFTERTRA.ERB:780-830（JUEL_CHECK 档位表最高 200000000）、TRACHECK_好感度上昇処理.ERB:428-430（LIMIT 100 万）、OPTION.ERB:688（好感度上升率设置 X20 上限）
+
+  - id: CB-018
+    target: 魔改内容/QOL_IMAGE.ERB
+    patch: CB-018.patch
+    # 平台适配补丁（**非蛇版缺陷**：PC 原版有鼠标，srcb 悬停是官方设计，不提上游 PR，
+    # 故不登记 docs/UPSTREAM-BUG-PR.md）：安卓触屏无鼠标悬停，引擎的 srcb 实时代换
+    # （参考 Emuera ConsoleImagePart.cs:249-255 DrawTo：isSelecting||isFocus 时绘 srcb 帧；
+    # 命中测试 EmueraConsole.cs:2524-2585 MoveMouse 仅由鼠标移动驱动）在触屏上永不触发
+    # ⇒ 动态立绘（悬停帧/脸红效果层）对玩家永久不可见。主人 11-17 指令：改为
+    # 「当页停留 >3s 时随机启用动态立绘（若当前可启用）」。fixed sha 由与
+    # CorpusPatches.kt:692-953 逐点对齐的离线套用器预计算，本波 compileCorpus 真套用器对账。
+    # v2 订正（11-17 真套用器对账抓出）：v1 把三个判定全局变量的 #DIM 放在 ERB 顶层，
+    # 编译读数出 3 条装载期告警——ERB 函数外 #DIM 原版按 InvalidSharp 丢弃
+    # （ErbLoader.cs:413-423；移植侧同形：SystemVariableBootstrap.kt:203-211 +
+    # CorpusCompile.kt:899-907，运行期 filterErbFunctionDimDeclarations 也过滤），
+    # 声明不落账 ⇒ 运行期引用未定义标识符，必炸。v2 把声明移入 QOL_IMAGE.ERH
+    # （全局用户变量只从 ERH 装载，Process.cs:309/:313；该 ERH 既有 LAST_BGI_GID
+    # 同型先例），拆为配套补丁 CB-019。本条目 fixed sha 随之重算。
+    # v2 重设计（11-18 主人指令「功能太死板、要惊喜感」）：整页齐换改为
+    # 「页停留 >3s 且当页多角色时，按好感度秩加权随机挑一个角色触发」——
+    # 单角色页保留 50% 掷币（惊喜在动不动），多角色页新增 @QOL_DYN_PICK_HOVER
+    # 选定函数（CFLAG:CHARA:好感度 降序插入排序 + 秩 i 权重 N-i 游走抽样，
+    # 种子 = GETMILLISECOND/997 + LINECOUNT*31 + 角色数，零消耗游戏 RNG）；
+    # QOL_DYN_PAGE_DEC 语义升为三态（-1 未定 / 0 无人动 / >0=选中 CID），
+    # ASSEMBLE 加可选参 DYN_CID（三调用点：PrintOnanism 传 C_ID、角色块传
+    # CHARA、路人块传 0 恒不命中——MOB_TYPE 是 #DIMS 字符串、路人不在
+    # PRINT_LIST 判定域），换帧条件 DEC>0 && DEC==DYN_CID。fixed sha 重算。
+    bad-sha256: 9f3627c1878c873d4fdf001b3784402577cb17fad216590fe078e6816c077e78
+    fixed-sha256: 635a3bc350235b8a4b365eb6e9296a75ae145a041b2363fb5b0ac4f76de6e84b
+    # skip 两项 = 261017 退役根 + 4.980 canonical 基准根（头部②类：非本链出包对象、
+    # 保持基准原始字节；本适配不作用于两版，两版该文件 sha 实测各异）。
+    skip-sha256: 084eebdc0d374cdebe32fdb9098a1902480197cd549d6d71adf8b6ae05404ba0,23791711438d803827a1e502f34b5834f7a27d8ec44ac3216b50800c64a6cb55
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-018，主人 11-17 指令、11-18 v2 重设计指令）——编译期应用，玩家获得适配 = 重新出包
+    summary: 立绘悬停替代 v2 = 当页停留>3s 按好感度挑一个角色换悬停帧 —— @QOL_PRINT_TARGET_IMAGE 入口（CALC_IMAGE_PAGINATION 守卫后）加页级粘滞判定：LINECOUNT 作页键、GETMILLISECOND 作停留钟，新页按上一页停留 >3s 立即选定（静态页只在动作时重绘，上一页停留是当页唯一可观测窗口）、CLEARLINE 循环 UI 同页停留超 3s 就地选定一次，选定后粘滞防帧间闪烁；单角色页 50% 掷币（时间低两位 %100<50），多角色页 CALL 新增 @QOL_DYN_PICK_HOVER：CFLAG:CHARA:好感度 降序插入排序后按秩加权随机挑一个（秩 i 权重 N-i、总权重 N*(N+1)/2，种子 = GETMILLISECOND/997 + LINECOUNT*31 + 角色数，全部零消耗游戏 RNG，RAND 会改玩法数值）；QOL_DYN_PAGE_DEC 三态（-1 未定/0 无人动/>0=选中 CID）；@ASSEMBLE_HTML_IMAGE_LAYERS 加尾参 DYN_CID=-1（调用点 PrintOnanism:427 传 C_ID、BUILD_CHARA_IMAGE_BLOCK:732 传 CHARA、BUILD_MOB_IMAGE_BLOCK:880 传 0 恒不命中），底图与效果层在 DEC>0 && DEC==DYN_CID 且该层悬停帧存在时以底图同矩形把 src 换为悬停帧并去掉 srcb（与引擎实时代换同形），选中角色无悬停帧则本页无人动（守卫链 :950-957 SPRITECREATED 自然回退）、时间停止上游清零、立绘关闭早退均零行为差；只加不删
+    evidence: specs/corpus-bugs.md §1 CB-018 行（平台适配行）；C# 锚 ConsoleImagePart.cs:249-255 / EmueraConsole.cs:2524-2585 / MainWindow.cs:889（mainPicBox_MouseMove）；语料锚 QOL_IMAGE.ERB:931-976（ASSEMBLE srcb 出口 :963/:971）、GETMILLISECOND spec builtin-functions.yaml:2083-2090、core-vm TimeMethods.kt（GETMILLISECOND 实现）+ TimerSink.kt（E2E/L3 固定钟 ⇒ 无头回放停留恒 <3s，适配不触发，golden 输出零影响）
+  - id: CB-019
+    target: 魔改内容/QOL_IMAGE.ERH
+    patch: CB-019.patch
+    # 配套 CB-018（同为平台适配、非蛇版缺陷，不登记 docs/UPSTREAM-BUG-PR.md）：
+    # 悬停替代的三个判定全局变量 QOL_DYN_PAGE_KEY / QOL_DYN_PAGE_START_MS /
+    # QOL_DYN_PAGE_DEC 的声明位。ERB 函数外的 #DIM 原版按 InvalidSharp 丢弃
+    # （ErbLoader.cs:413-423），全局用户变量只从 ERH 装载（Process.cs:309/:313），
+    # 故必须声明在本 ERH（既有 LAST_BGI_GID 同型先例）。v1 误放 ERB 顶层，
+    # 真套用器对账读数 3 条装载期告警后 v2 移入此处。
+    # 261017 退役根本文件与 261111 逐字节同值（9269bb7c…）⇒ 对 261017 编译时本补丁
+    # 同样命中：后果仅是多三个无引用的全局声明（该根 ERB 被 CB-018 的 skip 挡住未打），
+    # 惰性无害，不另立链。skip = 4.980 canonical 基准根（头部②类：erbcc-rs 编译基准、
+    # 非本链出包对象，保持原始字节；4.980 该文件 sha 实测不同值）。
+    # 插入点在末行 #DIM LAST_BGI_GID **之前**而非文件尾：该末行无行终止符（EOF 边），
+    # 真套用器新增行终止符继承「插入点前一条语料行」（CorpusPatches.kt addedLineTerminator），
+    # 锚到无终止符末行会把整块粘成一行——fixed sha 双重判据实测抓出（7e5b5c6a≠预计算），
+    # 改插末行前后锚=上一行 \r\n，产物逐字节过真套用器端口校验。
+    bad-sha256: 9269bb7cdfbd8194773f16ae4f9e7085f673857bc13a7b1bd6aa9a48f18b2f0c
+    # 11-18 v2 重设计：三个声明名不变，注记块更新为 DEC 三态语义（>0=选中 CID），fixed sha 重算。
+    fixed-sha256: 1b1c225641a14c62b3141b47cd52101464eaa6f3a442d98562244c11b9afb219
+    skip-sha256: 7bc2a03a084baf964b02675807d4e178a9367dc3717bc8549ba9cf3fd2a24399
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-019，配套 CB-018，主人 11-17 指令、11-18 v2 重设计指令）——编译期应用，玩家获得适配 = 重新出包
+    summary: CB-018 的全局变量声明位 —— QOL_IMAGE.ERH 末行前插入三行 #DIM（QOL_DYN_PAGE_KEY/START_MS/DEC）+ 注记块（末行无终止符是 EOF 边、不可作插入锚），声明悬停替代的页键/停留钟/粘滞判定；v2 注记改 DEC 三态语义（-1 未定/0 本页无角色换帧/>0=选中角色 CID）；只加不删，不动既有四行声明
+    evidence: specs/corpus-bugs.md §1 CB-019 行；C# 锚 ErbLoader.cs:413-423（ERB 函数外 #DIM 丢弃）+ Process.cs:309/:313（全局只从 ERH 装载）；移植侧同形单源 SystemVariableBootstrap.kt:203-211 + CorpusCompile.kt:899-907（CMP-89）
+  - id: CB-020
+    target: 魔改内容/qol/qol_dish.ERB
+    patch: CB-020.patch
+    # 蛇版语料缺陷（已核：261111 语料该文件与上游镜像 snake-latest/repo 逐字节相同 ⇒ 非移植侧引入，
+    # PC 官方 Emuera 同形抛错，故登记 docs/UPSTREAM-BUG-PR.md）：@QOL_DISH_POOL_BUILD 的 slot1 段
+    # 用 `FOR L_I, 401, QOL_DISH_DISPLAY_TOP(1) + 1`。TOP 在菜单侧一律是**开区间上界**
+    # （COOKING_UI.ERB:103 `FOR LOCAL, 351, QOL_DISH_DISPLAY_TOP(1)` 枚举出 401..567），
+    # 多写的 +1 把末号 400+CHARANUM（owner=CHARANUM 的幻影号，qol_dish.ERB:639 定义）塞进
+    # QOL_DISH_POOL_ID ⇒ おまかせ料理/依頼04 扫池到它时 CALL DISHDATA(幻影号) →
+    # DISHDATA.ERB:35 反解析出 SP_CHARA=CHARANUM → :86 CALL QOL_DISH_DECLARED_COUNT(CHARANUM) →
+    # qol_dish.ERB:727 `NO:CHARA` 越界抛 CodeEE（玩家屏上「角色数组变量"NO"的第1个变量(168)超出
+    # 角色登记编号的最大范围 @ QOL_DISH_DECLARED_COUNT … 行727」）。C# 锚 CharaVariableToken.cs:56-70
+    # 证明 NO 越界判据是 CharacterList.Count，CHARANUM=168 与该表 168 行一致 ⇒ 引擎侧无需改。
+    bad-sha256: 194feb897313e1cd4e8683ea4539fc86c11ef3dac1b971b674ea114eb0da885f
+    fixed-sha256: d5c9b1a649ff388d745ed4d96e88f5bd82a7cb37c3b493a21a72da4260c9550a
+    # skip = 261017 退役根（golden 采集根，保持原始字节；该文件 sha 实测不同值；4.980 根无此文件）
+    skip-sha256: 723ada646c51ed90007af3f6d94326d1d31bef86130ba6996e0032d0ddd366a8
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-020）——编译期应用，玩家获得修复 = 重新出包
+    summary: 池构建的 slot1 段上界去掉多余的 +1 —— FOR 上界改回 QOL_DISH_DISPLAY_TOP(1)（开区间，实测枚举 401..567），池不再收录 owner=CHARANUM 的幻影号 400+CHARANUM；注记改成「401..TOP(1)-1＝400+CHARANUM-1，与 COOKING_UI slot1 枚举域逐号一致」并加两行 ⛔ 禁止写回 +1 的理由；只改一行 + 注释，无行为差除幻影号出池
+    evidence: specs/corpus-bugs.md §1 CB-020 行；语料锚 qol_dish.ERB:835-857（池构建）/ :639 TOPhy / :597/:608/:626 显示号三函数、COOKING_UI.ERB:103（开区间同域实证）、DISHDATA.ERB:35/:86（崩点链）；C# 锚 CharaVariableToken.cs:56-70；桌面复现 `cmd call DISHDATA --args 568,0,0,0,0 --pre QOL_DISH_INIT` = CODEEE @ QOL_DISH_DECLARED_COUNT:726 与玩家上报逐字同形
+  - id: CB-021
+    target: コマンド関連/COMF/日常系/DISHDATA.ERB
+    patch: CB-021.patch
+    # 边界网（配套 CB-020 的根因修）：显示域反解析 `QOL_DISH_DISPLAY_OWNER` 对「400+CHARANUM」这族
+    # 号会算出越界 owner（手输入 568/1168、旧存档里已落进池的号、第三方口上自行拼号都能造出来）。
+    # 越界号接着进 :85/:86 `QOL_DISH_DECLARED_COUNT(SP_CHARA)` 的 `NO:CHARA` 必抛 CodeEE，
+    # 或进 :53 `KOJO_CHECK(SP_CHARA,…)` 读越界 CFLAG —— 故按「无此人」处置：SP_SLOT/SP_CHARA 清零，
+    # 后续 HAS_DATA 为假走空号隐藏。不做「反解析侧越界返 0」：那会把幻影号变成 owner 0（主人公），
+    # 显示成主人公的菜比硬报错更坏。
+    bad-sha256: 583a1d41cc63b81687b21fbcb1698ad05e756f930356fe833217a80327f4d53b
+    fixed-sha256: e9fcd53aeb78250cf8498845b934f84223b4cfb1feee30ce1c93ab536986fde4
+    # skip = 261017 退役根 + 4.980 canonical 基准根（两版该文件 sha 实测各异）
+    skip-sha256: ff7324d1f155e27d077e1e2f1f002cdc7a54bc48d5fd82fe785de9434f9ad13f,4331e2e758f8e97971bba3f44607f77d83b5f9829a4b805c131dabf405721212
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-021，边界网）——编译期应用，玩家获得修复 = 重新出包
+    summary: DISHDATA 反解析段后加幻影号守卫 —— `IF SP_SLOT >= 1 && (SP_CHARA < 0 || SP_CHARA >= CHARANUM)` 则 SP_SLOT=0、SP_CHARA=0（归「无此人」，后续按空号隐藏）；只加 3 行判定 + 2 行注记，正常号域（1..CHARANUM-1）零行为差
+    evidence: specs/corpus-bugs.md §1 CB-021 行；语料锚 DISHDATA.ERB:29-37（反解析段）/ :53 KOJO_CHECK / :85-86 崩点；配套 CB-020、CB-022；C# 锚 CharaVariableToken.cs:56-70（NO 越界判据 = CharacterList.Count）
+  - id: CB-022
+    target: SHOP関連/SHOP.ERB
+    patch: CB-022.patch
+    # 蛇版语料缺陷（与 CB-020 同族幻影号，但**独立进料口**，CB-021 管不到）：SHOP 做菜详情支
+    # `ELSEIF INRANGE(RESULT, QOL_DISH_DISPLAY_SPECIAL_START(2), QOL_DISH_DISPLAY_TOP(DISH_SPECIAL_SLOTS))`
+    # 之后 :860 只判 `IF SEL_SLOT >= 2 && SEL_OWNER`（真值即过），:864 `CALL QOL_DISH_DECLARED_COUNT(SEL_OWNER)`
+    # **绕过 DISHDATA** 直吃反解析出的 owner ⇒ CodeEE。
+    # INRANGE 是闭区间而 TOP 是开区间上界：上界本身代入幻影号 1168，且 601..1167 之间还夹着
+    # 段内空号与 owner=CHARANUM 的 768/968 —— **只改上界（上一版 CB-022 写的 `- 1`）挡不住中间段**，
+    # 故本版把域判定下移到 owner：`INRANGE(SEL_OWNER, 1, CHARANUM - 1)`，一次盖住末位幻影号、
+    # 段内空号（反解析出 > CHARANUM）与段界号 600/800/1000（DISPLAY_SLOT 按 (D-401)/BLOCK 归段，
+    # 反解析成上一槽 owner=200，同样越界）。原注释「owner=CHARANUM 合法」订正。
+    bad-sha256: 17ec222ccf674a9c22c4f2f30508ca13ccf41f319cb11e025a99f2392abe5085
+    fixed-sha256: c3b96283f05efef4744b6bc9c87d80daebad1678892e69169611c40eac9028e5
+    # skip = 261017 退役根 + 4.980 canonical 基准根（两版该文件 sha 实测各异）
+    skip-sha256: b881298c30794880ed729def4be47fc1e5e5f9961fdbdc4e2589a56c71331cf8,344c4f2890c8201663b50e43043654c42dd787af3c951bbdebb94ed8ed6c8d08
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-022，边界网）——编译期应用，玩家获得修复 = 重新出包
+    summary: SHOP 做菜详情支把 owner 域守卫写全 —— `IF SEL_SLOT >= 2 && SEL_OWNER`（:860）→ `IF SEL_SLOT >= 2 && INRANGE(SEL_OWNER, 1, CHARANUM - 1)`（一次盖住末位幻影号 768/968/1168、段内空号与段界号 600/800/1000 的 owner=200，只改 INRANGE 上界挡不住中间段），注释按「TOP 是开区间上界、幻影号非法」订正；只改一行判定 + 4 行注记，1..CHARANUM-1 正常号域零行为差
+    evidence: specs/corpus-bugs.md §1 CB-022 行；语料锚 SHOP.ERB:852-870（:854 INRANGE / :864 DECLARED_COUNT 绕过 DISHDATA / :867 KOJO_CHECK）、qol_dish.ERB:639/:647；C# 锚 CharaVariableToken.cs:56-70
+  - id: CB-023
+    target: CSV/CFLAG.als
+    root: game
+    patch: CB-023.patch
+    # 蛇版语料缺陷（已核：261111 发行包整代丢了 261017 里的兼容别名块）：261111 的 CFLAG.als
+    # 相对 261017 少 95 个别名键（261111 只 324 行 / 263 键，261017 346 键），逐个比对
+    # 「下标 + 主名」——95/95 在 261111 CFLAG.csv 同下标的主名与 261017 逐字一致（零漂移、
+    # 零下标缺失）⇒ 纯别名回补，映射语义不变。缺的正是繁体 `1,既成事實`：016 蕾米莉亚色情
+    # 特化 mod 的 M_KOJO_K16_5_事件系.ERB:2992/:3372/:3816 写 CFLAG:既成事實（简繁/日文新字体
+    # 三写并存的旧译名），运行期查表抛 CodeEE「CFLAG 中未定义关键字 "既成事實"」；
+    # 编译期 ConstantKeywordResolver 查不到只回落「运行期按名查表」、不判红 ⇒ 编译全绿、
+    # 进回合才炸（玩家屏上「脚本错误中止本回合…重试」）。
+    bad-sha256: ddd51037213ba85666cb7219bfee9def37bca7f1ce586fe8cdb308df1186bfbf
+    fixed-sha256: 57e8ffb68bb167ca1bea67fa154521460afa4d2ea9bda856b5a70b1a9dc7a7b6
+    # skip = 261017 退役根（261017 自带这批别名，字节不同）+ 4.980 canonical 基准根
+    skip-sha256: e7a5416295cd8722e886277c7fa83ea71c0dbd75b7f19c69ec3fa23ceb644d98,1d880d6afa9c39cb079d1321430efe3f48d2142efbe53870cfca0eb6efb297f1
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-023）——编译期 staging 与出包资产 staging 同源应用；玩家获得修复 = 重新出包
+    summary: 261111 丢失的 95 条 CFLAG 兼容别名按 261017 原样回补到 CSV/CFLAG.als 尾部（含 1,既成事實）——每键先核「261111 CFLAG.csv 同下标主名 == 261017 主名」才收；只增 95 行别名 + 5 行注记（324 行 → 424 行），主名表与下标零改动
+    evidence: specs/corpus-bugs.md §1 CB-023 行；语料锚 261111 CSV/CFLAG.als:1（`1,既成事実`，无繁体）与 261017 CSV/CFLAG.als:307 的 `1,既成事實,;正本=既成事实`；消费者 M_KOJO_K16_5_事件系.ERB:2992/:3372/:3816；装载锚 CsvLoader.kt loadAliases（ConstantData.cs:1834-1838 / :1841-1903 / :711-737，putIfAbsent 补空、别名不入 names[]）；抛错锚 VariableRegistry.kt:646；折叠回落锚 ConstantKeywordResolver.kt（VariableStrArgTerm.cs:57-69）
+  - id: CB-024
+    target: CSV/FLAG.als
+    root: game
+    patch: CB-024.patch
+    # 与 CB-023 同族（261111 发行整代丢了 261017 的 .als 兼容别名块，非我方引入）：
+    # FLAG.als 261017 = 306 别名键 / 261111 = 247 键，缺 60 键
+    # （例：SYS_EVENT起動FLAG=1、長筒襪着用=2、宴会的有無=3、情景文本設定=6）。逐键核「261111 FLAG.csv 同下标主名 == 261017 同下标主名」：
+    # 60/60 逐字一致（零漂移）⇒ 纯别名回补，映射语义不变；别名只进关键字反查，
+    # 不写名字数组，故只增别名、不动主名与下标。
+    bad-sha256: 54eaa03fa573488cfffecff785635d5c222be42c6f1d737319b209a000a3fb45
+    fixed-sha256: 2f3726f8c5b6891f90fb31d7d906b0e280dad5cff6cb9dc29046b3d3de9ad0d0
+    # skip = 261017 退役根 + 4.980 canonical 基准根（两版该文件自带这批别名，字节各异）
+    skip-sha256: bd5a506592c1cb9925dafef9e9b126e04647516a906fdf7fd00703802dc3da6f,a55b0f80fefbd398a69b12c660b6930175da22801079442e7534806c971fa076
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-024）——编译期 staging 与出包资产 staging 同源应用；玩家获得修复 = 重新出包
+    summary: 261111 丢失的 60 条 FLAG 兼容别名按 261017 原样回补到 CSV/FLAG.als 尾部——每键先核同下标主名两版一致（零漂移），只增别名不改主名/下标
+    evidence: specs/corpus-bugs.md §1 CB-024 行；语料锚 261017 CSV/FLAG.als（SYS_EVENT起動FLAG=1 等）与 261111 CSV/FLAG.als（仅 247 键）；C# 锚 `ConstantData.cs:1834-1841`（读同名 .als）/ `:711-737`（putIfAbsent 合并）/ `:1841-1903`（行语义）
+  - id: CB-025
+    target: CSV/Talent.als
+    root: game
+    patch: CB-025.patch
+    # 与 CB-023 同族（261111 发行整代丢了 261017 的 .als 兼容别名块，非我方引入）：
+    # Talent.als 261017 = 197 别名键 / 261111 = 174 键，缺 26 键
+    # （例：無接吻経験=6、傲嬌=14、開朗／阴郁=24、喜歡引人注目=26、胸圍=105、風騷=142）。逐键核「261111 Talent.csv 同下标主名 == 261017 同下标主名」：
+    # 26/26 逐字一致（零漂移）⇒ 纯别名回补，映射语义不变；别名只进关键字反查，
+    # 不写名字数组，故只增别名、不动主名与下标。
+    bad-sha256: 5450d51c6016b5de0bfa43840ed6f5105cadfa70c5a2e01062bfc10a3acddeb5
+    fixed-sha256: 14ec210ac0ec80783c14a51573665b18d192e9a24935a5f5ebde30d543101a02
+    # skip = 261017 退役根 + 4.980 canonical 基准根（两版该文件自带这批别名，字节各异）
+    skip-sha256: 12187b84f0c0e71ba7e2a7631002283241d969a3dfc9c2b68a19c9a1dfd70c8e,c8f038135ecc031c84fd007906a1ebf543a43187b7f1f5a5e128671bf4e8eb15
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-025）——编译期 staging 与出包资产 staging 同源应用；玩家获得修复 = 重新出包
+    summary: 261111 丢失的 26 条 Talent 兼容别名按 261017 原样回补到 CSV/Talent.als 尾部——每键先核同下标主名两版一致（零漂移），只增别名不改主名/下标
+    evidence: specs/corpus-bugs.md §1 CB-025 行；语料锚 261017 CSV/Talent.als（無接吻経験=6 等）与 261111 CSV/Talent.als（仅 174 键）；C# 锚 `ConstantData.cs:1834-1841`（读同名 .als）/ `:711-737`（putIfAbsent 合并）/ `:1841-1903`（行语义）
+  - id: CB-026
+    target: CSV/exp.als
+    root: game
+    patch: CB-026.patch
+    # 与 CB-023 同族（261111 发行整代丢了 261017 的 .als 兼容别名块，非我方引入）：
+    # exp.als 261017 = 93 别名键 / 261111 = 79 键，缺 16 键
+    # （例：乳交経験=26、接吻経験=27、奉仕快乐经验=40、百合経験=51）。逐键核「261111 exp.csv 同下标主名 == 261017 同下标主名」：
+    # 16/16 逐字一致（零漂移）⇒ 纯别名回补，映射语义不变；别名只进关键字反查，
+    # 不写名字数组，故只增别名、不动主名与下标。
+    bad-sha256: 1570a940a109bbf553e75e236e96b66b2b141f776f79b9fd3493f10b40a7cbf1
+    fixed-sha256: 7fd775bef6c1986264b62137675e0cc7e52b86f8af4a13773d420c2ddbe06e4b
+    # skip = 261017 退役根 + 4.980 canonical 基准根（两版该文件自带这批别名，字节各异）
+    skip-sha256: 50dc9ff71e4d3b0d496b460c8859d7061d58ac41a9dd8a7b168d9869318dc680,42f62ea3c962b6239520e77be0bcf5dcf62550cad36066f212617e07fbf1495c
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-026）——编译期 staging 与出包资产 staging 同源应用；玩家获得修复 = 重新出包
+    summary: 261111 丢失的 16 条 exp 兼容别名按 261017 原样回补到 CSV/exp.als 尾部——每键先核同下标主名两版一致（零漂移），只增别名不改主名/下标
+    evidence: specs/corpus-bugs.md §1 CB-026 行；语料锚 261017 CSV/exp.als（乳交経験=26 等）与 261111 CSV/exp.als（仅 79 键）；C# 锚 `ConstantData.cs:1834-1841`（读同名 .als）/ `:711-737`（putIfAbsent 合并）/ `:1841-1903`（行语义）
+  - id: CB-027
+    target: CSV/TCVAR.als
+    root: game
+    patch: CB-027.patch
+    # 与 CB-023 同族（261111 发行整代丢了 261017 的 .als 兼容别名块，非我方引入）：
+    # TCVAR.als 261017 = 203 别名键 / 261111 = 223 键，缺 7 键
+    # （例：口服避孕薬=109、催情薬=139、憤怒=132、乳交経験=426）。逐键核「261111 TCVAR.csv 同下标主名 == 261017 同下标主名」：
+    # 7/7 逐字一致（零漂移）⇒ 纯别名回补，映射语义不变；别名只进关键字反查，
+    # 不写名字数组，故只增别名、不动主名与下标。
+    bad-sha256: d2fea4b06d30da40582503e1a4d271cf609943470fe1ab8dce1743c2a6f95c2a
+    fixed-sha256: 646cac808f3fe46bbadd02afcf2ae1756f02648bee82f276aba6559ea0ad0033
+    # skip = 261017 退役根 + 4.980 canonical 基准根（两版该文件自带这批别名，字节各异）
+    skip-sha256: 0efa5bf94a0aaf11bd885db0552550047e03de0fcb7b635e907b256730697d29,4d9855ddd08882078e44c7617e49ce64befa01f760341b99965986c20a441dad
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-027）——编译期 staging 与出包资产 staging 同源应用；玩家获得修复 = 重新出包
+    summary: 261111 丢失的 7 条 TCVAR 兼容别名按 261017 原样回补到 CSV/TCVAR.als 尾部——每键先核同下标主名两版一致（零漂移），只增别名不改主名/下标
+    evidence: specs/corpus-bugs.md §1 CB-027 行；语料锚 261017 CSV/TCVAR.als（口服避孕薬=109 等）与 261111 CSV/TCVAR.als（仅 223 键）；C# 锚 `ConstantData.cs:1834-1841`（读同名 .als）/ `:711-737`（putIfAbsent 合并）/ `:1841-1903`（行语义）
+  - id: CB-028
+    target: CSV/TFLAG.als
+    root: game
+    patch: CB-028.patch
+    # 与 CB-023 同族（261111 发行整代丢了 261017 的 .als 兼容别名块，非我方引入）：
+    # TFLAG.als 261017 = 136 别名键 / 261111 = 152 键，缺 3 键
+    # （例：绷帯=122、攝像機=105、劇毒身軀=225）。逐键核「261111 TFLAG.csv 同下标主名 == 261017 同下标主名」：
+    # 3/3 逐字一致（零漂移）⇒ 纯别名回补，映射语义不变；别名只进关键字反查，
+    # 不写名字数组，故只增别名、不动主名与下标。
+    bad-sha256: 04a17f8adfa092c712cc2fc5dbf5667959b99f783534606f9da22809866f681a
+    fixed-sha256: 2beb98ea57ef739c1f671c7d2d93f7de55178dd9db0830f663615e6451126efe
+    # skip = 261017 退役根 + 4.980 canonical 基准根（两版该文件自带这批别名，字节各异）
+    skip-sha256: 0769879469322a3f5260963ba48316914d14e49e0d761b1dd118ddf8790a4356,82c4fedce46bb097a8fa48772392fe2924911d362c8eb01995f3afefd0b774b3
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-028）——编译期 staging 与出包资产 staging 同源应用；玩家获得修复 = 重新出包
+    summary: 261111 丢失的 3 条 TFLAG 兼容别名按 261017 原样回补到 CSV/TFLAG.als 尾部——每键先核同下标主名两版一致（零漂移），只增别名不改主名/下标
+    evidence: specs/corpus-bugs.md §1 CB-028 行；语料锚 261017 CSV/TFLAG.als（绷帯=122 等）与 261111 CSV/TFLAG.als（仅 152 键）；C# 锚 `ConstantData.cs:1834-1841`（读同名 .als）/ `:711-737`（putIfAbsent 合并）/ `:1841-1903`（行语义）
+  - id: CB-029
+    target: CSV/Abl.als
+    root: game
+    patch: CB-029.patch
+    # 与 CB-023 同族（261111 发行整代丢了 261017 的 .als 兼容别名块，非我方引入）：
+    # Abl.als 261017 = 36 别名键 / 261111 = 34 键，缺 2 键
+    # （例：从顺=10、肛門=55）。逐键核「261111 Abl.csv 同下标主名 == 261017 同下标主名」：
+    # 2/2 逐字一致（零漂移）⇒ 纯别名回补，映射语义不变；别名只进关键字反查，
+    # 不写名字数组，故只增别名、不动主名与下标。
+    bad-sha256: 034f547e9ffcb6e3e25df3dd972a222feda21c924c367621b30cc308c7277a10
+    fixed-sha256: 24783e375cd421ac5360b6112c52f5630a11b8775fd2ef790aba8c5f313c76fe
+    # skip = 261017 退役根 + 4.980 canonical 基准根（两版该文件自带这批别名，字节各异）
+    skip-sha256: e1881c91dad561bdb7950ea1e3a80a7880a2ea9baf9c593cb69cef33a8229426,050d96aebafe62de05353d528f4bf05f6e763c7ab8cdf469921cfb9c765d79d5
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-029）——编译期 staging 与出包资产 staging 同源应用；玩家获得修复 = 重新出包
+    summary: 261111 丢失的 2 条 Abl 兼容别名按 261017 原样回补到 CSV/Abl.als 尾部——每键先核同下标主名两版一致（零漂移），只增别名不改主名/下标
+    evidence: specs/corpus-bugs.md §1 CB-029 行；语料锚 261017 CSV/Abl.als（从顺=10 等）与 261111 CSV/Abl.als（仅 34 键）；C# 锚 `ConstantData.cs:1834-1841`（读同名 .als）/ `:711-737`（putIfAbsent 合并）/ `:1841-1903`（行语义）
+  - id: CB-030
+    target: CSV/Item.als
+    root: game
+    patch: CB-030.patch
+    # 与 CB-023…CB-029 同族但成因不同：261111 把该下标的主名改成了简体/新字体写法（250 `催情薬` → 261111 主名 `催情药`），
+    # 却没把旧写法登记进同名 .als 别名 ⇒ 写旧写法的语料运行期抛「ITEM 中未定义关键字」。
+    # 定位方式：全语料扫 `<表名>:<关键字>` 引用 242438 处，逐条比「261111 现装表能否解析」与
+    # 「261017 老表能否解析」的差集，得到 `コマンド関連/COMF/異物混入.ERB` 三处 `ITEM:催情薬` 这类实报端点（261111 解析失败、261017 可解析）。
+    # 断言：该名在 261111 主名表与别名表都不存在；同下标 261111 主名存在且不同；261017 同下标就是原名。
+    bad-sha256: b611b321a363327a39233178f48b4efc1b08ee8144b3cd858a857dc68fa29a26
+    fixed-sha256: 21301f7428fb10041679a6a4ca6300b5df1dc57b5093ba05560e619edd66cf1d
+    skip-sha256: 35d27c2d0de43b2577dcb58d7704e7fc1312905d58e410a5c0b7cb404c2c6fdd,20d27b7532bd5212657bf7ce2cf3fe10a478d00b592d3a66a9f9714eb119e31c
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-030）——编译期 staging 与出包资产 staging 同源应用；玩家获得修复 = 重新出包
+    summary: 261111 改名（250 `催情薬` → 261111 主名 `催情药`）未留旧写法别名，按 261017 同下标原名回补 1 条别名到 CSV/ITEM.als 尾部，只增别名不改主名/下标
+    evidence: specs/corpus-bugs.md §1 CB-030 行；引用点 `コマンド関連/COMF/異物混入.ERB` 三处 `ITEM:催情薬`；C# 锚 `ConstantData.cs:1834-1841`（读同名 .als）/ `:711-737`（putIfAbsent 合并）/ `:1841-1903`（行语义）
+  - id: CB-031
+    target: CSV/Tequip.als
+    root: game
+    patch: CB-031.patch
+    # 与 CB-023…CB-029 同族但成因不同：261111 把该下标的主名改成了简体/新字体写法（13 `振動棒` → `振动棒`、14 `肛用振動棒` → `肛用振动棒`），
+    # 却没把旧写法登记进同名 .als 别名 ⇒ 写旧写法的语料运行期抛「TEQUIP 中未定义关键字」。
+    # 定位方式：全语料扫 `<表名>:<关键字>` 引用 242438 处，逐条比「261111 现装表能否解析」与
+    # 「261017 老表能否解析」的差集，得到 `個人口上/016 Remilia …/蕾米莉亚色情特化v1.3/M_KOJO_K16_5_事件系.ERB` 各三处 `TEQUIP:<旧名>` 这类实报端点（261111 解析失败、261017 可解析）。
+    # 断言：该名在 261111 主名表与别名表都不存在；同下标 261111 主名存在且不同；261017 同下标就是原名。
+    bad-sha256: 9d9e1b0b44559d925041ef579568a4d31084b2208fbeb4bcf174e693bcd348b6
+    fixed-sha256: 4919cc61e870e348fb180a322bf9f9b986f66cab48feb7064617d6886fa538df
+    skip-sha256: 31a1cf80f1a33d240ee8d772eeff6e88e3289dfe397273bd70289e89f84704fd,5744f4921d3588e90017ddb92c1aa12b72f08df85a24a1604a192ba54428856a
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-031）——编译期 staging 与出包资产 staging 同源应用；玩家获得修复 = 重新出包
+    summary: 261111 改名（13 `振動棒` → `振动棒`、14 `肛用振動棒` → `肛用振动棒`）未留旧写法别名，按 261017 同下标原名回补 2 条别名到 CSV/TEQUIP.als 尾部，只增别名不改主名/下标
+    evidence: specs/corpus-bugs.md §1 CB-031 行；引用点 `個人口上/016 Remilia …/蕾米莉亚色情特化v1.3/M_KOJO_K16_5_事件系.ERB` 各三处 `TEQUIP:<旧名>`；C# 锚 `ConstantData.cs:1834-1841`（读同名 .als）/ `:711-737`（putIfAbsent 合并）/ `:1841-1903`（行语义）
+  - id: CB-032
+    target: CSV/ex.als
+    root: game
+    patch: CB-032.patch
+    # 与 CB-023…CB-029 同族但成因不同：261111 把该下标的主名改成了简体/新字体写法（70 `処女喪失记号` → `处女丧失记号`），
+    # 却没把旧写法登记进同名 .als 别名 ⇒ 写旧写法的语料运行期抛「EX 中未定义关键字」。
+    # 定位方式：全语料扫 `<表名>:<关键字>` 引用 242438 处，逐条比「261111 现装表能否解析」与
+    # 「261017 老表能否解析」的差集，得到 同上 mod 两处 `EX:処女喪失记号` 这类实报端点（261111 解析失败、261017 可解析）。
+    # 断言：该名在 261111 主名表与别名表都不存在；同下标 261111 主名存在且不同；261017 同下标就是原名。
+    bad-sha256: 34650a99f1ed035dbc81fa420c549fc8b6338cafb78841e2b97faa08d3b10611
+    fixed-sha256: 3045a0c12f399475b6484d7dbc976f36aabefd49ef675711c8dab3708b0c586f
+    skip-sha256: 47cbf1019cdc3f5bfd6e4c38b06f11e11dd5348697ece33e811650969673a8d5,b70fa07f94104167e4d9e341b481a50947e5c4cbe71893b0a2a7a1611caa982b
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-032）——编译期 staging 与出包资产 staging 同源应用；玩家获得修复 = 重新出包
+    summary: 261111 改名（70 `処女喪失记号` → `处女丧失记号`）未留旧写法别名，按 261017 同下标原名回补 1 条别名到 CSV/EX.als 尾部，只增别名不改主名/下标
+    evidence: specs/corpus-bugs.md §1 CB-032 行；引用点 同上 mod 两处 `EX:処女喪失记号`；C# 锚 `ConstantData.cs:1834-1841`（读同名 .als）/ `:711-737`（putIfAbsent 合并）/ `:1841-1903`（行语义）
+  - id: CB-033
+    target: コマンド関連/COMF/日常系/COOKING_UI.ERB
+    patch: CB-033.patch
+    # 语料缺陷（官方 PC 同形）：@COOKING_UI 的 `ELSEIF ITEM:SELECT_ING <= 0`（本文件 :293）未守卫 SELECT_ING。
+    # SELECT_ING 为 -1 是作者既有且刻意的状态：调用方 `COMF413 料理を作る.ERB:65-68`「材料修整」段，当 SELECT_ING==0
+    # （材料 0 号 = ローター/跳蛋 特例）且菜谱号不在 351..360 时显式置 -1；本文件 :134 对同一变量已有 `SIF SELECT_ING >= 0`
+    # 守卫，唯 :293 漏加 ⇒ 料理界面选到可做菜谱（料理結果>=10）而尚未点选材料槽时读 ITEM:-1 越界抛 OoRVarArg
+    #（屏上「数组变量"ITEM"的第1参数(-1)超出数组范围」）。修法：按 :134 同款补 `SELECT_ING >= 0 &&` 守卫，
+    # SELECT_ING<0 时跳过本判据、按料理結果>=10 走下方 [9]制作；SELECT_ING>=0 路径行为零变化。只改一行 + 一行注记。
+    bad-sha256: 693bdd627edc2d472aa005b88c4099b8a39cfc526d11014608a9c2c54e5b9f68
+    fixed-sha256: 5a3d04a85efa4fd684ff6bf74855206fda7bde5d1c96c2faffc4e19880db200f
+    # 261017 退役根 ERB 子树已清空、无该文件 → 目标缺席跳过；4.980 canonical 根保持编译基准原始字节（②类 skip）
+    skip-sha256: 001654045c2ff029f6bdf3631cd7422e0436da8143e19d0423b2ee04d22a5e80
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-033）——编译期应用，玩家获得修复 = 重新出包
+    summary: 料理界面 @COOKING_UI 的 `ELSEIF ITEM:SELECT_ING <= 0` 补 `SELECT_ING >= 0 &&` 守卫（镜像同函数 :134 既有守卫），消除 SELECT_ING=-1 时 ITEM:-1 越界；只改一行 + 注记，SELECT_ING>=0 路径行为零变化
+    evidence: specs/corpus-bugs.md §1 CB-033 行；上报正文（0.2.47，315 起/86 机）栈 `COM413 行122 → COOKING_UI 行292(物理293)`；C# 锚 `VariableToken.cs:1326`（Int1DConstantToken.CheckElement：arguments[0]<0 即抛 OoRVarArg，原版同形）/ `:1371`（Str1DConstantToken 同形）

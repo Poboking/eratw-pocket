@@ -52,12 +52,18 @@ import java.security.MessageDigest
  * 选它的理由：基座 4.981 语料把本文件**整文件包进 `[SKIPSTART]…[SKIPEND]`**（文件头注释
  * 自述：与 日记.ERB 同名冲突，默认不生效）⇒ 里面的函数全部不在 base 侧车里——是三包
  * 唯一能以**加性补丁**合法过 PatchCompiler I6-② 同名闸的真源函数组；去包装动作是源文件
- * 头注释明示的启用法（删除首尾 [SKIPSTART]/[SKIPEND] 两行）。切片再按 base 侧车同名
- * 过滤剔除 5 个与 base 同名的函数组（4 个 DIARY 系 + MESSAGE_COM_K16_406；它们在 base
- * 有同名非事件函数，补丁定义它们会被 I6-② 拒），保留 **23 个真源函数**
- * （`DIARY_色情特化_K16_1..10` + 各 `_HAPPEN` + `_YY` 对 + MESSAGECHECK_COM_K16_406）。
+ * 头注释明示的启用法（删除首尾 [SKIPSTART]/[SKIPEND] 两行）。切片再按 base 侧车同名过滤，
+ * 把仍在 base 里的同名函数组剔掉（它们在 base 有同名非事件函数，加性形态会被 I6-② 拒）——
+ * **剔除个数随基座语料变**：261017 基座收 5 个（留 23），261111 基座一个都不收（留 28），
+ * 故本类断言只钉形状不变量（见 [assertSliceShape]），不钉个数。
  * 逐字节内容除去包装/剔除组外零改写；第三方文本不入库、不进测试常量（断言取运行期
  * 推导的首尾行/行数）。
+ *
+ * ## 判据 3-3 是另一条轴：整包 + 覆盖
+ *
+ * 3-1/3-2 走的是**加性切片**（不与基座撞名），永远碰不到「口上的本职＝改写基座」那一面。
+ * 3-3 因此单独拿整包都与基座撞名的 `风神少女v0.01` 走生产导入路，钉 R7-① 放开后的
+ * 覆盖装载（`overrideCount`、manifest 的 override-functions 段、`plan.hasOverrides`）。
  *
  * ## 环境门（三门，缺变量用例 Assume 跳过——不假绿的动态用例纪律）
  *
@@ -338,17 +344,19 @@ class KojoTranscodeChainEndToEndTest {
     fun `判据3-1_真源日记页函数全链_编译转码零基化生产装配_真VM执行`() {
         val face = faceOrSkip()
         val slice = diarySlice(face)
-        assertSliceShape(slice)
+        assertSliceShape(face, slice)
 
         val compiled = compileSlice(face, slice)
         assertTrue(
             "真源切片必须零函数级作废：${compiled.parseWarnings}",
             compiled.parseWarnings.none { it.contains("已跳过") },
         )
-        assertEquals("补丁函数表 = 23 条（一条不许静默丢）", 23, compiled.funcMetas.size)
+        assertEquals(
+            "补丁函数表 = 切片全集（一条不许静默丢）", slice.kept.size, compiled.funcMetas.size,
+        )
 
         val transcoded = transcodeSlice(face, compiled, PACKAGE)
-        assertTranscodedShape(slice, transcoded)
+        assertTranscodedShape(face, slice, transcoded)
 
         val root = gameRoot(face, "ktrans-chain")
         writeAssets(root, PACKAGE, transcoded)
@@ -375,17 +383,20 @@ class KojoTranscodeChainEndToEndTest {
     }
 
     /** 切片形状钉死（真源事实；变了说明基座语料或源包变了，先人工核再动断言）。 */
-    private fun assertSliceShape(slice: Slice) {
-        assertEquals(
-            "被剔组 = 与 base（日记.ERB / 指令消息面）同名的 5 组，其余 23 组保留",
-            listOf(
-                "DIARY_色情特化_K16_EXIST", "DIARY_色情特化_BEFORE_CHECK_K16",
-                "DIARY_色情特化_AFTER_CHECK_K16", "DIARY_色情特化_TEXT_K16",
-                "M_KOJO_色情特化_MESSAGE_COM_K16_406",
-            ),
-            slice.dropped,
+    private fun assertSliceShape(face: BaseFace, slice: Slice) {
+        // 换代漂移纪律（2026-11-17 重锚）：被剔/保留的**个数**随基座语料变 —— 261017 基座
+        // 收了那 5 个 DIARY 键（剔 5 留 23），261111 基座不再含它们（剔 0 留 28）。个数写死
+        // 就等于把探针冻在某一版语料上，换根本判红还静默 skip 到没人看见。这里只钉与语料
+        // 无关的两条形状不变量：分组判据 = 「键在不在基座函数表」，且切片必须真带上 K16_1 那一对。
+        assertTrue(
+            "被剔组必须个个都在基座函数表里，实得：${slice.dropped}",
+            slice.dropped.all { it in face.baseKeys },
         )
-        assertEquals("加性切片 = 23 个真源函数（22 页函数 + MESSAGECHECK_406）", 23, slice.kept.size)
+        assertTrue(
+            "保留组必须个个都不在基座函数表里（否则补丁同名撞 I6），实得：${slice.kept.take(3)}",
+            slice.kept.none { it in face.baseKeys },
+        )
+        assertTrue("切片必须非空（真源文件的 @ 头全被剔掉 = 探针失效）", slice.kept.isNotEmpty())
         assertTrue(
             "K16_1 与 K16_1_HAPPEN 必须在切片内",
             "DIARY_色情特化_K16_1" in slice.kept && "DIARY_色情特化_K16_1_HAPPEN" in slice.kept,
@@ -394,6 +405,7 @@ class KojoTranscodeChainEndToEndTest {
 
     /** 转码产物形状：零基线、函数集同序、无截断入口/导入表、私有 DIM 进 descriptor。 */
     private fun assertTranscodedShape(
+        face: BaseFace,
         slice: Slice,
         transcoded: PatchImportTranscoder.Transcoded,
     ) {
@@ -404,9 +416,16 @@ class KojoTranscodeChainEndToEndTest {
             slice.kept,
             transcoded.module.functions.map { it.key },
         )
+        // 换代漂移纪律（同 [assertSliceShape]）：保留组个数随基座变，切片里是否存在静态
+        // CALL 也随之变（261111 基座不再收那 5 个 DIARY 键 ⇒ 它们回到切片并带来对基座函数的
+        // 静态 CALL ⇒ 导入表非空）。因此只钉两条与语料无关的判据。
         assertTrue(
-            "切片无事件成员、无静态 CALL ⇒ 无截断入口、无导入表（动态名通道不产生导入）",
-            transcoded.droppedEventEntries.isEmpty() && transcoded.imports.isEmpty(),
+            "切片全是真源裸函数名 ⇒ 不含 9 个事件名 ⇒ 无合成入口截断面",
+            transcoded.droppedEventEntries.isEmpty(),
+        )
+        assertTrue(
+            "导入表只能是基座函数名（转码按 base 目录取名，查不到就该 fail-closed 抛）：${transcoded.imports}",
+            transcoded.imports.all { it in face.baseKeys },
         )
         assertTrue(
             "HAPPEN 组的 #DIM DYNAMIC 必须进 descriptor",
@@ -458,7 +477,10 @@ class KojoTranscodeChainEndToEndTest {
         val detail = requireNotNull((outcome as? ModImportOutcome.Imported)?.detail) {
             "生产导入必须成功：$outcome"
         }
-        assertEquals("生产导入的补丁函数数 = 切片全集", 23, detail.functionCount)
+        assertEquals(
+            "生产导入的补丁函数数 = 切片全集", slice.kept.size, detail.functionCount,
+        )
+        assertEquals("生产导入必须零覆盖（切片是加性过滤后的真源）", 0, detail.overrideCount)
         assertEquals("entry = 切片首函数（生产 firstFunctionNameOf 同口径）", slice.kept.first(), detail.entryFunction)
         assertTrue(
             "生产导入零函数级作废：${detail.parseWarnings}",
@@ -535,9 +557,107 @@ class KojoTranscodeChainEndToEndTest {
         }
     }
 
+    // ------------------------------------------------------------------
+    // 判据 3-3（R7-①）：真口上包**整包**过生产导入路 —— 撞名片段按覆盖装载，不再整包拒
+    // ------------------------------------------------------------------
+
+    /**
+     * 验收对象 = `整合内容` 下的**全部**真口上包，逐个走一遍生产导入路。
+     *
+     * 三包在闸面上是两种形态，必须同时钉住（缺一侧就是没验的墙）：
+     * - `风神少女v0.01` / `摩卡橙ver0.05` = **整包都与基座撞名**（基座 261111 已在
+     *   `口上・メッセージ関連/個人口上/…` 收了同一批函数；实测 506/506、761/761 唯一函数名
+     *   撞基座）。放开 I6-② 之前它们在 `PatchCompiler` 步骤 5 的第一个撞名函数上就整包判死，
+     *   是「PC 能用、本项目导不进」的最干净样本；现在必须整包 Imported 且把撞名片段
+     *   全量声明成覆盖（`overrideCount > 0` + manifest 的 override-functions 段 + `hasOverrides`）。
+     * - `蕾米莉亚色情特化v1.3` = **与基座零撞名**的加性整包（58 ERB / 13 MB，另由
+     *   `KojoPackageAcceptanceSmokeTest` 在 core-vm 侧编成 966 函数）。它必须照常导入成功，
+     *   用来钉「放开覆盖没有把加性路撞坏」。
+     *
+     * 第三方字节只读、不入库、不抄进测试常量；读数一律运行期推导。
+     */
+    /**
+     * 一个真包的整包导入 + 产物自证 + 装配非旁路：返回（包名, 导入读数, 装配 plan）。
+     * 抽出来是为了让判据 3-3 的循环体只剩「逐包跑一遍」这一件事。
+     */
+    private fun importWholePack(
+        face: BaseFace,
+        packDir: Path,
+        tag: String,
+    ): Triple<String, ImportedPatchDetail, ModChainRuntimePlan> {
+        val name = packDir.fileName.toString()
+        val picked = Files.list(packDir).use { stream ->
+            stream.filter { Files.isRegularFile(it) }
+                .filter {
+                    val n = it.fileName.toString().uppercase()
+                    n.endsWith(".ERB") || n.endsWith(".ERH")
+                }
+                .map { it.fileName.toString() to Files.readAllBytes(it) }
+                .toList()
+        }.map { PickedModFile(it.first, it.second) }
+        assertTrue("包 $name 内没有 .ERB/.ERH：$packDir", picked.isNotEmpty())
+
+        val root = gameRoot(face, "ktrans-33-$tag")
+        val controller = ModImportController(
+            modStore = ModStore(File(root, "mods")),
+            baseSource = { _ ->
+                BaseCompileContext(
+                    face.metadata,
+                    face.counts,
+                    fileSha256Hex(face.erbcDir.resolve("program.erbc")),
+                    File(face.gameDir.toFile(), "CSV"),
+                    // 生产同源：覆盖声明的指纹取 production 读的那份 program.meta 签名段。
+                    ModChainAssembly.signatureDirectoryOfFile(File(root, "erbc.v1/program.meta")),
+                )
+            },
+            gameRoot = root,
+        )
+        val outcome = controller.import(picked)
+        val detail = requireNotNull((outcome as? ModImportOutcome.Imported)?.detail) {
+            "真包整包必须导入成功（$name），实得：$outcome"
+        }
+
+        // 落盘产物自证：manifest 的 override-functions 段与导入读数逐项一致（不是内存里说说）。
+        val manifest = File(root, "mods/rt2/${detail.patchFileName.removeSuffix(".erbm")}.manifest")
+        assertTrue("manifest 必须随容器落盘：${manifest.absolutePath}", manifest.isFile)
+        val decoded = ManifestCodec.decode(Files.readAllBytes(manifest.toPath()))
+        assertEquals(
+            "descriptor 的覆盖声明数 = 导入读数（$name）",
+            detail.overrideCount,
+            decoded.overrideFunctions.size,
+        )
+        return Triple(name, detail, assembleChain(root, face))
+    }
+
+    @Test
+    fun `判据3-3_真包逐个整包导入_撞名片段按覆盖装载`() {
+        val f = faceOrSkip()
+        val packs = Files.list(f.kojoContent).use { stream ->
+            stream.filter { Files.isDirectory(it) }.map { it }.toList().sortedBy { it.fileName.toString() }
+        }
+        assertTrue("整合内容下必须有真包：${f.kojoContent}", packs.isNotEmpty())
+
+        var declaredAny = 0
+        for ((i, packDir) in packs.withIndex()) {
+            val (name, detail, plan) = importWholePack(f, packDir, "p$i")
+            assertEquals(
+                "hasOverrides 必须与覆盖声明数同真假（$name）",
+                detail.overrideCount > 0,
+                plan.hasOverrides,
+            )
+            declaredAny += detail.overrideCount
+            println(
+                "[kojo-override] $name：源 ${detail.sourceFileNames.size} / 函数 ${detail.functionCount} / " +
+                    "覆盖 ${detail.overrideCount} / 告警 ${detail.parseWarnings.size}",
+            )
+        }
+        assertTrue("撞名片段里至少有一个被声明成覆盖（否则本闸没吃到覆盖路）", declaredAny > 0)
+    }
+
     private companion object {
         /** 真源相对 `整合内容` 的入口文件（第三方字节只读，不入库）。 */
         const val DIARY_ERB = "蕾米莉亚色情特化v1.3/M_KOJO_K16_5_日记（简易版）.ERB"
+
 
         /** 判据 3-1/关态用的手工包名（kojo- 前缀 = 导入产物形状；容器+manifest 齐 ⇒ GC 不吃）。 */
         const val PACKAGE = "kojo-ktransdiary"

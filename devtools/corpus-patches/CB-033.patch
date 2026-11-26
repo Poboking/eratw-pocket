@@ -1,0 +1,12 @@
+--- a/コマンド関連/COMF/日常系/COOKING_UI.ERB
++++ b/コマンド関連/COMF/日常系/COOKING_UI.ERB
+@@ -290,7 +290,8 @@
+ 	ELSE
+ 		CALL COLORMESSAGE(@"　　不知为何无法制作…", C_ORANGE, 1)
+ 	ENDIF
+-ELSEIF ITEM:SELECT_ING <= 0
++;【CB-033】注记：SELECT_ING 可为 -1（COM413 料理を作る 的「材料修整」段，材料 0 号为转子特例时故意置 -1）。此处按本文件 :134 同款补 SELECT_ING>=0 守卫，避免 ITEM:-1 越界（原版 VariableToken.cs:1326 负下标即抛 OoRVarArg）；SELECT_ING<0 时跳过本判据、按料理結果>=10 走下方 [9]制作
++ELSEIF SELECT_ING >= 0 && ITEM:SELECT_ING <= 0
+ 	CALL COLORMESSAGE(@"　　材料不足…", C_ORANGE, 1)
+ ELSE
+ 	PRINTFORML [ 9]制作【%DISHNAME_TR()%】

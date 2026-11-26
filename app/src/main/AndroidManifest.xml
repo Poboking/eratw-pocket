@@ -194,7 +194,7 @@
              不引 androidx.core，FileProvider 不可用；分享面板只需要 query + openFile 两面。 -->
         <provider
             android:name=".ReportFileProvider"
-            android:authorities="com.eratw.port.android.reportfiles"
+            android:authorities="${applicationId}.reportfiles"
             android:exported="false"
             android:grantUriPermissions="true" />
 
@@ -207,7 +207,7 @@
         -->
         <provider
             android:name=".UpdateFileProvider"
-            android:authorities="com.eratw.port.android.updatefiles"
+            android:authorities="${applicationId}.updatefiles"
             android:exported="false"
             android:grantUriPermissions="true" />
 

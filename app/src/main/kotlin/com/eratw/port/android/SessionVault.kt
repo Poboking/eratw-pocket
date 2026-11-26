@@ -24,6 +24,10 @@ import android.util.Log
  * * [takeoverIfAlive] —— 新实例 `onCreate` 装配处（UI 线程）：槽里是活会话就取走并清槽
  *   （接回实例成为新主人）；槽里是死会话（VM 线程已退：失败终局 / QUIT 收口）就地
  *   [GameHost.close] 后按无会话处理 —— 失败屏不接回，重试语义归重开（边界，见类头尾）。
+ * * [install]（第二次调用）—— `onDestroy` 的非 finishing 分支在冻结后**重新入槽**：
+ *   takeover 清过槽，接回壳自己再被系统销毁时必须把会话交还进程，否则下一实例问槽扑空、
+ *   冷启回标题，挂起的存档检查点也永远兑现不了（2026-11-17 玩家 bug）。归属判据用
+ *   [GameHost.isBoundToView]（视图仍是本壳才动），不用槽归属——槽在壳持有期间本就为空。
  * * [discard] —— [GameHost.close] 尾部**认主**调用：只有槽里正是这只宿主才清槽
  *   （`restartGame` 拆旧会话 / 玩家退出都经 close，一处收口不漏）；旧壳的 close 不会把
  *   新壳刚接回的槽撅空（口径同 `stallSceneOwner` 认主摘除）。

@@ -196,7 +196,7 @@ class LegacyPatchMigrationTest {
     fun `留档源编译失败——不迁移保留旧档且本次导入照常成功并点名原因`() {
         val tmp = tempDir()
         val mods = modsDir(tmp)
-        // 老用户盘：一个坏留档源（定义 base 同名函数 A_ONE ⇒ I6 编译拒绝）+ 并集旧档。
+        // 老用户盘：一个坏留档源（函数头之前的全局 #DIM ⇒ 常量闸 I6 编译硬拒，改判后仍真失败）+ 并集旧档。
         File(mods, "K16_BAD.ERB").writeBytes(BAD_SOURCE.toByteArray(Charsets.UTF_8))
         val union = File(mods, ModImportController.UNION_PATCH_NAME).apply { writeBytes(byteArrayOf(0)) }
 
@@ -212,8 +212,8 @@ class LegacyPatchMigrationTest {
             detail.parseWarnings.any { it.contains("存量 .patch 未迁移") },
         )
         assertTrue(
-            "告警带出编译失败原因（撞名 A_ONE）：${detail.parseWarnings}",
-            detail.parseWarnings.any { it.contains("A_ONE") },
+            "告警带出编译失败判据与定位（全局 #DIM ⇒ GLOBAL_COUNT + 文件:行号）：${detail.parseWarnings}",
+            detail.parseWarnings.any { it.contains("GLOBAL_COUNT") && it.contains("K16_BAD.ERB") },
         )
     }
 
@@ -275,12 +275,13 @@ class LegacyPatchMigrationTest {
     }
 
     // ------------------------------------------------------------------
-    // 判据 5：关态 —— 总闸缺省仍 false，迁移不触碰总闸、产物在关态不被消费
+    // 判据 5：关态零消费 —— 总闸缺省已按主人裁定翻 true，但显式关态路径仍不消费产物；
+    // 迁移不依赖开关，关态导入照样产包。
     // ------------------------------------------------------------------
 
     @Test
-    fun `关态零变化——总闸缺省 false 未改且迁移不依赖开关仍产包`() {
-        assertFalse("Mod 运行总闸缺省仍 false", UiPrefs.DEFAULT_MOD_RUNTIME)
+    fun `关态零消费——显式关态仍不装载且迁移不依赖开关仍产包`() {
+        assertTrue("Mod 运行总闸缺省已按裁定翻 true", UiPrefs.DEFAULT_MOD_RUNTIME)
         val tmp = tempDir()
         val mods = modsDir(tmp)
         File(mods, "K16_A.ERB").writeBytes(SOURCE_A.toByteArray(Charsets.UTF_8))
@@ -305,8 +306,13 @@ class LegacyPatchMigrationTest {
         private const val SOURCE_B = "@B_B\nRETURN 0\n"
         private const val SOURCE_C = "@B_C\nRETURN 0\n"
 
-        /** 撞 base 同名函数 A_ONE ⇒ I6 编译拒绝（与 ModImportControllerTest「I6 三」同款夹具）。 */
-        private const val BAD_SOURCE = "@A_ONE\nRETURN 0\n"
+        /**
+         * 函数头之前的全局 #DIM ⇒ 常量闸硬拒（core-vm/src/main/kotlin/com/eratw/port/core/compile/
+         * PatchCompiler.kt:1033-1039 抛 PatchCompileException；不变量 I6 / R7 铁律 3）。
+         * d6da78151 只把「撞 base 同名函数」改成覆盖装载 + 告警，这一面在改判前后都真编译失败
+         * （同闸先例 = ModImportControllerTest「I6 二——全局 DIM 补丁被编译期拒绝且文案含文件与行号」）。
+         */
+        private const val BAD_SOURCE = "#DIM GLOBAL_COUNT = 5\n@B_BAD\nRETURN 0\n"
     }
 }
 

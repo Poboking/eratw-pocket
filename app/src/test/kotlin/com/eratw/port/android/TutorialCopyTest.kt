@@ -110,6 +110,44 @@ class TutorialCopyTest {
         assertTrue("中文资源页没提百度贴吧", zh.resourcesBody.contains("百度贴吧"))
     }
 
+    /**
+     * MODDX4-D3：互通宣称句必须带 mod 例外限定，三语都在场（未装补丁 = 互通不受影响；
+     * 带补丁的存档附 `.rt2` 扩展数据、PC 读不到扩展部分；PC 玩过同一槽传回 = 警告扩展状态
+     * 可能滞后或丢失，不是静默应用）。反向证明：从三语任一档撤掉例外句，这条就红——
+     * 防「修正了形式没修正语义」。规约锚 = specs 下的 save-format.md 第 11 节 +
+     * era-arch-v61u.md:223-231 兼容性矩阵（「100% 互通」表述已作废）。
+     */
+    @Test
+    fun `互通宣称必须带 mod 例外限定`() {
+        copies.forEach { copy ->
+            assertTrue(
+                "${copy.lang} 存档页没点名补丁（MOD）例外",
+                copy.savesBody.contains("MOD"),
+            )
+            assertTrue(
+                "${copy.lang} 存档页没说 `.rt2` 扩展数据随行",
+                copy.savesBody.contains("`.rt2`"),
+            )
+            assertTrue(
+                "${copy.lang} 存档页没说 `.sav` 本体仍可读",
+                copy.savesBody.contains("`.sav`"),
+            )
+        }
+        val (zh, en, ja) = copies
+        // 未装补丁 = 互通不受影响（兼容性矩阵第 2 行「原版游戏状态互通」）。
+        assertTrue("中文没说未装补丁互通不受影响", zh.savesBody.contains("互通完全不受影响"))
+        assertTrue("英文没说未装补丁互通不受影响", en.savesBody.contains("completely unaffected"))
+        assertTrue("日文没说未装补丁互通不受影响", ja.savesBody.contains("まったく影響を受けません"))
+        // PC 读不到扩展部分（矩阵第 3-4 行：扩展数据仅本引擎识别，完整扩展存档 PC 不保证可继续）。
+        assertTrue("中文没说 PC 读不到扩展数据", zh.savesBody.contains("电脑版读不到"))
+        assertTrue("英文没说 PC 读不到扩展数据", en.savesBody.contains("cannot read"))
+        assertTrue("日文没说 PC 读不到扩展数据", ja.savesBody.contains("拡張データを読めず"))
+        // PC 玩过传回 = 上警告（扩展状态可能滞后或丢失），不是静默应用（矩阵第 5 行）。
+        assertTrue("中文没说传回警告", zh.savesBody.contains("扩展状态可能滞后或丢失"))
+        assertTrue("英文没说传回警告", en.savesBody.contains("stale or lost"))
+        assertTrue("日文没说传回警告", ja.savesBody.contains("遅れたり失われたり"))
+    }
+
     /** 正文的行内标记是渲染契约：`**强调**` / `*高亮*` / `` `路径` `` 必须成对，否则渲染端只能降级。 */
     @Test
     fun `行内标记成对且不空`() {

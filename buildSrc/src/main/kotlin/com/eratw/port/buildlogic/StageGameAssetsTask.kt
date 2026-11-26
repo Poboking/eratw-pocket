@@ -53,6 +53,11 @@ import org.gradle.api.tasks.TaskAction
  * `tools/apkpack/inspect_apk.py` 读它并与真实 zip 逐类对账 —— APK 自此**自描述**，
  * 核验不必猜「这个包本该多大」。
  *
+ * 预置 qol_data.db（`-PeratwSeedQolDb`，「跳过首次建图」档）：语料落盘后把出包期建好的库
+ * 整份覆盖进 `plugins/qol_data.db`（先 delete 断开指向只读语料的硬链接再写），并在
+ * `package.report` 留下 `seed-qol-db <sha256> <bytes>` / `seed-qol-db-source <绝对路径>`。
+ * 不给该开关 ⇒ staging 产物与引入本功能前逐字节相同；第三方语料/只随 erbc 形态忽略并 warn。
+ *
  * 输入指纹：全走注解（[InputDirectory]/[InputFile]/[Input]/[OutputDirectory]），与旧
  * `inputs.dir/file/property` 逐条同义；属名从位置序号改成属性名 —— 增量键改名会让改动后的
  * **首次**构建重跑一次 staging，产物不变。
@@ -140,6 +145,24 @@ abstract class StageGameAssetsTask : DefaultTask() {
     abstract val foreignCorpus: Property<Boolean>
 
     /**
+     * 预置 qol_data.db 的绝对路径（`-PeratwSeedQolDb`；「跳过首次建图」出包档）。
+     *
+     * 出包期由 `devtools/gen_qol_seeddb.py` 把语料的图数据算好写成一个已建表的 SQLite 文件，
+     * 这里把它**字节**叠进 staging 的 `plugins/qol_data.db`，玩家首装就拿到建好的库，
+     * 不必在真机上跑一遍 36418 行建图 + VACUUM。缺省不给 ⇒ 一个字节都不动 staging
+     * （与引入本开关前逐字节相同）。
+     *
+     * 覆盖必须「先 delete 再 copy」：staging 的 `plugins/` 是语料的硬链接农场，
+     * 那里的 `qol_data.db` 可能是指向共享根语料的链接，直接写会改坏只读语料（AGENTS 铁律）。
+     *
+     * 声明为 [InputFile]：seed 内容变了必须重跑 staging（不许拿旧库冒充新库）；
+     * 文件是否存在/非空在配置期与执行期各挡一次（提示生成器）。
+     */
+    @get:Optional
+    @get:InputFile
+    abstract val seedQolDb: RegularFileProperty
+
+    /**
      * 引擎档印章源文件（`-PeratwEngineStampFile`；ENGC-6 构建期通道，CONTRACT §8.0.4）。
      *
      * 非空 ⇒ 执行期把该文件**字节**写进 staging 根 `engine-profile.json`
@@ -200,6 +223,8 @@ abstract class StageGameAssetsTask : DefaultTask() {
         val apkOverheadAllowance = apkOverheadAllowance.get()
         val stagedSuffixes = noCompressSuffixes.get()
         val repoRoot = repoRoot.get().asFile
+        val foreignCorpusEnabled = foreignCorpus.getOrElse(false)
+        val seedQolDbFile = seedQolDb.orNull?.asFile
 
         // 兜底目录（erbcc 的默认输出位）里的产物是「上一次谁编的」：本任务只读目录、不触发编译，
         // 而 `program.meta` 的 program-sha256 只能证明 erbc/meta 互相配对，证明不了它出自当前源码。
@@ -430,7 +455,7 @@ abstract class StageGameAssetsTask : DefaultTask() {
         // 走「删链接 + 写字节」而不是 link 后修改。
         val patchesDir = corpusPatchesDir.orNull?.asFile
         val gameRootPatches = if (gameRoot != null && patchesDir != null) {
-            planGameRootPatches(gameRoot, patchesDir, logger, foreignCorpus.getOrElse(false))
+            planGameRootPatches(gameRoot, patchesDir, logger, foreignCorpusEnabled)
         } else {
             emptyMap()
         }
@@ -584,6 +609,46 @@ abstract class StageGameAssetsTask : DefaultTask() {
             )
         }
 
+        // --- 2c. 预置 qol_data.db（「跳过首次建图」包）：只覆盖 staging 的 plugins/ -------
+        // 位置在语料四类目录 + ERD 表之后、印章之前：先让语料链接农场落完，再整份换成
+        // 出包期建好的库，避免被差量同步/剪枝回写。第三方语料自带自己的图 ⇒ 忽略；
+        // 只随 erbc 形态没有 staging 语料 ⇒ 也忽略（两种情况都只 warn，不挡出包）。
+        val seedOverlay = when {
+            seedQolDbFile == null -> null
+            gameRoot == null -> {
+                logger.warn(
+                    "stageGameAssets: -PeratwSeedQolDb 已给但本次无游戏根（只随 erbc 形态）⇒ 忽略预置 qol_data.db",
+                )
+                null
+            }
+            foreignCorpusEnabled -> {
+                logger.warn(
+                    "stageGameAssets: -PeratwForeignCorpus ⇒ 忽略 -PeratwSeedQolDb" +
+                        "（第三方语料自带自己的图，预置库不适用）",
+                )
+                null
+            }
+            else -> applySeedQolDbOverlay(outRoot, seedQolDbFile)
+        }
+        if (seedOverlay != null) {
+            // 报告口径与语料链接农场同一本账：目标原本不存在 ⇒ entries-plugins +1；
+            // 0 B 占位被替换 ⇒ 字节只加 seed 长度（replacedBytes=0）。
+            val (baseEntries, baseBytes) = stagedDirs["plugins"] ?: (0 to 0L)
+            val entries = baseEntries + if (seedOverlay.replacedExisting) 0 else 1
+            val bytes = baseBytes - seedOverlay.replacedBytes + seedOverlay.bytes
+            stagedDirs["plugins"] = entries to bytes
+            report["entries-plugins"] = entries.toString()
+            report["bytes-plugins"] = bytes.toString()
+            report["seed-qol-db"] = "${seedOverlay.sha256} ${seedOverlay.bytes}"
+            report["seed-qol-db-source"] = seedOverlay.sourcePath
+            // 这份是整份拷贝（不是链接）：与 linked/copied 的「当前形态数」口径一致。
+            copied++
+            logger.lifecycle(
+                "stageGameAssets: 预置 qol_data.db 覆盖 plugins/（${b(seedOverlay.bytes)} B，" +
+                    "sha256 ${seedOverlay.sha256}，替换旧目标 ${b(seedOverlay.replacedBytes)} B）",
+            )
+        }
+
         // --- 2d. 引擎档印章（ENGC-6 构建期通道）：字节落 staging 根 -------------------
         // 属性有值 ⇒ 校验后逐字节写印章；缺省 ⇒ 清掉残留旧印章
         // （属性从有到无的场景，保证「无 stampFile ⇒ APK 无印章」恒成立）。
@@ -674,6 +739,11 @@ abstract class StageGameAssetsTask : DefaultTask() {
                 if (!dir.isDirectory || dir.walkTopDown().none { it.isFile }) missing += "$name/"
             }
             if (!File(outRoot, "emuera.config").isFile) missing += "emuera.config"
+            // 正式包缺预置库 = 玩家首启回落到真机建图（36418 行 INSERT + VACUUM，秒级卡顿）；
+            // 第三方语料自带自己的图，不做这条要求。
+            if (!foreignCorpusEnabled && seedQolDbFile == null) {
+                missing += "预置 qol_data.db（-PeratwSeedQolDb=<绝对路径>；先跑 devtools/gen_qol_seeddb.py 生成）"
+            }
             if (missing.isNotEmpty()) {
                 throw GradleException(
                     "随包形态不完整（-PeratwRequireComplete）：缺 ${missing.joinToString("、")}" +
@@ -944,6 +1014,60 @@ internal fun pruneStaged(dir: File, expected: Set<String>) {
         val rel = f.toRelativeString(dir).replace('\\', '/')
         if (rel !in expected) f.delete()
     }
+}
+
+/** 预置 qol_data.db 叠加结果（package.report 的 `seed-qol-db` 行与 plugins 计数共用）。 */
+internal data class SeedOverlay(
+    /** 落盘后目标的 sha256（出包自证锚点；按写入字节算，不读第二遍）。 */
+    val sha256: String,
+    /** 写入字节数（= seed 文件长度）。 */
+    val bytes: Long,
+    /** 被替换掉的旧目标字节数；目标原本不存在时为 0。 */
+    val replacedBytes: Long,
+    /** 目标原本是否存在（决定 entries-plugins 要不要 +1）。 */
+    val replacedExisting: Boolean,
+    /** seed 的绝对路径（`package.report` 的 `seed-qol-db-source` 行）。 */
+    val sourcePath: String,
+)
+
+/**
+ * 把预置 qol_data.db 覆盖进 `outRoot/plugins/qol_data.db`，返回自证读数。
+ *
+ * **必须先 delete 再 copy**：staging 的 `plugins/` 是语料链接农场，那个 `qol_data.db`
+ * 可能是指向共享根语料的硬链接（语料只读，AGENTS 第 1 节），直接写会改坏语料。
+ * 删掉链接只是摘掉目录项、不动语料字节；随后的写入落在一个新 inode 上。
+ *
+ * seed 必须是已存在的非空文件：空文件落进 APK 等于「预置了空库」，首启照样建图，
+ * 却在报告里留下一条看起来成功的 `seed-qol-db` —— 宁可构建期报错。
+ *
+ * @throws GradleException seed 缺失/为空（提示 `devtools/gen_qol_seeddb.py`）
+ */
+internal fun applySeedQolDbOverlay(outRoot: File, seed: File): SeedOverlay {
+    if (!seed.isFile) {
+        throw GradleException("预置 qol_data.db 不存在：$seed；先跑 devtools/gen_qol_seeddb.py 生成")
+    }
+    val bytes = seed.length()
+    if (bytes == 0L) {
+        throw GradleException("预置 qol_data.db 是空文件：$seed；先跑 devtools/gen_qol_seeddb.py 生成")
+    }
+    val target = File(outRoot, "plugins/qol_data.db")
+    val replacedExisting = target.isFile
+    val replacedBytes = if (replacedExisting) target.length() else 0L
+    if (target.exists()) target.delete()
+    target.parentFile?.mkdirs()
+    val digest = MessageDigest.getInstance("SHA-256")
+    RandomAccessFile(seed, "r").use { input ->
+        FileOutputStream(target).use { output ->
+            val buffer = ByteArray(1 shl 20)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+                output.write(buffer, 0, read)
+            }
+        }
+    }
+    return SeedOverlay(digest.digest().hexLower(), bytes, replacedBytes, replacedExisting, seed.absolutePath)
 }
 
 /**

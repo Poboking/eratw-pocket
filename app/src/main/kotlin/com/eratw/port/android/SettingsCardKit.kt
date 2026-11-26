@@ -1,8 +1,9 @@
 package com.eratw.port.android
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,12 +12,12 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -25,19 +26,25 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.eratw.port.android.ui.EratwInk
+import com.eratw.port.android.ui.design.ShellCaption
+import com.eratw.port.android.ui.design.ShellPress
+import com.eratw.port.android.ui.design.ShellSectionTitle
+import com.eratw.port.android.ui.design.ShellShape
+import com.eratw.port.android.ui.design.ShellSpace
+import com.eratw.port.android.ui.design.ShellSurfaceCard
+import com.eratw.port.android.ui.design.ShellTag
+import com.eratw.port.android.ui.design.ShellType
 
 /**
  * 设置页的**卡片外壳套件**（2026-11-11 从 SettingsActivity 抽出）：分区配色、
@@ -85,51 +92,17 @@ internal val LocalZoneAccent = compositionLocalOf { UiColors.ZonePort }
 
 @Composable
 internal fun PrefCaption(text: String) {
-    Text(
-        text = text,
-        color = UiColors.TextDim,
-        fontSize = 12.sp,
-        modifier = Modifier.padding(top = 4.dp, bottom = 2.dp),
-    )
+    ShellCaption(text)
 }
 
 @Composable
 internal fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
-    val accent = LocalZoneAccent.current
-    Box(modifier = Modifier.fillMaxWidth()) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp),
-            colors = CardDefaults.cardColors(containerColor = UiColors.Card),
-            border = BorderStroke(1.dp, UiColors.Border),
-        ) {
-            Column(
-                // 起点 15dp：让出 3dp 色带 + 与旧版一致的 12dp 正文内距。
-                modifier = Modifier.fillMaxWidth().padding(start = 15.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
-                content = content,
-            )
-        }
-        Canvas(modifier = Modifier.matchParentSize()) {
-            val width = 3.dp.toPx()
-            val radius = 12.dp.toPx()
-            val path = Path().apply {
-                addRoundRect(
-                    RoundRect(0f, 0f, width, size.height, radius, radius),
-                )
-            }
-            drawPath(path, accent.copy(alpha = 0.75f))
-        }
-    }
+    ShellSurfaceCard(accent = LocalZoneAccent.current, content = content)
 }
 
 @Composable
 internal fun SectionTitle(text: String) {
-    Text(
-        text = text,
-        color = LocalZoneAccent.current,
-        fontSize = 15.sp,
-        modifier = Modifier.padding(bottom = 4.dp),
-    )
+    ShellSectionTitle(text = text, accent = LocalZoneAccent.current)
 }
 
 /**
@@ -170,7 +143,7 @@ internal fun CountBadge(text: String) {
     Text(
         text = text,
         color = UiColors.TextMuted,
-        fontSize = 11.sp,
+        style = ShellType.Label,
         modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
     )
 }
@@ -178,6 +151,9 @@ internal fun CountBadge(text: String) {
 /**
  * 行内文字动作：比 Material `TextButton` 少掉 48dp 最小触控高度，用于卡片标题右侧
  * 或紧凑列表尾部。默认使用次级文字色，危险操作由调用侧单独点色。
+ *
+ * 关掉系统涟漪、改用 [ShellPress] 的按下叠色：涟漪是圆形水波，在像素风卡片上会盖掉
+ * 字；叠色只在字这一小块上压暗一档，点中了照样看得见。禁用态靠字色降级（不叠色）。
  */
 @Composable
 internal fun InlineAction(
@@ -187,13 +163,20 @@ internal fun InlineAction(
     color: Color = UiColors.TextDim,
     enabled: Boolean = true,
 ) {
+    val pressSource = remember { MutableInteractionSource() }
     Text(
         text = text,
         color = if (enabled) color else UiColors.TextMuted,
-        fontSize = 12.sp,
+        style = ShellType.Caption,
         modifier = modifier
-            .clip(RoundedCornerShape(6.dp))
-            .clickable(enabled = enabled, onClick = onClick)
+            .clip(ShellShape.Chip)
+            .background(if (enabled) ShellPress.tint(pressSource, color) else Color.Transparent)
+            .clickable(
+                enabled = enabled,
+                interactionSource = pressSource,
+                indication = null,
+                onClick = onClick,
+            )
             .padding(horizontal = 7.dp, vertical = 4.dp),
     )
 }
@@ -220,12 +203,18 @@ internal fun SettingChip(
 ) {
     Surface(
         modifier = modifier.widthIn(max = 260.dp),
-        shape = RoundedCornerShape(8.dp),
+        shape = ShellShape.Inset,
         color = UiColors.CardAlt,
     ) {
+        val pressSource = remember { MutableInteractionSource() }
         Row(
             modifier = Modifier
-                .clickable(onClick = onClick)
+                .background(ShellPress.tint(pressSource, UiColors.Text))
+                .clickable(
+                    interactionSource = pressSource,
+                    indication = null,
+                    onClick = onClick,
+                )
                 .padding(horizontal = 8.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp),
@@ -234,13 +223,13 @@ internal fun SettingChip(
                 Text(
                     text = decoration.leading,
                     color = UiColors.TextMuted,
-                    fontSize = 12.sp,
+                    style = ShellType.Caption,
                 )
             }
             Text(
                 text = label,
                 color = UiColors.Text,
-                fontSize = 12.sp,
+                style = ShellType.Caption,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.widthIn(max = 180.dp),
@@ -249,7 +238,7 @@ internal fun SettingChip(
                 Text(
                     text = decoration.detail,
                     color = UiColors.TextMuted,
-                    fontSize = 10.sp,
+                    style = ShellType.Overline,
                     maxLines = 1,
                 )
             }
@@ -257,7 +246,7 @@ internal fun SettingChip(
                 Text(
                     text = decoration.trailing,
                     color = UiColors.TextMuted,
-                    fontSize = 12.sp,
+                    style = ShellType.Caption,
                 )
             }
         }
@@ -310,16 +299,15 @@ internal fun <T> CollapsibleChipFlow(
 internal fun EmptyHint(text: String, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier.fillMaxWidth().padding(top = 4.dp),
-        shape = RoundedCornerShape(8.dp),
+        shape = ShellShape.Inset,
         color = UiColors.CardAlt,
         border = BorderStroke(1.dp, UiColors.Border),
     ) {
         Text(
             text = text,
             color = UiColors.TextMuted,
-            fontSize = 11.sp,
-            lineHeight = 16.sp,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            style = ShellType.Label,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
         )
     }
 }
@@ -336,19 +324,35 @@ internal fun SwitchRow(
     hint: String?,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    tag: String? = null,
 ) {
+    val pressSource = remember { MutableInteractionSource() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(6.dp))
-            .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
+            .heightIn(min = ShellSpace.RowMinHeight)
+            .clip(ShellShape.Chip)
+            .background(ShellPress.tint(pressSource, UiColors.Text))
+            .toggleable(
+                value = checked,
+                interactionSource = pressSource,
+                indication = null,
+                role = Role.Switch,
+                onValueChange = onCheckedChange,
+            )
             .padding(horizontal = 2.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-            Text(title, color = UiColors.Text, fontSize = 14.sp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(title, color = UiColors.Text, style = ShellType.Body)
+                if (tag != null) {
+                    Spacer(modifier = Modifier.width(6.dp))
+                    ShellTag(text = tag)
+                }
+            }
             if (hint != null) {
-                Text(hint, color = UiColors.TextMuted, fontSize = 11.sp)
+                Text(hint, color = UiColors.TextMuted, style = ShellType.Label)
             }
         }
         Switch(

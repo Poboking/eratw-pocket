@@ -109,6 +109,9 @@ def build_apk(
     break_manifest_sha: bool = False,
     extra_file: str | None = None,
     legacy: bool = False,
+    seed: bytes | None = None,
+    seed_report_override: str | None = None,
+    seed_zip_deflate: bool = False,
 ) -> Path:
     container = bytes(range(256)) * 40                       # 10 KiB 整容器
     meta = b'format-version 1\nprogram-sha256 "' + sha(container).encode() + b'"\nend\n'
@@ -155,6 +158,9 @@ def build_apk(
         entries.append((ASSET + "program.erbc", container))
     if extra_file:
         entries.append((ASSET + extra_file, b"stray"))
+    if seed is not None:
+        # 预置 qol_data.db（跳过首次建图）：staging 期整份覆盖 plugins/qol_data.db
+        entries.append((inspect_apk.SEED_DB_ENTRY, seed))
 
     # package.report 的随包口径：staged_scope = erbc.v1/*（除 report）+ CSV/resources/sound/plugins + emuera.config
     in_scope = [
@@ -162,7 +168,12 @@ def build_apk(
         if n != inspect_apk.REPORT_ENTRY and inspect_apk.staged_scope(n)
     ]
     staged_bytes = sum(len(d) for _, d in in_scope)
-    report = "\n".join([
+    seed_line = ""
+    if seed is not None:
+        seed_line = f"{sha(seed)} {len(seed)}"
+    if seed_report_override is not None:
+        seed_line = seed_report_override
+    report_lines = [
         "schema eratw-package-report",
         "version 1",
         "program-mode stored",
@@ -179,18 +190,26 @@ def build_apk(
         f"apk-ceiling-bytes {staged_bytes + 1024 * 1024}",
         "game-root /tmp/game",
         "erbc-source /tmp/erbc",
-    ]) + "\n"
+    ]
+    if seed_line:
+        # 与 buildSrc StageGameAssetsTask 同字面：`seed-qol-db <sha256> <bytes>` + 来源路径列
+        report_lines.append(f"seed-qol-db {seed_line}")
+        report_lines.append("seed-qol-db-source /tmp/seeddb/qol_data.db")
+    report = "\n".join(report_lines) + "\n"
     entries.append((ASSET + "package.report", report.encode()))
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as zf:
         for name, data in entries:
-            zf.writestr(name, data)
+            if seed_zip_deflate and name == inspect_apk.SEED_DB_ENTRY:
+                zf.writestr(name, data, compress_type=zipfile.ZIP_DEFLATED)
+            else:
+                zf.writestr(name, data)
     return path
 
 
-def run(apk: Path, require_bundled: bool = False):
-    return inspect_apk.check(apk, False, False, require_bundled, 1000)
+def run(apk: Path, require_bundled: bool = False, strict_seed: bool = False):
+    return inspect_apk.check(apk, False, False, require_bundled, 1000, strict_seed)
 
 
 def main() -> int:
@@ -200,10 +219,15 @@ def main() -> int:
         pass
     failures: list[str] = []
 
-    def expect(name: str, rep, *, ok: bool, needle: str = "") -> None:
+    def expect(name: str, rep, *, ok: bool, needle: str = "",
+               warn_needle: str = "", like: str = "") -> None:
         passed = (not rep.fails) if ok else bool(rep.fails)
         if passed and needle:
             passed = any(needle in f for f in rep.fails)
+        if passed and warn_needle:
+            passed = any(warn_needle in w for w in rep.warns)
+        if passed and like:
+            passed = any(like in line for line in rep.lines)
         print(f"{'PASS' if passed else 'FAIL'}  {name}")
         if not passed:
             failures.append(name)
@@ -242,6 +266,42 @@ def main() -> int:
             "红：旧格式清单在 --require-bundled 下不可对账",
             run(build_apk(root / "legacy.apk", sharded=False, legacy=True), require_bundled=True),
             ok=False, needle="旧格式",
+        )
+
+        # 预置 qol_data.db（跳过首次建图）：带 / 不带 / 失配三态
+        seed_db = b"SQLite format 3\x00" + bytes(range(256)) * 32
+        expect(
+            "绿：预置库存且 package.report 自证一致（STORED + 字节数 + SHA）",
+            run(build_apk(root / "seed.apk", sharded=False, seed=seed_db)),
+            ok=True, like="与 package.report 一致",
+        )
+        expect(
+            "告警：旧包没有 seed-qol-db 行 ⇒ 只 WARN 不判红",
+            run(build_apk(root / "noseed.apk", sharded=False)),
+            ok=True, warn_needle="没有 seed-qol-db",
+        )
+        expect(
+            "红：package.report 的 seed-qol-db sha 与条目不符",
+            run(build_apk(root / "badseedsha.apk", sharded=False, seed=seed_db,
+                          seed_report_override=f"{'0' * 64} {len(seed_db)}")),
+            ok=False, needle="SHA-256",
+        )
+        expect(
+            "红：预置库条目被 DEFLATE（必须 STORED）",
+            run(build_apk(root / "deflateseed.apk", sharded=False, seed=seed_db,
+                          seed_zip_deflate=True)),
+            ok=False, needle="STORED",
+        )
+        expect(
+            "红：--strict-seed 下没有 seed-qol-db 行",
+            run(build_apk(root / "strictnoseed.apk", sharded=False), strict_seed=True),
+            ok=False, needle="--strict-seed",
+        )
+        expect(
+            "红：report 声明了预置库但包里没有该条目",
+            run(build_apk(root / "missseedentry.apk", sharded=False,
+                          seed_report_override=f"{sha(seed_db)} {len(seed_db)}")),
+            ok=False, needle="没有 assets/plugins/qol_data.db",
         )
 
     print()

@@ -282,7 +282,7 @@ class UiFaultTest {
 
     /**
      * 玩家在死循环告警框里按「是」：原版抛的就是一条普通 `CodeEE`
-     * （skia `Process.cs:482-484` / 官方 reference `Process.cs:505-507`，方法体 `:493-512`），
+     * （skia `Process.cs:506-508` / 官方 reference `Process.cs:505-507`，方法体 `:493-512`），
      * 由 DoScript 顶层 catch 打屏后正常返回（官方 `Process.cs:462-478` → `:595-661`），
      * 会话留着、能回标题。0.2.42+18 / HONOR LGN-NX1 的报告原文是「报告类型：启动失败」+
      * 类型 `StepLimitExceeded` + 信息「可能进入了无限循环因此选择强制终止」+
@@ -376,51 +376,139 @@ class UiFaultTest {
     }
 
     // ------------------------------------------------------------------
-    // 「回到标题」那条复活线程的关闭闸（2026-11-05 lane errterminal，G1）
+    // 「回到标题」那条复活线程的关闭闸与分型（G1 关闭闸 → C4 分型接线）
     // ------------------------------------------------------------------
 
     /**
-     * 宿主已 close() ⇒ 抑制。
+     * 宿主已 close() ⇒ 一律静默，不分型。
      *
      * 复活途中被关时 `gotoTitle()` 撞 VM 中断检查点抛「执行被中断（宿主正在关闭）」
      * （`Vm.kt:732-746`），会话已关时等待抛 `InputSinkClosedException`（`QueueInputSink.kt:11`），
-     * 两条都是玩家正常退出的路径 —— 按既有形状就会换屏 + 落一份「回到标题失败」报告，
-     * 把退出折成缺陷上报（收件箱 2026-11-03 一天 6 份「关闭竞态」的同形）。
+     * 两条都是玩家正常退出的路径 —— 照旧上屏就换出「回到标题失败」失败屏、照旧落报告就是
+     * 一份「回到标题失败」缺陷单（收件箱 2026-11-03 一天 6 份「关闭竞态」的同形）。
+     * C4 起这一闸由 [runtimeFaultAction] 的 closed 首查承担（与主泵同判据源，不再有
+     * backToTitle 自带的那把关闭闸）。
      */
     @Test
-    fun `复活途中宿主已关闭时抑制屏与报告`() {
-        assertEquals(BackToTitleFaultAction.SUPPRESS_BY_CLOSE, backToTitleFaultAction(closed = true))
-    }
-
-    /** 宿主仍活着的失败是真事故：屏与报告一条都不许多、一条都不许少。 */
-    @Test
-    fun `复活途中宿主仍活时照上屏照落报告`() {
-        assertEquals(BackToTitleFaultAction.FAIL_AND_REPORT, backToTitleFaultAction(closed = false))
+    fun `复活途中宿主已关闭时一律静默`() {
+        for (t in listOf(Throwable("x"), CodeEE("x"), RuntimeException("x"), OutOfMemoryError("x"))) {
+            assertEquals(
+                "关闭竞态不分型：$t",
+                RuntimeFaultAction.SUPPRESS_BY_CLOSE,
+                runtimeFaultAction(closed = true, pumpEntered = true, t),
+            )
+        }
     }
 
     /**
-     * 源码面：闸必须排在 `writeErrorReport` **之前**，且抑制支一个字都不许写屏。
+     * 分型方向一：可恢复 CodeEE 必须精分成红字终局（C4 的主形态）。
      *
-     * 判据函数本身绿不代表接线对 —— 接线写反（先落报告再问闸）行为照旧，所以钉在生产源码上。
-     * 先例：`ShellUiFailureActionsTest`（同族「只由一处判」的钉子）与 `LiveReflowWiringTest`
-     * 的 `codeLines("GameHost.kt")` 系列。取的是**代码行**（注释与 KDoc 已丢），措辞改动不影响。
+     * [runtimeFaultAction] 的粗分认不出可恢复性（CodeEE 一律 LOAD_FAULT）—— 所以 catch 处
+     * 的 `isRecoverableScriptError` 精分是唯一载重环节：拆掉它，可恢复 CodeEE 就落回
+     * 「回到标题失败」屏，C4 的可见差异（红字现场被失败屏吞掉、报告误归档）原样回来。
+     * 精分后的收口与主泵 [runtimeFaultAction] 判据前的 drive / pumpUntilTerminal 同构：
+     * scriptErrorTerminal 红字上屏 + 会话保留，玩家可再点「回到标题」。
      */
     @Test
-    fun `回标题失败的关闭闸排在落报告之前`() {
+    fun `复活线程的可恢复脚本错误必须精分成红字终局`() {
+        val exit = StepLimitExceeded(
+            steps = 12_000_000L,
+            pc = 404,
+            line = 4719,
+            funcName = "BASE自然変動",
+            elapsedMs = 5_000L,
+            guardCause = LoopGuardCause.PlayerChoseExit,
+        )
+        assertTrue("玩家主动退出的脚本错误判真", isRecoverableScriptError(exit))
+        assertEquals(
+            "粗分只给 LOAD_FAULT（认不出可恢复性）：精分必须由 catch 处的 isRecoverableScriptError 补上",
+            RuntimeFaultAction.LOAD_FAULT,
+            runtimeFaultAction(closed = false, pumpEntered = true, exit),
+        )
+        // gotoTitle 途中抛的普通 CodeEE（原版脚本错误）同理：判真、粗分同样认不出。
+        val plain = CodeEE("复活途中脚本错")
+        assertTrue("普通 CodeEE 判真", isRecoverableScriptError(plain))
+        assertEquals(
+            RuntimeFaultAction.LOAD_FAULT,
+            runtimeFaultAction(closed = false, pumpEntered = true, plain),
+        )
+    }
+
+    /**
+     * 分型方向二：真故障维持既有「回到标题失败」屏 —— 非可恢复 CodeEE（装置预算 / 爆栈闸）、
+     * [Error]（内存族 / StackOverflowError 登记判定）、意外异常都不许折成红字继续，
+     * 屏与报告一条都不许少。普通 CodeEE 不在此列（它是可恢复脚本错误，见上一条）。
+     */
+    @Test
+    fun `复活线程的真故障维持失败屏`() {
+        val faults = listOf(
+            StepLimitExceeded(steps = 1L, pc = 0, line = 0, funcName = "F", guardCause = LoopGuardCause.DeviceBudget),
+            CallStackOverflow(depth = 1, line = 0, pc = 0, funcName = null),
+            OutOfMemoryError("复活途中堆"),
+            RuntimeException("复活途中意外"),
+        )
+        for (t in faults) {
+            assertFalse(
+                "精分判 false 才落失败屏支：$t",
+                t is CodeEE && isRecoverableScriptError(t),
+            )
+        }
+    }
+
+    /**
+     * 源码面：分型必须接在复活线程 catch 上，顺序是「CodeEE 单捕精分（关闭首查 → 可恢复
+     * 红字终局，其余重抛）→ 非 CodeEE 统一走 runtimeFaultAction（关闭首查 → 真故障屏）」。
+     *
+     * 判据函数本身绿不代表接线对 —— catch 改回无条件失败屏（= 关掉分型）行为照旧，所以钉在
+     * 生产源码上。先例：`RuntimeFaultActionTest` 的接线哨兵、`ShellUiFailureActionsTest`
+     * （同族「只由一处判」的钉子）。取的是**代码行**（注释与 KDoc 已丢），措辞改动不影响。
+     */
+    @Test
+    fun `回标题失败的关闭闸与分型接在复活线程catch上`() {
         val host = codeLines("GameHost.kt")
-        val gate = host.indexOf("backToTitleFaultAction(closed)")
-        assertTrue("backToTitle 的工作线程 catch 必须先问关闭闸（找不到 = 闸被删）", gate >= 0)
-        assertEquals("闸只在这一处接线（别处再问一次就是两处口径）", 1, host.countOccurrences("backToTitleFaultAction(closed)"))
-        val report = host.indexOf("writeErrorReport(\"回到标题失败\"")
-        assertTrue("抑制支之后仍要给活着的宿主留报告：找不到那发 writeErrorReport", report >= 0)
-        assertTrue("顺序就是本条的全部：闸必须排在落报告之前（gate=$gate report=$report）", gate < report)
-        // 抑制支（闸到 `else` 之间）只许打日志：换屏、写 failure、落报告三件事一件都不许多。
-        val elseAt = host.indexOf("} else {", gate)
-        assertTrue("抑制支与失败支的分界必须在闸之后", elseAt > gate)
-        val suppressBranch = host.substring(gate, elseAt)
-        assertFalse("抑制支不许换失败屏：$suppressBranch", suppressBranch.contains("lastFailureScreenKind"))
-        assertFalse("抑制支不许写 failure：$suppressBranch", suppressBranch.contains("failure ="))
-        assertFalse("抑制支不许落报告：$suppressBranch", suppressBranch.contains("writeErrorReport"))
+        val bodyStart = host.indexOf("fun backToTitle(): Boolean")
+        assertTrue("backToTitle 必须在（找不到 = 复活线程被拆）", bodyStart >= 0)
+        val bodyEnd = host.indexOf("fun dispatchKey", bodyStart)
+        assertTrue("backToTitle 的函数体取不到（bodyEnd=$bodyEnd）", bodyEnd > bodyStart)
+        val body = host.substring(bodyStart, bodyEnd)
+        // 第一层：CodeEE 单独一捕（与主泵 pumpUntilTerminal 的 CodeEE 分支同构）。
+        val codeCatch = body.indexOf("catch (e: CodeEE)")
+        assertTrue("可恢复 CodeEE 的精分必须单独一捕（找不到 = C4 判据被拆）", codeCatch >= 0)
+        val refine = body.indexOf("!isRecoverableScriptError(e)")
+        assertTrue("精分必须接在 CodeEE 捕获支内（refine=$refine codeCatch=$codeCatch）", refine > codeCatch)
+        val redAt = body.indexOf("scriptErrorTerminal(active, e)")
+        assertTrue("红字终局支必须接 scriptErrorTerminal 且在精分之后（red=$redAt）", redAt > refine)
+        val tCatch = body.indexOf("} catch (t: Throwable)")
+        assertTrue("非 CodeEE 收口必须排在 CodeEE 捕获之后", tCatch > redAt)
+        val redBranch = body.substring(redAt, tCatch)
+        assertTrue("红字终局支必须停声：$redBranch", redBranch.contains("stopAudioForTerminal(active)"))
+        assertFalse("红字终局支不许落「回到标题失败」报告：$redBranch", redBranch.contains("writeErrorReport"))
+        assertFalse("红字终局支不许另记失败屏（scriptErrorTerminal 自带）：$redBranch", redBranch.contains("recordFailure"))
+        // 第二层：非 CodeEE 统一走主泵同一判据源；Throwable 捕获必须接到统一收口函数。
+        assertTrue(
+            "Throwable 捕获必须接 handleBackToTitleRuntimeFault（找不到 = 统一收口被拆散）",
+            body.contains("handleBackToTitleRuntimeFault(t)"),
+        )
+        val gate = body.indexOf("runtimeFaultAction(closed, pumpEntered = true, t)")
+        assertTrue(
+            "复活线程 catch 必须经 runtimeFaultAction 分流（gate=$gate tCatch=$tCatch）",
+            gate > tCatch,
+        )
+        assertEquals(
+            "这一形状（命名实参恒传 pumpEntered）的接线全文只此一处",
+            1,
+            host.countOccurrences("runtimeFaultAction(closed, pumpEntered = true, t)"),
+        )
+        val failBranch = body.substring(gate)
+        assertTrue("失败支保留既有屏（IN_GAME 族）", failBranch.contains("FailureScreenKind.IN_GAME"))
+        assertTrue(
+            "失败支保留既有报告（活宿主的真事故必须留档）",
+            failBranch.contains("writeErrorReport(\"回到标题失败\""),
+        )
+        assertFalse(
+            "两支都不许收口会话（会话保留是红字支与重试回标题的前提）：$failBranch",
+            failBranch.contains("shutdownForExit"),
+        )
         // 同函数另一处 catch（worker.start() 失败支）与 close 无关，刻意不加闸：它压根没起线程。
         assertEquals(
             "「回到标题失败」的报告全文只此一处",

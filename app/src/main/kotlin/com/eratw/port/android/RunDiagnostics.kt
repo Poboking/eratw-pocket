@@ -22,6 +22,9 @@ package com.eratw.port.android
  *   KB 的那几次，轨迹末行停在 90% 附近。门槛再高就会把最典型的死法漏掉。
  * - **native 高**：峰值 `native ≥ 150 MiB`。位图与画布在 Java 堆外，这项高而 Java 堆不高
  *   ⇒ 内存被图形缓冲吃掉，收 Java 堆没有用。
+ * - **trim 回收**：`freed=` 只数 Java 堆那坨 `IntArray` 像素，native 侧位图 / 视图缓存的
+ *   交还记在同行的 `bitmap=` / `view=` 箭头里（埋点早就在写，见 `NativeTrimPlan.readoutLine`）。
+ *   判读必须并读两者，否则「freed=0 但 native 交还 26 MiB」会被冤成「一无所获」。
  * - **系统内存不足**：死前系统可用内存跌破**本机**低内存线（轨迹里的 `sys=` / `lmk=`，
  *   判据见 [isSystemLowMemory]）。这一桶 2026-10-31 才拆出来：拆之前它藏在下面那一桶里，
  *   于是「整机内存被别的东西吃光、lmkd 无差别收进程」与「我们自己的映射崩了」混在一起数。
@@ -37,8 +40,18 @@ internal data class TrailSample(
     val maxMiB: Long,
     val nativeMiB: Long,
     val phase: String,
-    /** `freed=` 那一刀收回的 MiB；null = 这一行不是内存压力事件。 */
+    /**
+     * `freed=` 那一刀在 **Java 堆**交还的 `IntArray` 像素 MiB；null = 这一行不是内存压力事件。
+     *
+     * 这一项不是「这一刀总共收了多少」：native 侧的位图 / 视图缓存交还另记在
+     * [trimNativeFreedMiB]，两种资源性质不同，判读必须并读（见 [RunDiagnostics.trimNote]）。
+     */
     val trimFreedMiB: Long?,
+    /**
+     * 同一行 native 侧**账面缓存**交还的 MiB（`bitmap=` / `view=` 箭头的下降之和）；
+     * null = 旧轨迹没有这截分项 —— 缺 ≠ 0，不许拿「没有这一列」冒充「没收到」。
+     */
+    val trimNativeFreedMiB: Long? = null,
     /** 这一行记下的**系统**可用内存（MiB）；null = 旧轨迹行（这一列是 2026-10-31 才加的）。 */
     val sysAvailMiB: Long? = null,
     /** 这一行记下的本机低内存线（`MemoryInfo.threshold`，MiB）；null = 没取到。 */
@@ -47,6 +60,9 @@ internal data class TrailSample(
 
     /** 已用 / 上限（百分比）；[maxMiB] 不可用时为 0（不参与峰值判定）。 */
     val usedPercent: Long get() = if (maxMiB > 0L) usedMiB * 100L / maxMiB else 0L
+
+    /** 这一行交还的合计（Java 像素 + native 账面）；非内存压力行为 0。 */
+    val trimRecoveredMiB: Long get() = (trimFreedMiB ?: 0L) + (trimNativeFreedMiB ?: 0L)
 }
 
 /** 一份轨迹的汇总 —— [RunDiagnostics.classify] 的唯一输入。 */
@@ -58,12 +74,18 @@ internal data class TrailSummary(
     val peakNativeMiB: Long,
     val last: TrailSample?,
     val trimEvents: Int,
+    /** 各内存压力行交还的 Java 堆像素之和（MiB）。 */
     val trimFreedMiB: Long,
+    /** 各内存压力行交还的 native 账面缓存之和（MiB）；旧轨迹没有箭头分项 ⇒ 0。 */
+    val trimNativeFreedMiB: Long = 0L,
     /** 整份轨迹里系统可用内存的**最低**值（MiB）；null = 全是旧格式行，没有这一列。 */
     val minSysAvailMiB: Long? = null,
     /** 这份轨迹里最后一次记下的本机低内存线（MiB）；null = 没取到。 */
     val lmkThresholdMiB: Long? = null,
-)
+) {
+    /** 「这一轮到底收回了多少」的唯一读数 —— 两种资源必须并读，理由见 [RunDiagnostics.trimNote]。 */
+    val trimRecoveredMiB: Long get() = trimFreedMiB + trimNativeFreedMiB
+}
 
 /** 无报告那一类死的可判读形态（[NO_DATA] = 盘上根本没有轨迹）。 */
 internal enum class DeathMode { JAVA_HEAP, NATIVE, SYSTEM_LOW_MEM, NEITHER, NO_DATA }
@@ -80,7 +102,7 @@ internal object RunDiagnostics {
     private val TRAIL_LINE =
         Regex("""t=(\d+)ms used=(\d+)MiB max=(\d+)MiB native=(\d+)MiB\s*(.*)""")
 
-    /** 阶段名里的 `freed=<n>MiB`（trim / 主动回收那一发才有）。 */
+    /** 阶段名里的 `freed=<n>MiB`（trim / 主动回收那一发才有，口径 = Java 堆像素）。 */
     private val TRIMMED_MIB = Regex("""freed=(\d+)MiB""")
 
     /** 阶段尾部的 `sys=<n>MiB`（系统可用内存，[RunTrail.formatLine] 追加）。 */
@@ -104,6 +126,7 @@ internal object RunDiagnostics {
             nativeMiB = values[3],
             phase = phase,
             trimFreedMiB = TRIMMED_MIB.find(phase)?.groupValues?.get(1)?.toLongOrNull(),
+            trimNativeFreedMiB = TrimReadout.nativeRecoveredMiB(phase),
             sysAvailMiB = SYS_AVAIL_MIB.find(phase)?.groupValues?.get(1)?.toLongOrNull(),
             lmkThresholdMiB = LMK_THRESHOLD_MIB.find(phase)?.groupValues?.get(1)?.toLongOrNull(),
         )
@@ -112,7 +135,7 @@ internal object RunDiagnostics {
     /** 汇总轨迹（峰值按行取最大；百分比只统计 `max > 0` 的行）。 */
     fun summarize(lines: List<String>): TrailSummary {
         val samples = lines.mapNotNull(::parseSample)
-        val trims = samples.filter { it.trimFreedMiB != null }
+        val trims = samples.filter { it.trimFreedMiB != null || it.trimNativeFreedMiB != null }
         return TrailSummary(
             samples = samples,
             peakUsedMiB = samples.maxOfOrNull { it.usedMiB } ?: 0L,
@@ -122,6 +145,7 @@ internal object RunDiagnostics {
             last = samples.lastOrNull(),
             trimEvents = trims.size,
             trimFreedMiB = trims.sumOf { it.trimFreedMiB ?: 0L },
+            trimNativeFreedMiB = trims.sumOf { it.trimNativeFreedMiB ?: 0L },
             minSysAvailMiB = samples.mapNotNull { it.sysAvailMiB }.minOrNull(),
             lmkThresholdMiB = samples.mapNotNull { it.lmkThresholdMiB }.lastOrNull(),
         )
@@ -173,7 +197,8 @@ internal object RunDiagnostics {
         DeathMode.JAVA_HEAP ->
             "峰值已到堆上限的 $HEAP_CEILING_PERCENT% 以上 ⇒ 是 Java 堆不够（图形常驻 + 变量池 + 脚本对象），先降常驻占用。"
         DeathMode.NATIVE ->
-            "Java 堆没有贴顶，但 native 峰值达到 $NATIVE_HIGH_MIB MiB 以上 ⇒ 内存花在位图 / 画布这类堆外驻留，或系统按总内存收掉了进程。"
+            "Java 堆没有贴顶，但 native 峰值达到 $NATIVE_HIGH_MIB MiB 以上 ⇒ 内存花在位图 / 画布这类堆外驻留，" +
+                "先降堆外常驻占用；系统内存是否也告急另见上面那行读数。"
         DeathMode.SYSTEM_LOW_MEM ->
             "Java 堆与 native 都不高，而死前系统可用内存跌破了本机低内存线 ⇒ 是 lmkd / OEM 按**整机**内存收掉了进程，" +
                 "不是我们的堆不够。修法在「别的应用占了多少」，或在被收掉前把本进程的可重建缓存再收一轮。"
@@ -186,11 +211,16 @@ internal object RunDiagnostics {
     /** 一行读数（卡片与报告共用）。 */
     fun headline(summary: TrailSummary): String {
         if (summary.samples.isEmpty()) return "轨迹 0 行"
+        val trimDetail = if (summary.trimNativeFreedMiB > 0L) {
+            "：Java 像素 ${summary.trimFreedMiB} + native 账面 ${summary.trimNativeFreedMiB}"
+        } else {
+            ""
+        }
         return "峰值 Java 已用 ${summary.peakUsedMiB}/${summary.peakMaxMiB} MiB（${summary.peakUsedPercent}%）" +
             " · 峰值 native ${summary.peakNativeMiB} MiB" +
             sysHeadline(summary) +
             " · 轨迹 ${summary.samples.size} 行" +
-            " · trim ${summary.trimEvents} 次（共收回 ${summary.trimFreedMiB} MiB）"
+            " · trim ${summary.trimEvents} 次（共收回 ${summary.trimRecoveredMiB} MiB$trimDetail）"
     }
 
     /** 读数里的系统内存一截：最低可用值与它对照的那条线（没有这一列就整段不出现）。 */
@@ -204,10 +234,17 @@ internal object RunDiagnostics {
         }
     }
 
-    /** 系统发过内存压力却一点没收回：说明这一刀对这类死法无效（或压力来自 Java 堆之外）。 */
+    /**
+     * 系统发过内存压力却一点没收回：说明这一刀对这类死法无效（或压力来自 Java 堆之外）。
+     *
+     * 判据必须并读两类回收：[TrailSample.trimFreedMiB] 只数 Java 堆那坨 `IntArray` 像素，
+     * 而 `freed=0MiB bitmap=2->0MiB view=24->9MiB` 这种「Java 像素没得收、native 账面缓存
+     * 收了 17 MiB」是常态（0.2.47 / OPPO PEHM00 玩家轨迹实样）。只看 `freed=` 会把已经
+     * 交还的缓存判成「一无所获」，把玩家和修复方向一起带偏。
+     */
     fun trimNote(summary: TrailSummary): String? =
-        if (summary.trimEvents > 0 && summary.trimFreedMiB == 0L) {
-            "注意：系统发过 ${summary.trimEvents} 次内存压力，但回收没有退回任何 MiB" +
+        if (summary.trimEvents > 0 && summary.trimRecoveredMiB == 0L) {
+            "注意：系统发过 ${summary.trimEvents} 次内存压力，但 Java 像素与 native 账面缓存都没有退回任何 MiB" +
                 "（要么已无可回收的延迟图，要么压力来自 Java 堆之外）。"
         } else {
             null
@@ -246,9 +283,14 @@ internal object RunDiagnostics {
         lines += "死因判读：${modeTitle(mode)}"
         lines += "读数：${headline(summary)}"
         lines += modeExplanation(mode)
+        if (state != null && RunTrail.isBackgroundDeath(state)) {
+            lines += "收尾判读：上一轮在界面不可见后被系统回收（正常管控，不计异常退出）；" +
+                "上面的死因只描述资源水位，不代表这是一次异常退出。"
+        }
         trimNote(summary)?.let { lines += it }
         lines += "怎么读：used/max 是 Java 堆（已用 / 上限）；native 是堆外驻留（位图、画布）；" +
-            "trim= 是系统发来的内存压力，freed= 是那一刀实际收回的 MiB；" +
+            "trim= 是系统发来的内存压力，freed= 是那一刀在 Java 堆交还的像素 MiB，" +
+            "bitmap=/view= 的箭头是 native 账面缓存的前后读数，两者一起算这一刀的回收；" +
             "sys= 是那一发的**系统**可用内存，lmk= 是本机低内存线（sys 跌破 lmk = 系统已在低内存状态）。"
         lines += "----------------------------------------------------------------"
         lines += "[收尾标记]"
@@ -263,5 +305,38 @@ internal object RunDiagnostics {
         lines += "================================================================"
         lines += "诊断结束"
         return lines.joinToString("\n")
+    }
+}
+
+/**
+ * trim 行 native 账面分项的纯判读（无 Android 依赖，JVM 单测直接锁死）。
+ *
+ * 从 [RunDiagnostics] 抽出有两个理由：这一支是「这一刀到底收回没有」的唯一读数来源，
+ * 值得有自己的测试面；同时把 [RunDiagnostics] 的函数数压回 detekt 阈值内 —— 不改阈值、
+ * 不加抑制，靠拆分而不是靠放行（本仓 detekt 纪律）。
+ */
+internal object TrimReadout {
+
+    /** `NativeTrimPlan.readoutLine` 写出的两段箭头（另一段 `native=` 是驻留前后值，不是回收量）。 */
+    private val BITMAP_ARROW = Regex("""bitmap=(\d+)->(\d+)MiB""")
+    private val VIEW_ARROW = Regex("""view=(\d+)->(\d+)MiB""")
+
+    /**
+     * 一行里 native 账面缓存交还了多少（两段箭头的下降量之和）。
+     *
+     * 一段分项都没有 ⇒ null（旧轨迹「缺 ≠ 0」）；只有一段时另一段按 0 算；
+     * 箭头反向（缓存反而涨了）按 0 计 —— 账面回升不是回收。
+     */
+    fun nativeRecoveredMiB(phase: String): Long? {
+        val bitmap = BITMAP_ARROW.find(phase)
+        val view = VIEW_ARROW.find(phase)
+        if (bitmap == null && view == null) return null
+        return dropOf(bitmap) + dropOf(view)
+    }
+
+    private fun dropOf(match: MatchResult?): Long {
+        val before = match?.groupValues?.get(1)?.toLongOrNull()
+        val after = match?.groupValues?.get(2)?.toLongOrNull()
+        return if (before != null && after != null) (before - after).coerceAtLeast(0L) else 0L
     }
 }

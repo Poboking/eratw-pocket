@@ -139,7 +139,9 @@ class ModChainAssemblyKojoContentEndToEndTest {
         }
         val params = paramNames.map { SignatureExport.paramOf(it, it, null) }
         return SignatureExport.render(
-            SignatureExport.FunctionSignature(params, SignatureExport.ReturnChannel.UNKNOWN),
+            com.eratw.port.core.frontend.SignatureExport.FunctionSignature(
+                params, com.eratw.port.core.frontend.SignatureExport.ReturnChannel.UNKNOWN,
+            ),
         )
     }
 

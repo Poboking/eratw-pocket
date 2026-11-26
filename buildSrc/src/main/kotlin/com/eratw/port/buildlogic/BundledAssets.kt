@@ -50,6 +50,10 @@ val alwaysCompress = setOf("ttf", "otf", "ttc", "woff", "woff2")
  * - **分片清单 `program.parts` 与自述报告 `package.report`**：条目只有几十字节，
  *   但 STORED 之后 `AssetManager.openFd` 能直接拿到长度，解包侧的字节对账不用退化成
  *   「目标存在即视为已装」，所以一并写进后缀表。
+ * - **预置库 `db`**：`-PeratwSeedQolDb` 把出包期建好的 `qol_data.db` 叠进 staging 的
+ *   `plugins/`，而它**不在游戏根里**，靠「真实语料 plugins/ 里恰好有一个 0 B 的
+ *   qol_data.db」扫出 `db` 后缀是侥幸——语料哪天清掉这个占位文件，预置库就掉进 DEFLATE，
+ *   首启解包拿不到 `openFd` 长度、540 KB 级的库还要多一次 inflate。固定进表才不受语料形状影响。
  * - 字体后缀（[alwaysCompress]）反向挡掉：`.ttf` 压缩后省 0.7 MB，`createFromAsset` 照常吃。
  *
  * @param gameRoot 本次随包的游戏根（null = 无游戏根形态，返回空表）
@@ -58,7 +62,7 @@ val alwaysCompress = setOf("ttf", "otf", "ttc", "woff", "woff2")
  */
 fun bundledSuffixes(gameRoot: File?, dataDirs: List<String>, configFiles: List<String>): Set<String> {
     val root = gameRoot ?: return emptySet()
-    val found = sortedSetOf("parts", "report")
+    val found = sortedSetOf("parts", "report", "db")
     dataDirs.forEach { name ->
         val dir = File(root, name)
         if (dir.isDirectory) {

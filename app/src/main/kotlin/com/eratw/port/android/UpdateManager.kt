@@ -766,9 +766,15 @@ object UpdateManager {
             UiPrefs.clearRejectedBundleFallback(context)
         }
         // 覆盖升级预检：只在「这次真要换整包」时判，数据包（zip）不涉及安装器互斥。
+        // 判式与下载前那道预检（[download] 里的 certBlocksInstallAny）**同一口径**：比的是
+        // 「本机章候选集合」而不是单值 —— 多 signer 的包、轮换过签名密钥的设备，清单声明的章
+        // 未必是集合里的第一枚（见 [localCertSha256Candidates] 的 KDoc：候选 = 当前 signer 全部
+        // 加历史最后一枚）。这里曾传单值 localCertSha256（= 候选的第一枚），于是这类设备把
+        // 「章在集合里、只是不是第一枚」误判成「装不上、要先卸载（存档会没）」，弹窗降级成
+        // 「知道了」、整条更新被挡；而下载侧同一场景原本是放行的 —— 两处口径不一致是本笔修的缺陷。
         val apkFile = info.apk?.artifact?.fileName.orEmpty()
         val blocked = if (apkFile.isNotEmpty() &&
-            UpdatePolicy.certBlocksInstall(localCertSha256(context), info.apkCertSha256)
+            UpdateDownloadPlan.certBlocksInstallAny(localCertSha256Candidates(context), info.apkCertSha256)
         ) {
             "这台设备上装的是另一套签名章的包（内测/旧包），新包无法覆盖升级。" +
                 "要换过来必须先卸载旧包 —— **存档与已解包的游戏数据会一起没了**。"

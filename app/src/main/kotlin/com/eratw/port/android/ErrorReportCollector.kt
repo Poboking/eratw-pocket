@@ -79,6 +79,16 @@ object ErrorReportCollector {
     /** 报告目录名（filesDir 下）。 */
     const val REPORT_DIR_NAME = "eratw-reports"
 
+    /** 诊断聚合账的 checkpoint 文件名（reportDir 内；存在 = 上局账未正常清账）。 */
+    private const val DIAGNOSTIC_CHECKPOINT_NAME = "diagnostic-checkpoint.txt"
+
+    /** close 路径诊断汇总后台落盘线程名（C2 修复：一次性非 daemon，见 [flushDiagnosticSummaryAsync]）。 */
+    private const val DIAGNOSTIC_FLUSH_THREAD_NAME = "eratw-diag-flush"
+
+    /** 孤儿账并报的说明行（进报告正文，判读侧据此区分「次启并入」与「当局汇总」）。 */
+    private const val ORPHAN_NOTE_LINE =
+        "并入说明：上局诊断账未正常清账（进程可能异常死亡），本报告由次启并入口落盘"
+
     /**
      * 受上报节流管制的报告类型（[GameHost.writeErrorReport] 给的那四个字）。
      *
@@ -460,6 +470,210 @@ object ErrorReportCollector {
             .onFailure { Log.w(TAG, "报错节流清账失败（下一次会话开头自带清零）", it) }
     }
 
+    /**
+     * 高频诊断事件的**统一上报入口**（2026-11-17 覆盖补齐波）：给 UI 异常 / 启动异常 /
+     * 装载警告这类「主线程 / 半装配宿主 / 装载期」路径用 —— 它们没有完整的 GameHost 失败屏
+     * 上下文，也不能逐条刷盘，故走 [DiagnosticEventLog] 聚合：每型每局头两次落完整代表报告，
+     * 其余只计数（计数随代表报告的「诊断聚合」行带出）。
+     *
+     * best-effort，绝不在调用线程（多是 UI 线程）抛或做网络：落盘走 [collectLightweight] /
+     * [collectMinimal]（都不做重采集），上传照例交给 [ErrorReportUploader.uploadPendingAsync] 的
+     * daemon 线程。签名判定本身失败时 [DiagnosticEventLog.record] 兜 `firstOfKind=true`（宁可多报）。
+     *
+     * @return true = 本次落了一份报告（代表报告）；false = 只累加了计数
+     */
+    internal fun recordDiagnostic(
+        context: Context,
+        diagnosticKind: DiagnosticEventLog.DiagnosticKind,
+        error: Throwable?,
+        where: String,
+        extraLines: List<String> = emptyList(),
+    ): Boolean {
+        val message = error?.let { "${it.javaClass.simpleName}: ${it.message ?: ""}" } ?: where
+        val decision = runCatching {
+            DiagnosticEventLog.record(
+                DiagnosticEventLog.DiagnosticEvent(diagnosticKind, where, message)
+            )
+        }.getOrElse { DiagnosticEventLog.Decision(true, 1, true) }
+        val extra = buildList {
+            DiagnosticEventLog.summaryLines().let { addAll(it) }
+            // 调用方自带的现场行（如存档环形缓冲 [saveDiagLines]）排在聚合账之后、
+            // 「诊断现场」之前：都是读数，同一条链路里保持「账 → 现场 → 点位」的阅读序。
+            addAll(extraLines)
+            add("诊断现场：$where｜$message")
+        }
+        // checkpoint（DBG-TOOLING 波）：账一变就落盘——进程被杀（native 崩溃/系统回收）时
+        // 本局账不再只活在内存里，次启由 [reportOrphanCheckpoint] 并进「诊断汇总」上报。
+        // 文件几行文本，写入开销与一次轻量报告同量级；读写在 filesDir 内，无权限面。
+        runCatching { writeDiagnosticCheckpoint(context) }
+        val wrote = if (decision.mayReport) {
+            // 主线程/装载线程路径不做全套采集（exitForensics 的 binder 调用、vmStack 反射
+            // 都会卡 UI 帧）：走轻量报告，只带版本/构建标识 + 异常类型/根因 + 现场与计数。
+            val file = collectLightweight(context, diagnosticKind.reportKind, error, extra)
+                ?: collectMinimal(context, diagnosticKind.reportKind, error)
+            if (file != null) {
+                DiagnosticEventLog.markReported(diagnosticKind)
+                runCatching { ErrorReportUploader.uploadPendingAsync(context) }
+                Log.i(TAG, "诊断事件已落代表报告并请求上报：${diagnosticKind.reportKind}（本型第 ${decision.occurrences} 次）")
+            }
+            file != null
+        } else false
+        return wrote
+    }
+
+    /** checkpoint 文件（reportDir 内固定名；存在 = 上局账未正常清账）。 */
+    private fun diagnosticCheckpointFile(context: Context): File =
+        File(reportDir(context), DIAGNOSTIC_CHECKPOINT_NAME)
+
+    /** 把当前聚合账写进 checkpoint（[recordDiagnostic] 每次记账后调用；失败静默，绝不拖垮调用线程）。 */
+    private fun writeDiagnosticCheckpoint(context: Context) {
+        val lines = DiagnosticEventLog.summaryLines()
+        if (lines.isEmpty()) return
+        val file = diagnosticCheckpointFile(context)
+        file.parentFile?.mkdirs()
+        file.writeText(lines.joinToString("\n"), Charsets.UTF_8)
+    }
+
+    /**
+     * 次启并入：上局 checkpoint 还在 = 进程没走 [flushDiagnosticSummary] 的正常清账
+     * （native 崩溃 / 系统回收 / 直接杀进程）——恰恰是最需要数据的局。把孤儿账并进一份
+     * 「诊断汇总」报告上报，成功后删除 checkpoint；失败保留（下次启动再试，宁多报）。
+     *
+     * 在启动早期后台线程调用（MainActivity 装配前）；与 [recordDiagnostic] 一样不抛。
+     * 不进本局聚合账：上局账是独立一份现场，混进本局计数会污染本局的 summaryLines。
+     */
+    internal fun reportOrphanCheckpoint(context: Context): Boolean {
+        val file = diagnosticCheckpointFile(context)
+        val lines = runCatching {
+            if (file.isFile) file.readLines(Charsets.UTF_8).filter { it.isNotBlank() } else emptyList()
+        }.getOrDefault(emptyList())
+        // 空（无文件 / 空账 / 读失败）= 没有孤儿可并：顺手删掉空文件防止半行残留。
+        val wrote = if (lines.isEmpty()) {
+            runCatching { file.delete() }
+            false
+        } else {
+            val extra = lines + ORPHAN_NOTE_LINE
+            runCatching {
+                val kind = DiagnosticEventLog.DiagnosticKind.DIAGNOSTIC_SUMMARY.reportKind
+                val f = collectLightweight(context, kind, null, extra)
+                    ?: collectMinimal(context, kind, null)
+                if (f != null) {
+                    runCatching { ErrorReportUploader.uploadPendingAsync(context) }
+                    Log.i(TAG, "上局孤儿诊断账已并报：${f.name}（${lines.size} 行）")
+                }
+                f != null
+            }.getOrDefault(false).also { wrote -> if (wrote) runCatching { file.delete() } }
+        }
+        return wrote
+    }
+
+    /**
+     * 会话结束时的诊断汇总上报：把本局 [DiagnosticEventLog] 的各型×次数包成一份独立报告落盘
+     * + 上传。只在**本局确有诊断事件**时才落（空表返回 false），不动既有失败报告一个字节。
+     * 同步版：在调用线程落盘——宿主 close 路径已改走 [flushDiagnosticSummaryAsync]
+     * （C2 修复：UI 线程不再同步写盘），本入口保留给已在后台线程的调用方。
+     */
+    internal fun flushDiagnosticSummary(context: Context): Boolean =
+        flushDiagnosticSummaryLines(context, DiagnosticEventLog.summaryLines(), resetLogOnSuccess = true)
+
+    /**
+     * C2 修复（2026-11-18）：close 路径的后台化入口——**读数面同步、写面异步**。
+     * 快照（[lines]）由调用方在 UI 线程拍好传入，落盘/上传交给一次性后台线程：
+     * UI 线程 close 路径不再发生同步写盘（与 C3 的取证口径同一条纪律）。
+     *
+     * 线程姿态：一次性**非 daemon** 线程，不挂任何 Activity/宿主生命周期，也不随 close
+     * 路径的任何执行器关停（「进程退出时会被杀的 Executor 姿态」不用——本线程只依赖
+     * Application 存活期，Activity 销毁后进程短暂存续的窗口足够 ms 级写盘跑完）。
+     * 若写盘被进程退出（exitApplication 的 exit(0) / 系统回收）截断：诊断 checkpoint
+     * 文件留存（只有写成功才清），次启 [reportOrphanCheckpoint] 并报——与既有冷启
+     * 补发同一兜底链，数据不丢。
+     *
+     * 快照参数化之后**不触碰 [DiagnosticEventLog] 的内存账**：宿主在投递后同步 reset；
+     * 若后台再 reset，会把换局重开后新会话刚记的事件一并抹掉（restartGame 是真实交错面）。
+     * 成功后仍清 checkpoint（防次启误判「上局异常死亡」并重复上报同一份账）。
+     */
+    internal fun flushDiagnosticSummaryAsync(context: Context, lines: List<String>) {
+        if (lines.isEmpty()) return
+        val appContext = context.applicationContext
+        Thread({
+            runCatching { flushDiagnosticSummaryLines(appContext, lines, resetLogOnSuccess = false) }
+                .onFailure { Log.w(TAG, "诊断汇总后台落盘失败（checkpoint 留给次启并报）", it) }
+        }, DIAGNOSTIC_FLUSH_THREAD_NAME).apply {
+            isDaemon = false
+            start()
+        }
+    }
+
+    /**
+     * [flushDiagnosticSummary] / [flushDiagnosticSummaryAsync] 共用的写盘体：落一份
+     * 「诊断汇总」报告 + 请求上传 + 成功后清 checkpoint；[resetLogOnSuccess] 决定是否
+     * 顺带清内存账（同步版清；后台版由宿主在调用线程清，见上）。
+     */
+    private fun flushDiagnosticSummaryLines(
+        context: Context,
+        lines: List<String>,
+        resetLogOnSuccess: Boolean,
+    ): Boolean {
+        if (lines.isEmpty()) return false
+        val file = runCatching {
+            collectLightweight(context, DiagnosticEventLog.DiagnosticKind.DIAGNOSTIC_SUMMARY.reportKind, null, lines)
+                ?: collectMinimal(context, DiagnosticEventLog.DiagnosticKind.DIAGNOSTIC_SUMMARY.reportKind, null)
+        }.getOrNull()
+        file?.let {
+            runCatching { ErrorReportUploader.uploadPendingAsync(context) }
+            if (resetLogOnSuccess) DiagnosticEventLog.reset()
+            // 正常清账 = 报告已落盘（冷启补发带出）⇒ checkpoint 一并清掉；
+            // 不清的话下次启动会误判「上局异常死亡」并重复上报同一份账。
+            runCatching { diagnosticCheckpointFile(context).delete() }
+            Log.i(TAG, "诊断汇总已上报：${it.name}")
+        }
+        return file != null
+    }
+
+    /**
+     * 轻量报告：给诊断事件（UI/装载/汇总）用，只做**不阻塞调用线程**的采集 ——
+     * 版本/构建标识/产物指纹的标量读取 + 异常类型/根因 + 调用方给的现场行。
+     * 刻意**不碰** [exitForensicsLines]（ApplicationExitInfo/Debug.getPss 的 binder 往返）、
+     * [vmStackLines]（反射取 VM 栈）与冻结现场 —— 这些重采集属于失败/崩溃终局路径，
+     * 而诊断事件可能在 UI 帧回调里发生，做重采集会卡帧。端点验真只要报告标记 + 报告类型行，
+     * 本方法经 [ErrorReport.render] 产出两行俱全，照常走 [ErrorReportUploader]。
+     */
+    private fun collectLightweight(
+        context: Context,
+        kind: String,
+        error: Throwable?,
+        extraLines: List<String>,
+    ): File? = runCatching {
+        val now = System.currentTimeMillis()
+        val report = ErrorReport(
+            kind = kind,
+            timestampText = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(now)),
+            headerLines = headerLines(context),
+            buildStamp = BuildConfig.eratwBuildStamp,
+            channelStamp = BuildConfig.eratwReportChannelStamp,
+            programSha256 = programSha256FromAssets(context),
+            errorType = error?.javaClass?.name ?: "（诊断汇总，无异常对象）",
+            errorMessage = error?.message ?: "",
+            rootCause = ErrorReport.rootCauseOf(error),
+            // 轻量路也要带逐帧诊断：玩家点「分享诊断」时走哪条路由参数与堆况决定，不确定；
+            // 只在一处接线就等于「有一半的分享里没有现场」。口径与完整路同一份小节。
+            extraSectionLines = extraLines + FrameTraceChannel.reportLines(FrameTraceChannel.enabled(context)) +
+                // 授权档位两行（判词 9 接线）：轻量路也带这两行，口径与完整路逐字同源。
+                DevToolsHost.authorizationReportLines(context),
+        )
+        val dir = reportDir(context)
+        if (!dir.isDirectory) dir.mkdirs()
+        var file = File(dir, ErrorReport.fileNameAt(now, java.util.TimeZone.getDefault().toZoneId()))
+        if (file.exists()) file = File(dir, "eratw-report-" + now + ".txt")
+        file.writeText(report.render(), Charsets.UTF_8)
+        prune(dir)
+        Log.i(TAG, "轻量诊断报告已生成：${file.name}（${file.length()} B）")
+        file
+    }.getOrElse {
+        Log.w(TAG, "轻量诊断报告生成失败（转最小退化报告）", it)
+        null
+    }
+
     /** 完整报告（采集 + 渲染 + 落盘）；任何一步失败返回 null，交给 [collectMinimal] 接手。 */
     private fun collectFull(
         context: Context,
@@ -508,7 +722,22 @@ object ErrorReportCollector {
             // 一直只有一句屏上文案。挂进报告的尾部保留段，玩家下一次发报告就自带现场。
             extraSectionLines = extraLines + arithmeticSceneLines(error) + memoryLines(host) + datingLines(host) +
                 saveDiagLines() + fileReadTrailLines(host) + heartbeatLines +
-                lastBreathLines(context) + stallSceneLines() + drainDaemonDeathLines(),
+                lastBreathLines(context) + stallSceneLines(context) + drainDaemonDeathLines() +
+                // 逐帧诊断（玩家侧取证通道）：设置页开关打开期间记的最近 240 帧版面事实 +
+                // 自动判定行。环空时只有一行「未开启」，用来区分「没数据」与「数据正常」。
+                // 排在守护死因之后：core 侧这一节是 takeLast 尾部保留，越靠后越活得下来，
+                // 而崩溃报告最需要「崩前那几帧怎么摆」。
+                FrameTraceChannel.reportLines(FrameTraceChannel.enabled(context)) +
+                // 授权档位两行（判词 9 接线，2026-11-26）：报告里第一问往往是「这份现场是不是
+                // 玩家手动授权跑出来的、授权位什么时候拨的」。两行取自 DevToolsHost 同一纯函数，
+                // 垫在补充现场最尾 = core 侧 takeLast 尾部保留段里最活得下来的一格。
+                DevToolsHost.authorizationReportLines(context),
+            // Java 堆分项账面（EP1 波 L5 heap-census）走**独立小节**而不是「补充现场」：后者是
+            // `takeLast(EXTRA_MAX_LINES)` 的尾窗，而这份读数本身是多行（`LiveSetCensus`
+            // 五段断行）。真机满档时它会被后面那串心跳/冻结/守护死因整段挤掉 —— 2026-11-17 的
+            // 三份 OOM 报告里连「代码缓存」段的四个读数都读不到，归因只能停在「堆贴顶」。
+            // 独立小节只占 `METRIC_MAX_LINES`，且整节随报告常驻，取一次即拷。
+            metricSectionLines = host?.memoryCensusReportLine()?.lineSequence()?.toList().orEmpty(),
         )
         val dir = reportDir(context)
         if (!dir.isDirectory) dir.mkdirs()
@@ -676,11 +905,9 @@ private fun arithmeticSceneLines(error: Throwable?): List<String> = runCatching 
                 host?.imageBookkeepingReportLine(),
                 // OOM-C 波：自救台账 + MemoryLimiter 读表诊断 + 堆外映射读数 + 堆转储台账。
                 host?.reclaimDiagnosticsLine(),
-                // Java 堆分项账面（EP1 波 L5 heap-census；组长接线）：`used/max` 那两列只说
-                // 「满了」，这一行说「装的是什么」—— 装载侧函数/语句/表达式/串池、运行侧格子与
-                // 角色表、显示侧行数、图形 Java 侧正号段像素。读数全是已驻留标量，不踩 .erbc
-                // 惰性表（约束见本文件类头与 `LiveSetCensus` 类头），取不到整行缺省不补。
-                host?.memoryCensusReportLine(),
+                // Java 堆分项账面（EP1 波 L5 heap-census）**已移到报告独立小节**
+                // `metricSectionLines`（见 `collectFull` 那次构造）：这一节是 `takeLast` 尾窗，
+                // 多行的堆账面在这里会被后面的心跳/冻结/守护死因整段挤掉。别再往这里加回来。
                 // CSV 资源表读数（挂进报告而非只落 logcat）：4.981 与 4.980 数据混装时
                 // 立绘整块不出现，此前报告里一个字都看不出来，只能靠上报端点编号反推。
                 // 排在图形侧读数最尾 = 补充现场里较靠后的位置，满档剪行时活得下来。
@@ -693,16 +920,26 @@ private fun arithmeticSceneLines(error: Throwable?): List<String> = runCatching 
 
     /**
      * 主线程冻结现场（EP1 波 L4 stall-stack；组长接线）：哨兵判定 UI 帧循环超期那一刻抓到的
-     * **主线程 + `eratw-vm` 两条栈**。本进程没抓到过 ⇒ **空表、不写这一节**（与哨兵自己的
-     * 「未取到」是两回事：那是判式在动但栈没拿到，这一节整个不存在意味着压根没冻结过）。
+     * **主线程 + `eratw-vm` 两条栈**。两个来源，互斥取一：
      *
-     * 读的是进程级槽位 `MainActivity.currentStallSceneLines()`（身份闸，口径同崩溃处理器那条
-     * `CrashForensics` 侧的 `crashHostProvider`）：「上次异常退出」那份是**下一次冷启动**落的，那时旧 Activity 早没了，
-     * 只有这种槽位还读得到本进程死前的最后一发。取不到只当没有这一节 —— 报告路径永远不许被
-     * 取证拖崩。
+     * 1. **进程内槽位** `MainActivity.currentStallSceneLines()`（身份闸，口径同崩溃处理器那条
+     *    `CrashForensics` 侧的 `crashHostProvider`）：本进程抓到过 ⇒ 局中手动分享的报告用它；
+     * 2. **盘上遗留** [StallSceneLog]（2026-11-20 补口）：「上次异常退出」的报告是**下一次
+     *    冷启动**落的，旧进程内存里的现场早已消失 —— 哨兵抓到过（轨迹 `frames=12`）却只
+     *    落了栈顶 1 帧、`[主线程冻结现场]` 端点覆盖 0/69 的缺口由此补上。pid 认主：本进程
+     *    自己写的那份不算遗留（同 [lastBreathLines] 的取舍）。
+     *
+     * 两个来源都没有 ⇒ **空表、不写这一节**（与哨兵自己的「未取到」是两回事：那是判式在动
+     * 但栈没拿到，这一节整个不存在意味着压根没冻结过）。报告路径永远不许被取证拖崩。
      */
-    private fun stallSceneLines(): List<String> = runCatching {
-        MainActivity.currentStallSceneLines()
+    private fun stallSceneLines(context: Context): List<String> = runCatching {
+        val inProcess = MainActivity.currentStallSceneLines()
+        if (inProcess.isNotEmpty()) return@runCatching inProcess
+        val fromDisk = StallSceneLog.reportLines(
+            File(context.filesDir, StallSceneLog.DIR_NAME),
+            Process.myPid(),
+        )
+        if (fromDisk.size > 1) fromDisk else emptyList()
     }.getOrDefault(emptyList())
     /**
      * 上次运行死前现场（lane bug-silent）：`filesDir/eratw-lastbreath/` 里上一轮进程的周期心跳。
@@ -743,8 +980,21 @@ private fun arithmeticSceneLines(error: Throwable?): List<String> = runCatching 
     private fun datingLines(host: GameHost?): List<String> =
         listOfNotNull(runCatching { host?.datingForensicsReportLine() }.getOrNull())
 
+    /** 模组包侧 GC 留痕的 tag（[ModPackageInventory] / [ModSettingsStore] 写入；存档侧是 `SIDECAR_GC`）。 */
+    private const val MOD_PKG_GC_TAG = "MOD_PKG_GC"
+
     /**
-     * 存档落盘留痕（`core/save/SaveDiagnostics` 的环形缓冲）。
+     * 模组包侧留痕行的**精确前缀**（`note()` 的行形状 = `$PREFIX $op 退路 path=...`）。
+     *
+     * 用前缀而非 `contains` 判 tag：路径/详情里偶然出现同样字样的存档行不许被误归到模组包小节。
+     */
+    private const val MOD_PKG_GC_LINE_PREFIX =
+        com.eratw.port.core.save.SaveDiagnostics.PREFIX + " " + MOD_PKG_GC_TAG + " "
+
+    /**
+     * `core/save/SaveDiagnostics` 的环形缓冲 → 报告里**按 tag 分两节**：
+     * 「存档落盘留痕」（`SAVEDATA` / `SIDECAR_GC` / `WRITE` 等存档侧）与
+     * 「模组包清理留痕」（`MOD_PKG_GC`，由 [ModPackageInventory] / [ModSettingsStore] 写）。
      *
      * 为什么必须进报告：`SAVEDATA` 失败在语义上**只是一句屏上文案**（`saveData` 返回 false，
      * 异常被原版口径整个吞掉），既不会抛到宿主、也不会触发任何一次报告采集 —— 于是玩家报
@@ -752,15 +1002,32 @@ private fun arithmeticSceneLines(error: Throwable?): List<String> = runCatching 
      * 没有存档目录现场、没有异常本体。这条通道原本只打 `System.err`（= logcat），而 release
      * 包上玩家读不到 logcat（`run-as` 对 release 不可用，DevTools 只对 debuggable 开）。
      *
+     * 为什么要分节：同一枚缓冲被两条链共用，全塞进「存档落盘留痕」会让一行模组包 GC 证据
+     * 出现在存档节里 —— 维护者按节名找不到，还会误判成存档写盘问题。分节只动**展示**，
+     * `SaveDiagnostics.note()` 的写入语义与行文本一字不动。
+     *
      * 所以：失败之后**只要再产生任何一份报告**（下一次崩溃 / 启动失败 / 脚本报错），
-     * 这里就把留痕一起带出去。空表 = 本会话没发生过存档失败，此时一行都不写。
+     * 这里就把留痕一起带出去。两节都空 = 本会话没发生过对应事件，此时一行都不写。
      *
      * 口径与 [datingLines] 一致：只出数值与相对路径，不取绝对路径（报告可能被贴到公开场合）。
      */
-    private fun saveDiagLines(): List<String> {
+    internal fun saveDiagLines(): List<String> {
         val trail = runCatching { com.eratw.port.core.save.SaveDiagnostics.snapshot() }.getOrNull()
         if (trail.isNullOrEmpty()) return emptyList()
-        return listOf("存档落盘留痕（最近 ${trail.size} 条，旧在前）：") + trail
+        // 同一枚环形缓冲被两条链共用（存档侧 / 模组包侧），但**节名不同**：按 tag 分节展示，
+        // 否则一行模组包 GC 证据会被塞进「存档落盘留痕」，维护者按节名找不到、还会误判成存档写盘问题。
+        // 只改分节展示，`note()` 的写入语义与行文本一个字都不动。
+        val (modPkgLines, saveLines) = trail.partition { it.startsWith(MOD_PKG_GC_LINE_PREFIX) }
+        return buildList {
+            if (saveLines.isNotEmpty()) {
+                add("存档落盘留痕（最近 ${saveLines.size} 条，旧在前）：")
+                addAll(saveLines)
+            }
+            if (modPkgLines.isNotEmpty()) {
+                add("模组包清理留痕（最近 ${modPkgLines.size} 条，旧在前）：")
+                addAll(modPkgLines)
+            }
+        }
     }
 
     /**

@@ -82,8 +82,8 @@ class ModCsvPlanWireTest {
     fun `会话与装配传同一上下文 - 不派生第二份`() {
         val host = sourceOf("GameHost.kt")
         assertTrue(
-            "GameHost 必须只产出一份上下文（装载相位）",
-            host.contains("ModRuntimeAssembly.csvLoadContext(gameRoot)"),
+            "GameHost 必须只产出一份上下文（装载相位，且走拒载留痕包装）",
+            host.contains("ModPreloadTrace.csvLoadContextTraced(gameRoot, modLogSink)"),
         )
         assertTrue("上下文必须传给 Mod 链装配", host.contains("csvContext = csvContext"))
         assertTrue("上下文必须传给会话（扩容）", host.contains("modCsvContext = csvContext"))
@@ -106,13 +106,17 @@ class ModCsvPlanWireTest {
         val host = sourceOf("GameHost.kt")
         assertTrue(
             "总闸关时必须传 null（不扫盘、不装载 CSV 上下文）",
-            host.contains("ModRuntimeAssembly.csvLoadContext(gameRoot)") &&
-                Regex("if \\(modRuntime\\) \\{\\s*\\n\\s*// M1-4 阶段二").containsMatchIn(host),
+            host.contains("ModPreloadTrace.csvLoadContextTraced(gameRoot, modLogSink)") &&
+                Regex("if \\(modActive\\) \\{\\s*\\n\\s*// M1-4 阶段二").containsMatchIn(host),
         )
         assertFalse(
             "不得在关态路径上无条件调用 csvLoadContext",
             host.contains("\n        val csvContext = ModRuntimeAssembly.csvLoadContext(gameRoot)"),
         )
-        assertFalse("总闸缺省值不许翻", UiPrefs.DEFAULT_MOD_RUNTIME)
+        assertFalse(
+            "不得绕过拒载留痕包装（前置段失败必须进诊断面）",
+            host.contains("\n            ModRuntimeAssembly.csvLoadContext(gameRoot)"),
+        )
+        assertTrue("总闸缺省已按裁定翻开", UiPrefs.DEFAULT_MOD_RUNTIME)
     }
 }

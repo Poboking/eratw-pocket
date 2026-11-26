@@ -3,6 +3,7 @@ package com.eratw.port.platform.audio
 import com.eratw.port.core.audio.ChannelDecoder
 import com.eratw.port.core.audio.SoundSourceResolver
 import com.eratw.port.core.host.SoundResourcePaths
+import com.eratw.port.core.mod.EraA3AssetOverlay
 import java.io.File
 
 /**
@@ -44,6 +45,13 @@ import java.io.File
  * `054 Patchouli [パチュリー]/小图书馆/M_KOJO_K54_2_事件系.ERB:200-231` 的 `*.MP3` 同理），
  * 不做回落就会在真机静默不播。
  *
+ * ## mod 覆盖面（ERA-W1，A3 侧车的生产消费接线）
+ * 非缺省 [assetOverlay] 在场且 [gameRoot] 非 null 时，解析先查覆盖映射
+ * （[SoundResourcePaths.resolveInGameRoot] 的同名口径：`sound(name)` 命中且 mod 文件在场
+ * ⇒ 返回 `gameRoot` 下 `mods/rt2/<pkg>.assets/<modName>`），命中不了才走上面既有两级查找。
+ * 映射目标相对 gameRoot，与官方 `sound/` 同处一根；格式闸与下游全不感知来源差异。
+ * 缺省（[gameRoot] = null 或空表）⇒ 行为与改造前逐字相同（映射关掉的反向证明锚）。
+ *
  * ## 格式闸（第四条判定，`m11e-audio-format` 追加）
  * 文件存在**不等于**能出声。PC 的格式分流只有三分支（Sound.cs:83-96），`.mid` 会掉进
  * MediaFoundation 并在构造期炸掉，被裸 catch 转成 CodeEE（FunctionIdentifier.cs:2647-2650）。
@@ -57,6 +65,13 @@ import java.io.File
  */
 class FileSoundSourceResolver(
     soundDir: File,
+    /**
+     * mod 覆盖映射的路径基准（gameRoot，`mods/rt2/...` 相对它拼）；null（缺省）= 不消费覆盖面。
+     * 生产装配由 `GameHost` 传真根；测试装置可传 null 走纯官方路径。
+     */
+    private val gameRoot: File? = null,
+    /** 聚合后的覆盖查表（ERA-A3）；缺省空表 = 映射关掉，逐字等同改造前。 */
+    private val assetOverlay: EraA3AssetOverlay.AssetMap = EraA3AssetOverlay.AssetMap.EMPTY,
     private val open: (File) -> ChannelDecoder?,
 ) : SoundSourceResolver {
 
@@ -80,15 +95,37 @@ class FileSoundSourceResolver(
         return open(file)
     }
 
-    /** 名字 → 存在的文件；不存在 / 越界 / 非法路径一律 null（判定与 EXISTSOUND 同源）。 */
-    private fun locate(name: String): File? = SoundResourcePaths.resolve(rootDir, name)
+    /**
+     * 名字 → 存在的文件；不存在 / 越界 / 非法路径一律 null（判定与 EXISTSOUND 同源）。
+     *
+     * 覆盖面（ERA-W1）与 `SoundResourcePaths.resolveInGameRoot` 的 fail-closed 口径一致：
+     * 只认**文件在场**的映射目标，目标无效（无映射 / mod 文件缺失 / 坏档空表 / [gameRoot] null）
+     * 一律回落既有官方查找，不静默吞错也不崩。
+     */
+    private fun locate(name: String): File? {
+        val root = gameRoot
+        if (root != null) {
+            assetOverlay.sound(name)?.let { target ->
+                val modFile = File(root, target.resourcePath)
+                if (modFile.isFile) return modFile
+            }
+        }
+        return SoundResourcePaths.resolve(rootDir, name)
+    }
 
     companion object {
         /** 原版拼接的前缀 `.\sound\`（FunctionIdentifier.cs:2622、:2691）。 */
         const val SOUND_DIR_NAME: String = SoundResourcePaths.SOUND_DIR_NAME
 
-        /** 以游戏根（`Program.ExeDir` 口径）建解析器：根下的 `sound/`。 */
-        fun forGameRoot(gameRoot: File, open: (File) -> ChannelDecoder?): FileSoundSourceResolver =
-            FileSoundSourceResolver(File(gameRoot, SOUND_DIR_NAME), open)
+        /**
+         * 以游戏根（`Program.ExeDir` 口径）建解析器：根下的 `sound/`；[assetOverlay] 非空表时
+         * 覆盖映射按同一根解析（见 [SoundResourcePaths.resolveInGameRoot]）。
+         */
+        fun forGameRoot(
+            gameRoot: File,
+            assetOverlay: EraA3AssetOverlay.AssetMap = EraA3AssetOverlay.AssetMap.EMPTY,
+            open: (File) -> ChannelDecoder?,
+        ): FileSoundSourceResolver =
+            FileSoundSourceResolver(File(gameRoot, SOUND_DIR_NAME), gameRoot, assetOverlay, open)
     }
 }

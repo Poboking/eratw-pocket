@@ -14,6 +14,15 @@
     </style>
 
     <!--
+      浮层开合动效（`EratwShellDialog.dress` 用）：进场淡入 + 96% 放大 + 3% 上浮，出场淡出收一档。
+      只管「这一层压下来了」这一件事，不叠加弹跳/旋转。时长与缓动见 res/anim/shell_dialog_*。
+    -->
+    <style name="ShellDialogAnimation" parent="@android:style/Animation.Dialog">
+        <item name="android:windowEnterAnimation">@anim/shell_dialog_in</item>
+        <item name="android:windowExitAnimation">@anim/shell_dialog_out</item>
+    </style>
+
+    <!--
       这里**故意没有**设置页专用主题：SettingsActivity 继承 application 的 Theme.Eratw，
       是不透明的全屏窗口，因而拥有自己的方向域（manifest 的 unspecified = 跟随系统转动）。
       半透明/浮动窗口会被框架按它下面那只 Activity 的方向定屏，把设置页钉死在游戏的

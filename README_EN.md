@@ -145,8 +145,10 @@ the adapter itself.
 wired in via `includeBuild`, so after dependency substitution the engine inside
 the APK is always built from the sibling checkout; the engine-side
 sqlite-adapter (platform wiring of the real SQLite engine) and the RT2 official
-Mods (mod-family / mod-memory / mod-livingworld) enter the APK through the same
-substitution. erbcc's version and compiler
+Mods also enter the APK through the same substitution — the host now depends
+only on `mod-registry` (the carrier registry, which scans the `@ModCarrier`
+declarations across the `mod-*` modules at build time and generates the single
+manifest), instead of naming carrier modules one by one. erbcc's version and compiler
 source fingerprint are verified during the app build; drift fails the build.
 There is no window where the engine is upgraded but the bytecode is not
 rebuilt.

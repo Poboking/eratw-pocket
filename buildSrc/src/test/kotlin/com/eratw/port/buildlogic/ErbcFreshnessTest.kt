@@ -25,6 +25,17 @@ class ErbcFreshnessTest {
     @get:Rule
     val tmp = TemporaryFolder()
 
+    companion object {
+        /** 固定补丁资产夹具：路径与内容都写死 ⇒ 指纹是常量（跨语言 pin 用）。 */
+        private val FIXED_PATCHES = mapOf(
+            "index.yaml" to "patches:\n".toByteArray(),
+            "CB-001.patch" to "diff\n".toByteArray(),
+        )
+
+        /** 同一棵树由 devtools/erbc_freshness_probe.py 的 corpus_patches_digest() 算出的值。 */
+        private const val FIXED_PATCHES_DIGEST = "495f3fe49d35351d430243e6ea8a4a75c55bbb58d96725a7c9eb0bf49247484e"
+    }
+
     /** 捕 warn 文案的 Logger 替身：其余级别全数委托给 Gradle 真 logger。 */
     class RecordingLogger : Logger by Logging.getLogger("ErbcFreshnessTest") {
         val warnings = mutableListOf<String>()
@@ -57,6 +68,7 @@ class ErbcFreshnessTest {
         manifestOverrides: Map<String, String?> = emptyMap(),
         corpusExtra: Map<String, ByteArray> = emptyMap(),
         diskRemove: List<String> = emptyList(),
+        patches: Map<String, ByteArray>? = null,
     ): Fixture {
         val repo = tmp.newFolder("repo-${seq++}")
         File(repo, "core-vm/src/main/kotlin/com/eratw/port/core/Version.kt").apply {
@@ -73,6 +85,11 @@ class ErbcFreshnessTest {
             parentFile.mkdirs()
             writeText("package com.eratw.port.erbcc\n\nfun erbccEntry()\n")
         }
+        // 语料补丁资产面（CMP-66 §1c）：给 null 就不造目录 —— 那条判据按「目录缺席」不适用。
+        patches?.forEach { (rel, bytes) ->
+            File(repo, "devtools/corpus-patches/${rel}").apply { parentFile.mkdirs() }.writeBytes(bytes)
+        }
+        val patchesDigest = corpusPatchesDigest(repo)?.first
 
         val corpus = tmp.newFolder("corpus-${seq++}")
         val sources = linkedMapOf(
@@ -106,6 +123,7 @@ class ErbcFreshnessTest {
             "build-mode full",
             "compiler-digest $digest",
             "compiler-sources 3",
+            *listOfNotNull(patchesDigest?.let { "corpus-patches-digest $it" }).toTypedArray(),
             "artifact erbc.v1/program.erbc ${programFile.length()} ${sha256Of(programFile)}",
             "corpus-root ${corpus.absolutePath}",
             "source-files ${sources.size}",
@@ -349,6 +367,43 @@ class ErbcFreshnessTest {
             manifestOverrides = mapOf("source-files" to "4", "source K51.ERB" to "${fixed.size} $fixedSha"),
         )
         assertHardAndSoft(fx, "语料改过但没重编")
+    }
+
+    // ---- 语料补丁资产指纹（CMP-66 §1c；2026-11-20 CB-020/021/022 没进包）------------
+
+    @Test
+    fun `补丁资产指纹一致走 verified 成功路径`() {
+        val fx = fixture(patches = FIXED_PATCHES)
+        assertNotNull(verify(fx, hard = true))
+    }
+
+    @Test
+    fun `补丁资产指纹与 Python 探针逐字节同口径`() {
+        // 跨语言 pin：同一份固定资产树，devtools/erbc_freshness_probe.py 的
+        // corpus_patches_digest() 算出的值必须是这个常量（两边口径漂了就在这里先红）。
+        val fx = fixture(patches = FIXED_PATCHES)
+        assertEquals(FIXED_PATCHES_DIGEST, corpusPatchesDigest(fx.repoRoot)!!.first)
+    }
+
+    @Test
+    fun `manifest 缺补丁指纹行即拒`() {
+        val fx = fixture(patches = FIXED_PATCHES, manifestOverrides = mapOf("corpus-patches-digest" to null))
+        assertHardAndSoft(fx, "没有 corpus-patches-digest 行")
+    }
+
+    @Test
+    fun `补丁资产改过而产物没重编即拒`() {
+        val fx = fixture(patches = FIXED_PATCHES)
+        // 只加一个补丁文件：编译器源码树与语料树一个字节都没动 —— 这正是事故里
+        // 「补丁改了、包还是老 erbc」的形状。
+        File(fx.repoRoot, "devtools/corpus-patches/CB-020.patch").writeText("new patch\n")
+        assertHardAndSoft(fx, "产物由旧补丁资产产出")
+    }
+
+    @Test
+    fun `补丁目录缺席不做补丁指纹判据`() {
+        // 第三方语料根没有 corpus-patches 目录 ⇒ 判据不适用，其余判据照旧放行。
+        assertNotNull(verify(fixture(), hard = true))
     }
 
     /** 同一 target 多笔补丁的链式夹具：磁盘=链头病灶版，清单=链尾修后版，留痕逐条给出。 */

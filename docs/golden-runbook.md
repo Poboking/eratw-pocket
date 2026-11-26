@@ -1,7 +1,13 @@
 # Golden Runbook — PC 原版引擎 GOLDEN.ERB 采集与 diff 指南
 
-目的：在 PC 原版引擎 `Emuera_LazyLoadingV3.0_x64.exe` 上采集 `fixtures/golden/GOLDEN_*.ERB` 的控制台输出，
+目的：在 PC 原版引擎上采集 `fixtures/golden/GOLDEN_*.ERB` 的控制台输出，
 作为 L2 规约一致性的黄金基准；未来 Kotlin VM 运行同一份脚本时输出必须逐字节一致（时间/内存类行除外，见 §6）。
+**基准语料根自 `db76d203` 起切 4.981**（`eraTW4.981-261017-EAGLOV3`，BOARD 在案裁定）；4.980 根采集的历史基准已退役。
+**2026-11-14 语料换代注记**：出包语料根已切 `eraTW4.981-261111-EAGLOV3`（`NOW_VERSION=20261111`，
+蛇版官方仓提交 `278662ced`）；golden 基准的**采集根仍为 261017**（现 `fixtures/golden/baseline/` 的
+逐行锚全部落在 261017 采集的事实上，且经查所有程序化消费只锚引擎语义行、零语料内容依赖行），
+重采需 261111 顶层宿主 exe（现共享根缺）+ 全量行锚复核，独立立项再做。语料换代对 golden 的
+影响面排查见本波交付记录。
 
 依据的反编译源码位置均以 `reference/emuera-cs/` 为根，仅引用过一次的行号会随源码漂移，故此处给出「文件:大致位置」。
 
@@ -23,7 +29,7 @@
   GOLDEN_09_MISC.ERB          SKIPDISP/NOSKIP/AWAIT/GETTIME/ASSERT/声音/TOOLTIP/RESETDATA/OUTPUTLOG
   GOLDEN_10_XMLMAP.ERB        XML/MAP/DataTable/变量与函数枚举
   GOLDEN_11_GVIEW.ERB         图形缓冲/精灵/CBG/窗口尺寸
-# 覆盖率统计：内部 golden-coverage.py（不随公开仓发布）
+../Kotera/tools/golden-coverage.py    覆盖率统计（对照 specs，可重复运行）
 ```
 
 编码注意：所有 ERB 为纯 ASCII（无 BOM）。`emuera.config` 的 `DEFAULT ANSI ENCODING:CHINESE_HANS`（GBK）与 UTF-8 读取结果一致，避免编码成为 diff 噪声源。
@@ -71,7 +77,7 @@
 
 现行步骤（A11c 定稿，全程**只往游戏 ERB/ 添加 GOLDEN_*.ERB，不改游戏任何既有文件**）：
 
-1. **复制脚本**：把 `fixtures/golden/` 下全部 `GOLDEN_*.ERB` 复制到游戏目录 `eratw-画蛇添足版eratw4.980/ERB/`（**必须放 ERB 根目录**，保证启动即全量装载、钩子在 `@EVENTFIRST` 派发前已注册；`SORT FILENAMES:YES` 下 `GOLDEN_00_ROOT.ERB` 与 `SYSTEM.ERB` 同层，桶序由 `#PRI` 机制保证、与文件名无关）。
+1. **复制脚本**：把 `fixtures/golden/` 下全部 `GOLDEN_*.ERB` 复制到游戏目录 `eraTW4.981-261017-EAGLOV3/ERB/`（**必须放 ERB 根目录**，保证启动即全量装载、钩子在 `@EVENTFIRST` 派发前已注册；`SORT FILENAMES:YES` 下 `GOLDEN_00_ROOT.ERB` 与 `SYSTEM.ERB` 同层，桶序由 `#PRI` 机制保证、与文件名无关）。启动用该根顶层自带宿主 `Emuera_skiaV16_x64.exe`。TODO(verify)：§3 的 `Emuera_LazyLoadingV3.0_x64.exe` 是 4.980 时代采集宿主名；4.981 顶层 exe 与 golden 环境头自述「Lazyloadingv3.0」是否同一变体，引用前须以 baseline 环境头逐字核对。
 2. **lazyloadingfiles.dat**：~~旧版本节称"磁盘新文件与 `.dat` 缓存对比，不在缓存中的文件自动进入 `ChangedFiles` → 启动时增量重建"，**已证伪**~~。实测（2026-10-18，A11b/组长）：`lazyloading.cfg` 只声明个人口上目录，索引 2,154 行**全部**落在这些目录内（剔除 `IsMethod/IsEvent`，`Process.cs:858-870`）；删除 `lazyloadingfiles.dat`/`lazyloading.dat` 后引擎全量重建，重建产物与备份**逐字节相同**，且**不含**根目录新函数的任何名字——根目录文件根本不走懒加载账本，它们是启动全量扫描装载的（`specs/loader.md` C.8/C.9）。结论不变但依据更正：**该文件无需也不应手工重建**，`索引生成.bat` 也不需要跑。
 3. **emuera.config**：无需改动（根目录全量装载与启动无关于此配置；`ALLOW DEBUG COMMANDS` 与启动无关，见上方勘误 1）。
 4. **启动**：双击 `Emuera_LazyLoadingV3.0_x64.exe`（不要用 DEBUG_MODE.bat，避免调试窗口混入截图/日志路径）。
@@ -158,13 +164,13 @@ grep -n "=== SECTION" /tmp/a.norm
 | OUTPUTLOG | 主采集 = 套件内 `OUTPUTLOG "GOLDEN_ROOT_LOG.txt"`（`=== END ===` 后立即执行，完整回放，§3）；游戏 `BEGIN` 会清空控制台日志，控制台 `@OUTPUTLOG` 在返回游戏后已失效（run4 实证）；GOLDEN_09 的 `GOLDEN_LOG.txt` 为中途快照，仅冗余 | 采集后把 `GOLDEN_ROOT_LOG.txt` 移入 baseline/ 并删除游戏目录的 GOLDEN_LOG.txt/GOLDEN_ROOT_LOG.txt/emuera.log 残留 |
 | 定时/实时输入 | `TONEINPUT*` 的 500ms 超时窗口内若有按键落入，结果会从默认值变为输入值（run3 `TONEINPUTS=TS` vs run4 空）；`INPUTMOUSEKEY`/`ISTIMEOUT` 同理 | 自动套件里 `TONEINPUT*` 一律带 `canskip`（mouse=0 必须显式给出，跳过路径无条件解引用 Mouse，FunctionIdentifier.cs:1040/1088）；`INPUTMOUSEKEY`+`ISTIMEOUT` 移到手工套件，不进自动基准 |
 
-## 7. 覆盖率现状（内部 golden-coverage.py 输出）
+## 7. 覆盖率现状（golden-coverage.py 输出）
 
 - isa.yaml 语句名（含 aliases 展开共 303 个）：**命中 300（99.0%）**，未命中 3 条（ADDSPCHARA / CALLSHARP / FORCE_BEGIN，理由见 §6）。
 - builtin-functions.yaml（271 个）：**命中 252（93.0%）**，未命中 19 条（全部属于 §6 表中的排除项）。
 - 13 个 ERB 文件共 1586 行（含 GOLDEN_12_SYMBOLS，采集符号解析规则用；A11c 加钩子/注释后计数）。
 
-统计可复现：内部 `golden-coverage.py`（不随公开仓发布）。
+统计可复现：`python ../Kotera/tools/golden-coverage.py`
 
 ## 8. GOLDEN_12 的验证点与预期输出
 
@@ -227,15 +233,25 @@ EVENT-BUCKET-REMARK=collect one turn end to see markers
 
 本节断言已固化为单元测试，**不再依赖人工看 CLI 输出**：
 
-- 测试：`../Kotera/tools/erbcc/src/test/kotlin/com/eratw/port/erbcc/SymbolsTest.kt`
-- 命令：`cd ../Kotera && ./gradlew :tools:erbcc:test`（随 `:tools:erbcc:build` 一并执行）
+- 测试：`tools/erbcc/src/test/kotlin/com/eratw/port/erbcc/SymbolsTest.kt`
+- 命令：`gradle :tools:erbcc:test`（随 `:tools:erbcc:build` 一并执行）
 - 覆盖：`fixtures/golden` → 重名 4（非事件 2 / 事件 2）、`@G12_FUNC` 生效行 43、`@G12_PLAIN` 生效行 56、
   `@EVENTTURNEND` 执行序 65→61→70、标签名与系统语句零冲突；另有合成用例覆盖形参个数 / `#LOCALSIZE` /
   `#LOCALSSIZE` 的解析（含带默认值、字符串内含逗号、空括号、无括号）。
 - 全量语料冒烟：同一文件内的 `fullCorpusSmoke`，语料路径由环境变量 `ERATW_CORPUS`（或系统属性
   `-Deratw.corpus`）提供；缺失时自动 skip（CI 上没有语料）：
-  `(cd ../Kotera && ERATW_CORPUS=<游戏>/ERB ./gradlew :tools:erbcc:test)`
+  `ERATW_CORPUS=<游戏>/ERB gradle :tools:erbcc:test`
   断言 6 组事件重名的定义数与 3 个抽样函数的 `argCount/localSize/localsSize`。
+
+## 9. 复制根对拍装置（`devtools/pc_cmp/`）复用纪律（2026-11-26 立，判词 21）
+
+本装置用 `eraTW4.981-261017-EAGLOV3/Emuera_skiaV16_x64.exe --CliDebug` 采 PC 原话（4.980 的 LazyLoadingV3.0 无 `--CliDebug`，跨宿主对拍要另配）；单次启动约 4 分钟（装载 45 s + 菜单导航 + 读档），首轮 `advance_boot` 的 `first_idle = 170.0` s。复用只改 `CASES` + 加夹具，五条硬纪律不许减：
+
+1. **可写目录一律真复制**：`plugins` / `bad` / `sav` / `data` 必须在副本根内是真目录，**禁 junction / symlink / hardlink 指回语料根**。2026-11-25 实测教训：`plugins` 做成 junction ⇒ 引擎启动写 QOL 缓存穿透链接，把只读语料根 `261111/plugins/qol_data.db` 的 mtime 推了（字节判读见 `docs/UPSTREAM-BUG-PR.md` 台账与 BOARD 红线条）。
+2. **每个写入目标过目的端锁**：`assert_write_dest` 断言 realpath(dest) 落在本轮 `run_root` 内，seed 复制、`emuera.config` 改写、夹具投放三类都算。同批教训：23:51 那次语料根 `sav/global.sav` 是 seed 步把目标算成 `dirname(dirname(run_root))/sav` 倒灌，不是引擎退出写的。
+3. **永不向 PC 发 `quit` / 退出保存指令**，收工 `taskkill /T /F`——原版退出路径会保存全局态，落点不受我们控制。
+4. **每轮跑批前后全树 sha256 + mtime 双指纹**：哈希变 = 判红、仅 mtime 变 = WARN；`--hash-only` 单独出证；基线 `taken_at` 必须早于本轮首跑（本轮基线 00:17 早于 00:23 首案，红线复扫 32,750 文件 changed 0 / added 0 / removed 0）。
+5. **改动 `run.py` 后先跑 `--selfcheck`**（9 项，含四条「故意绊线」负控：可写目录 junction 化 / 副本根落在语料根内 / junction 目标缺失 / 拿语料根 `sav/global.sav` 当写目标），全 PASS 才准起真机跑批；MB 级 evidence 与 `__pycache__` 不入库。
 
 调试时仍可单跑 CLI：`erbcc symbols --corpus ../Kotera/fixtures/golden`（期望同上），
 `--collator-check` 对该目录应报 `PASS`（无定义集合翻转）。

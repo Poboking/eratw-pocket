@@ -157,6 +157,9 @@ class UiPrefsResetTest {
         // 的契约对它只是碰巧成立（resetAll 走整表 clear），将来谁把它挪进 KEEP_ON_RESET
         // 或改成逐键清理，这条闸不会红。
         "quick_macros",
+        // ModDX-4 A+：mod 变更一次性标记（与 restore_restart_pending 同族，但登记进了
+        // KEEP_ON_RESET —— 恢复默认不改 mod 盘面，标记的提示义务不因重置消失）。
+        "mod_restart_pending",
     )
 
     /**
@@ -175,6 +178,7 @@ class UiPrefsResetTest {
         "player_stats_id",
         "player_stats_last_day",
         "tutorial_shown",
+        "mod_restart_pending",
     )
 
     /** 把整张表写满非缺省值，模拟「玩家把每一项都调过一遍」。 */
@@ -215,6 +219,7 @@ class UiPrefsResetTest {
         map["player_stats_last_day"] = "2026-11-08"
         map["tutorial_shown"] = true
         map["restore_restart_pending"] = true
+        map["mod_restart_pending"] = true
         return this
     }
 

@@ -19,7 +19,9 @@ import org.junit.Test
  * 五件事：
  * 1. 半成品（缺容器或缺 manifest，含只剩 `.sources`）在 [ModChainAssembly.assemble]
  *    **收集容器之前**清掉 ⇒ 不再触发单向配对的启动砖化；
- * 2. 源失联（`.sources` 名单一个都不在 `mods/`）整套删除；任一源在场 ⇒ 整套保留；
+ * 2. 源失联（`.sources` 名单一个都不在 `mods/`）**也整套保留**——「源失联」删除判据已撤销
+ *    （2026-11-18 误删风险审计裁决：删它对启动无收益、还会丢掉玩家仍在用的包与设置），
+ *    只在真失联时写一条 `MOD_PKG_GC` 保留取证行；任一源在场 / 无 provenance 同样保留；
  * 3. `.sources` 缺失 / 空名单 ⇒ 保守不删（老包与手放件没有 provenance）；
  * 4. 安全阀：内置 `eratw.*` 与非 `kojo-` 前缀手放件永不删除；
  * 5. 关态零接触；provenance 排序与写序同源。
@@ -85,16 +87,17 @@ class ModPackageGcTest {
     }
 
     // ------------------------------------------------------------------
-    // 判据 2/3：源失联 vs 保守保留
+    // 判据 2/3：源失联 = 保留（判据已撤销），只剩取证行
     // ------------------------------------------------------------------
 
     @Test
-    fun `源失联整套删除而任一源在场或无provenance保守保留`() {
+    fun `源失联不再删除而任一源在场或无provenance保守保留`() {
+        SaveDiagnostics.clear()
         val root = tempRoot()
         val dir = rt2(root)
         val md = mods(root)
 
-        // ① 失联：provenance 名单全不在 mods/。
+        // ① 失联：provenance 名单全不在 mods/（撤销删除判据后 ⇒ 保留 + 一条取证行）。
         val lost = ModPackageInventory.memberNames("kojo-11111111")
         for (name in lost) put(dir, name)
         File(dir, "kojo-11111111.sources").writeText("gone1.ERB\ngone2.ERH\n", Charsets.UTF_8)
@@ -122,13 +125,31 @@ class ModPackageGcTest {
 
         ModPackageInventory.gcOrphans(dir, md)
 
-        assertAllGone(dir, lost)
+        // 完整包一律保留：源失联只是取证行，不再是删除依据（撤销于 2026-11-18 审计裁决）。
+        assertAllPresent(dir, lost)
         assertAllPresent(dir, kept)
         assertAllPresent(dir, legacy)
         assertAllPresent(dir, emptyProv)
         assertAllPresent(
             dir,
             listOf("eratw.demo.erbm", "eratw.demo.manifest", "handmade.erbm", "handmade.manifest"),
+        )
+        val notes = SaveDiagnostics.snapshot()
+        assertTrue(
+            "源全失联只留一条「完整包保留」取证行：$notes",
+            notes.any {
+                it.contains("MOD_PKG_GC") &&
+                    it.contains("kojo-11111111") &&
+                    it.contains("完整包保留")
+            },
+        )
+        assertTrue(
+            "在场 / 无 provenance / 空名单的包不得留取证行：$notes",
+            notes.none {
+                it.contains("kojo-22222222") ||
+                    it.contains("kojo-33333333") ||
+                    it.contains("kojo-44444444")
+            },
         )
     }
 
@@ -171,13 +192,29 @@ class ModPackageGcTest {
         val bytes = ModPackageInventory.sourcesBytes(listOf("b.ERB", "A.erh"))
         assertEquals("A.erh\nb.ERB\n", String(bytes, Charsets.UTF_8))
 
+        assertEquals(
+            "包成员文件六件（写序 = 名单序）：provenance → 内容指纹 → manifest → 容器 → 覆盖侧车 → 代码身份侧车",
+            listOf(
+                "kojo-x.sources",
+                "kojo-x.sources.sha256",
+                "kojo-x.manifest",
+                "kojo-x.erbm",
+                "kojo-x.assetmap",
+                "kojo-x.codeid",
+            ),
+            ModPackageInventory.memberNames("kojo-x"),
+        )
+
         val src = sourceOf("ModImportController.kt")
         val sourcesAt = src.indexOf("saveArtifact(rt2Dir, sourcesName")
+        val fingerprintAt = src.indexOf("saveArtifact(rt2Dir, fingerprintName")
         val manifestAt = src.indexOf("saveArtifact(rt2Dir, manifestName")
         val erbmAt = src.indexOf("saveArtifact(rt2Dir, erbmName")
         assertTrue(
-            "写序必须是 provenance → manifest → 容器（实得 $sourcesAt/$manifestAt/$erbmAt）",
-            sourcesAt in 0 until manifestAt && manifestAt in 0 until erbmAt,
+            "写序必须是 provenance → 内容指纹 → manifest → 容器" +
+                "（实得 $sourcesAt/$fingerprintAt/$manifestAt/$erbmAt）",
+            sourcesAt in 0 until fingerprintAt && fingerprintAt in 0 until manifestAt &&
+                manifestAt in 0 until erbmAt,
         )
     }
 

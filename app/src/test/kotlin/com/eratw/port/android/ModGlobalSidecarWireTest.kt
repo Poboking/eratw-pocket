@@ -7,6 +7,7 @@ import com.eratw.port.core.save.GlobalSidecarSaveWiring
 import com.eratw.port.core.save.RootedSaveFileIo
 import com.eratw.port.core.save.SaveConfig
 import com.eratw.port.core.save.SidecarBinding
+import com.eratw.port.core.save.SidecarFormatException
 import com.eratw.port.core.save.SidecarSaveBundle
 import com.eratw.port.core.vars.VariableStore
 import com.eratw.port.modapi.ArchetypeDecl
@@ -19,6 +20,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -226,4 +228,126 @@ class ModGlobalSidecarWireTest {
         session2.shutdown()
         session1.shutdown()
     }
+
+    // region ModDX-4 RT2：global.rt2 恢复完成安全点。
+    //  归因诊断行 = 「mod.global.rt2 restore complete chunks=N packages=N keys=N」，是
+    //  restoreGlobalRt2 成功路径（Applied：adoptStorage + 种子采纳落定）的最后一个语句。
+
+    @Test
+    fun `恢复完成安全点 - 成功路径恰一次触发`() {
+        val root = tempGameRoot()
+        writeManifest(root, "mod_a.manifest", manifest())
+        val mod1 = ValueMod("safe-point-gold")
+        val store1 = freshStore()
+        val session1 = attach(root, store1, listOf("mod.a" to mod1))!!
+        val wiring = GlobalSidecarSaveWiring.of(store1)!!
+        val binding = SidecarBinding(11L, 22L, 33)
+        val groups = wiring.port.captureGlobalChunks()
+        val bytes = wiring.port.captureGlobalRt2Bytes(binding, groups.activeChunks, groups.orphanChunks)
+
+        val mod2 = ValueMod("from-second-session")
+        val store2 = freshStore()
+        val session2 = attach(root, store2, listOf("mod.a" to mod2))!!
+        val restoreWiring = GlobalSidecarSaveWiring.of(store2)!!
+        assertTrue("绑定吻合必须 Applied（安全点语义前提：恢复确实完成）", restoreWiring.port.restoreGlobalRt2(bytes, binding))
+        assertEquals(
+            "恢复确实落定（安全点触发 = 恢复态已可读）",
+            "safe-point-gold",
+            mod2.context!!.storage.get("marker"),
+        )
+        assertEquals(
+            "成功路径安全点恰一次",
+            1,
+            logs.count { it.startsWith("mod.global.rt2 restore complete") },
+        )
+        session2.shutdown()
+        session1.shutdown()
+    }
+
+    @Test
+    fun `恢复完成安全点 - 失配与损坏中断路径都不触发`() {
+        val root = tempGameRoot()
+        writeManifest(root, "mod_a.manifest", manifest())
+        val mod1 = ValueMod("interrupt-gold")
+        val store1 = freshStore()
+        val session1 = attach(root, store1, listOf("mod.a" to mod1))!!
+        val wiring = GlobalSidecarSaveWiring.of(store1)!!
+        val binding = SidecarBinding(11L, 22L, 33)
+        val groups = wiring.port.captureGlobalChunks()
+        val bytes = wiring.port.captureGlobalRt2Bytes(binding, groups.activeChunks, groups.orphanChunks)
+
+        val mod2 = ValueMod("from-second-session")
+        val store2 = freshStore()
+        val session2 = attach(root, store2, listOf("mod.a" to mod2))!!
+        val ctx2 = mod2.context!!
+        val restoreWiring = GlobalSidecarSaveWiring.of(store2)!!
+
+        // 失配路径：返回 false、容器不交还、无安全点（fail-closed：没触发 = 恢复没完成）。
+        assertFalse(
+            "绑定失配返回 false（不抛）",
+            restoreWiring.port.restoreGlobalRt2(bytes, SidecarBinding(11L, 22L, 34)),
+        )
+        assertEquals(
+            "失配路径不触发安全点",
+            0,
+            logs.count { it.startsWith("mod.global.rt2 restore complete") },
+        )
+        assertEquals("失配不应用，mod 侧保持自己的值", "from-second-session", ctx2.storage.get("marker"))
+
+        // 中断路径：容器损坏原样上抛（生产缝由 FileSystemOps.restoreGlobalSidecarIfWired
+        // 整段 catch 折警告，LOADGLOBAL 返回值不变），adoptStorage 未发生，安全点同样不触发。
+        assertThrows(SidecarFormatException::class.java) {
+            restoreWiring.port.restoreGlobalRt2(byteArrayOf(0x00), binding)
+        }
+        assertEquals(
+            "中断路径也不触发安全点",
+            0,
+            logs.count { it.startsWith("mod.global.rt2 restore complete") },
+        )
+        assertEquals("中断不应用，mod 侧保持自己的值", "from-second-session", ctx2.storage.get("marker"))
+        assertTrue("失配警告留痕不静默", logs.any { it.contains("绑定失配") })
+        session2.shutdown()
+        session1.shutdown()
+    }
+
+    @Test
+    fun `恢复完成安全点 - 诊断行归因与读数随恢复容器走`() {
+        val root = tempGameRoot()
+        writeManifest(root, "mod_a.manifest", manifest())
+        val mod1 = ValueMod("readings-gold")
+        val store1 = freshStore()
+        val session1 = attach(root, store1, listOf("mod.a" to mod1))!!
+        // 再写第二个普通键：读数必须数出恢复容器里的真实键数，不是常数。
+        session1.storage.apiFor("mod.a").put("extra", "second-key")
+        val wiring = GlobalSidecarSaveWiring.of(store1)!!
+        val binding = SidecarBinding(11L, 22L, 33)
+        val groups = wiring.port.captureGlobalChunks()
+        val bytes = wiring.port.captureGlobalRt2Bytes(binding, groups.activeChunks, groups.orphanChunks)
+
+        val mod2 = ValueMod("from-second-session")
+        val store2 = freshStore()
+        val session2 = attach(root, store2, listOf("mod.a" to mod2))!!
+        val restoreWiring = GlobalSidecarSaveWiring.of(store2)!!
+        assertTrue(restoreWiring.port.restoreGlobalRt2(bytes, binding))
+        assertEquals(
+            "第二个键也随恢复容器落定（读数来源 = 恢复后容器）",
+            "second-key",
+            session2.storage.apiFor("mod.a").get("extra"),
+        )
+
+        val complete = logs.filter { it.startsWith("mod.global.rt2 restore complete") }
+        assertEquals("恰一行归因诊断", 1, complete.size)
+        assertEquals(
+            "归因前缀 mod.global.rt2 + 恢复容器真实读数：1 片 / 1 包 / 2 键",
+            "mod.global.rt2 restore complete chunks=1 packages=1 keys=2",
+            complete.single(),
+        )
+        val okIndex = logs.indexOfFirst { it.startsWith("mod.global.rt2 restore ok") }
+        val completeIndex = logs.indexOfFirst { it.startsWith("mod.global.rt2 restore complete") }
+        assertTrue("安全点在 restore ok 之后 = 恢复段收尾", okIndex >= 0 && completeIndex > okIndex)
+        session2.shutdown()
+        session1.shutdown()
+    }
+
+    // endregion
 }

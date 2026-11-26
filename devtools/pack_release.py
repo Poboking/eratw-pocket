@@ -24,6 +24,7 @@ python devtools/pack_release.py --no-update      # 不内置更新源（开发/�
 python devtools/pack_release.py --verify-only    # 只体检已有 APK，不构建
 python devtools/pack_release.py --dry-run        # 只打印 gradle 命令（不配令牌也放行）
 python devtools/pack_release.py --print-corpus-root-name  # 只打印现行语料根名（pack_one 取名单源，不构建）
+python devtools/pack_release.py --no-require-seed-qol-db  # dev 试包：缺预置库只告警不拒（正式档缺省即强制）
 ```
 
 退出码：`0` 全绿（包已归档）· `1` 构建失败 · `2` 配置不合格（没端点/没令牌，拒出包）·
@@ -53,14 +54,22 @@ python devtools/pack_release.py --print-corpus-root-name  # 只打印现行语�
 6. **INTERNET 权限** —— 配了端点就必须能在合并后的 manifest 里看到
    `android.permission.INTERNET`。2026-10-27 首个真机包就是栽在这：串都进包了、五步全绿，
    但没这条权限，真机上一上报就 SecurityException（被 runCatching 吞成一行 logcat），
-   端点一份也收不到，玩家侧零痕迹。
+   端点一份也收不到，玩家侧零痕迹；
+7. **预置 qol_data.db 自证** —— 缺库时本脚本先自动跑 `devtools/gen_qol_seeddb.py`（真引擎、
+   约 105s）再按 `build/seeddb/qol_data.db` + `seed.json` 两个 sha256 对账，带
+   `-PeratwSeedQolDb` 让 staging 整份覆盖 `assets/plugins/qol_data.db`（玩家首启不再跑
+   36,418 行建图），出包后回读 `package.report` 的 `seed-qol-db <sha256> <bytes>` 行与生成物
+   比对。**正式出包缺省强制**：缺失/指纹不符/自动生成失败/包里没有自证 ⇒ 拒绝出包；
+   dev 试包用 `--no-require-seed-qol-db` 放宽成告警。
 
 1-2 不过 = 这个包不会上报；3 不过 = 包的形状与预期不符；4 不过 = 章不对（与钉值不符或 debug 章），
 老包不能覆盖升级；5 回 403 = 令牌错，别发；6 不过 = 装上去也发不出来。
 
-出完把 APK 复制一份到 `build/release-artifacts/eratw-<versionName>+<versionCode>-<git7>-
+出完把 APK 复制一份到 `build/release-artifacts/<game>-<versionName>+<versionCode>-<git7>-
 <full|noassets|skipassets>-<sha前8>.apk` 并配 `.sha256.txt`（gradle 输出目录会被下次构建
-覆盖，归档名里带版本与产物指纹才认得出哪个包是哪个提交出的）。`--no-archive` 跳过复制。
+覆盖，归档名里带版本与产物指纹才认得出哪个包是哪个提交出的）。`<game>` 跟随随包语料：
+给了 `--shell-profile` 用其 gameName，否则用 `--game-root` 目录名，两者皆无才是 `eratw`。
+`--no-archive` 跳过复制。
 
 本脚本只做「带参数 + 体检 + 归档」，不碰构建逻辑、不改任何 gradle 配置。
 """
@@ -68,6 +77,7 @@ python devtools/pack_release.py --print-corpus-root-name  # 只打印现行语�
 from __future__ import annotations
 
 import argparse
+import collections
 import concurrent.futures
 import hashlib
 import json
@@ -77,6 +87,7 @@ import shlex
 import struct
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -94,6 +105,8 @@ if HERE not in sys.path:
 import update_manifest_check  # noqa: E402 同目录：设备端清单/镜像判式的单源（L2 起）
 import engine_compat  # noqa: E402 同目录：引擎配置/印章单源（ENGC-6 / B6-PACK）
 import engine_compat_report  # noqa: E402 同目录：引擎兼容报告渲染（ENGC-6 / B6-PACK）
+import shell_profile  # noqa: E402 同目录：壳层品牌配置单源（SHELL-PROFILE）
+import game_versions  # noqa: E402 同目录：每款游戏各自的版本账本（GAME-VERSION）
 
 APK_PATH = os.path.join(APP_ROOT, "app", "build", "outputs", "apk", "release", "app-release.apk")
 RES_VALUES = os.path.join(
@@ -170,6 +183,26 @@ APPLIED_CORPUS_PATCHES_EMPTY = "-"
 # 产物缺 applied_corpus_patches 列直接进 kind_problems → exit 3，产物自己证明自己。
 # 本路任务 A 已落地，故默认 True（严格档）；过渡档仅留作接线完成前的临时形态，勿长期开启。
 APPLIED_CORPUS_PATCHES_STRICT = True
+
+# ---------------------------------------------------------------- 预置 qol_data.db（跳过首次建图）
+# 链路：devtools/gen_qol_seeddb.py 在出包期用真引擎把 261111 语料的建图结果落成 SQLite 文件
+# （12 表、GRAPH_DISTANCE 36,418 行）→ staging 期整份覆盖 assets/plugins/qol_data.db →
+# 玩家首启读到的 _meta.graph_schema_version 就等于 NOW_VERSION，语料不再跑 GRAPH_DB_REBUILD
+# （语料 qol_graph_init.ERB:49-51 的判据只比这个版本号；桌面实测 TITLE 相位建图 wall ≈ 6.8s）。
+# 本脚本负责把住「这个库是不是当前 erbc 产物跑出来的」这道门：seed.json 声明值与实测 sha 对不上
+# 就不把 -PeratwSeedQolDb 交给 gradle —— 否则会出一个「引擎/语料换了、图还是旧的」的包，
+# 而语料只认 _meta 版本号、不会自愈，玩家侧表现为寻路/距离错到某一版为止。
+SEED_QOL_DB_DIR_REL = os.path.join("build", "seeddb")
+SEED_QOL_DB_BASENAME = "qol_data.db"
+SEED_QOL_DB_META_BASENAME = "seed.json"
+# staging 后的随包条目（与 buildSrc StageGameAssetsTask.applySeedQolDbOverlay 同字面）。
+SEED_QOL_DB_ASSET_ENTRY = "assets/plugins/qol_data.db"
+# package.report 自述键：`seed-qol-db <sha256> <bytes>`；来源路径另起一列便于事后追。
+SEED_QOL_DB_REPORT_KEY = "seed-qol-db"
+SEED_QOL_DB_SOURCE_KEY = "seed-qol-db-source"
+# 出包期现场生成预置库的入口（真引擎跑 TITLE 建图）；与文档/告警文案同源，不另记路径。
+SEED_QOL_DB_GENERATOR_REL = os.path.join("devtools", "gen_qol_seeddb.py")
+ENV_ERBC_DIR = "ERATW_ERBC_DIR"
 
 # ---------------------------------------------------------------- 语料根（4.981 换代）
 
@@ -610,9 +643,323 @@ def gradle_worker_count() -> int:
     return max(4, min(64, logical // 2 if logical > 8 else logical))
 
 
+class SeedQolDb:
+    """一个已通过指纹对账、可以交给 gradle 的预置 qol_data.db。
+
+    刻意用普通类而不是 `@dataclass`：`devtools/test_engine_compat.py` 的反向证明会把本文件
+    变异后按 file-location 载入（模块不进 `sys.modules`），dataclass 在那种载入方式下会在
+    `sys.modules.get(cls.__module__)` 上崩，反向证明就变成了与变异无关的假红。
+    """
+    __slots__ = ("path", "db_sha256", "db_bytes", "program_sha256", "origin")
+
+    def __init__(self, path: str, db_sha256: str, db_bytes: int,
+                 program_sha256: str, origin: str) -> None:
+        self.path = path                # 绝对路径（gradle 侧要求绝对路径）
+        self.db_sha256 = db_sha256
+        self.db_bytes = db_bytes
+        self.program_sha256 = program_sha256   # 生成它的那份 program.erbc 的 sha256
+        self.origin = origin            # "auto"（缺省 build/seeddb 自动发现）/ "cli"（显式）
+
+
+class SeedQolDbDiscovery:
+    """[discover_seed_qol_db] 的结果：要么拿到可用的 seed，要么给出为什么没有。"""
+    __slots__ = ("seed", "problems", "warnings", "skipped")
+
+    def __init__(self) -> None:
+        self.seed = None
+        self.problems: list[str] = []   # 判红项（require / 显式路径 / 指纹不符）
+        self.warnings: list[str] = []   # 只忽略不判红的说明
+        self.skipped = ""               # 本次根本不适用（skip-assets / 第三方语料…）
+
+
+def sha256_file(path: str) -> str:
+    """流式算文件 sha256（预置库 1.4 MB、program.erbc 数十 MB 都不进内存）。"""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def erbc_program_candidates() -> list[str]:
+    """当前 erbc 产物的 `program.erbc` 候选（顺序即优先级，去重后取第一个存在的）。
+
+    与 [preflight_erbc_digest] 同口径：`ERATW_ERBC_DIR` 优先，缺省是
+    `devtools/erbc_freshness_probe.py` 的 `MANIFEST_REL` 所在目录；不新造第三条路径猜测。
+    """
+    dirs: list[str] = []
+    env = os.environ.get(ENV_ERBC_DIR, "").strip()
+    if env:
+        dirs.append(env)
+    try:
+        import erbc_freshness_probe  # noqa: F811 同目录探针：产物目录的单源
+        dirs.append(os.path.join(APP_ROOT, os.path.dirname(str(erbc_freshness_probe.MANIFEST_REL))))
+    except Exception:  # 探针缺失不该让出包脚本在这里就崩，退回公开目录
+        dirs.append(os.path.join(APP_ROOT, "tools", "erbcc", "build", "erbc-out", "erbc.v1"))
+    seen: set[str] = set()
+    out: list[str] = []
+    for d in dirs:
+        key = os.path.normcase(os.path.abspath(d))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(os.path.join(os.path.abspath(d), "program.erbc"))
+    return out
+
+
+def resolve_erbc_program() -> str:
+    """第一个真实存在的 program.erbc；一个都没有返回空串。"""
+    for cand in erbc_program_candidates():
+        if os.path.isfile(cand):
+            return cand
+    return ""
+
+
+def discover_seed_qol_db(*, explicit: str = "", require: bool = False,
+                         skip_assets: bool = False, foreign_corpus: bool = False,
+                         engine_config: bool = False, disabled: bool = False,
+                         db_path: str = "", meta_path: str = "",
+                         erbc_program: str | None = None) -> SeedQolDbDiscovery:
+    """找预置 qol_data.db 并核对「它确实是当前 erbc 产物跑出来的」。
+
+    判定矩阵（`--require-seed-qol-db` 把「本来只警告」升级成判红；显式 `--seed-qol-db`
+    同样按判红处理 —— 调用方已经点名要它了，静默退回等于骗人）：
+
+    | 情形 | 结果 |
+    | --- | --- |
+    | `--no-seed-qol-db` / `--skip-assets` / `--foreign-corpus` / 第三方引擎模式 | skipped，不发声 |
+    | 缺库 / 空库 / 缺 seed.json / JSON 坏 / 缺字段 | 缺省 warning 并跳过；require 或显式路径 ⇒ problem |
+    | db 的 sha256 或字节数与 seed.json 不符 | 同上（指纹不符同样按「不可信」处理） |
+    | 找不到当前 program.erbc，或它的 sha256 与 seed.json 不符 | 同上 |
+    | 全部对上 | seed 填好，出包带 `-PeratwSeedQolDb=<path>` |
+
+    `db_path` / `meta_path` / `erbc_program` 只给单测注入用；生产路径不提，走默认。
+    """
+    found = SeedQolDbDiscovery()
+    if disabled:
+        found.skipped = "显式 --no-seed-qol-db"
+        return found
+    if skip_assets:
+        found.skipped = "--skip-assets 小包不随资源，预置库无从生效"
+        return found
+    if foreign_corpus:
+        found.skipped = "--foreign-corpus 第三方语料自带自己的图，不用 eraTW 预置库"
+        return found
+    if engine_config:
+        found.skipped = "第三方引擎构建模式（--engine-config），不用 eraTW 预置库"
+        return found
+
+    explicit = (explicit or "").strip()
+    db = os.path.abspath(db_path or explicit
+                         or os.path.join(APP_ROOT, SEED_QOL_DB_DIR_REL,
+                                         SEED_QOL_DB_BASENAME))
+    meta = os.path.abspath(meta_path or os.path.join(os.path.dirname(db),
+                                                     SEED_QOL_DB_META_BASENAME))
+    # origin 只看「调用方有没有点名」：db_path/meta_path 是单测注入口，不代表用户意图。
+    origin = "cli" if explicit else "auto"
+
+    def reject(msg: str) -> SeedQolDbDiscovery:
+        if require or origin == "cli":
+            found.problems.append(msg)
+        else:
+            found.warnings.append(msg + "：本次不带预置库")
+        return found
+
+    if not os.path.isfile(db):
+        return reject(f"预置库不存在：{db}（先跑 devtools/gen_qol_seeddb.py 生成）")
+    size = os.path.getsize(db)
+    if size <= 0:
+        return reject(f"预置库是空文件：{db}（生成器中途失败？重跑 devtools/gen_qol_seeddb.py）")
+    if not os.path.isfile(meta):
+        return reject(f"缺 seed.json：{meta}（没有它无法核对预置库与当前 erbc 产物是否同源）")
+    try:
+        with open(meta, "r", encoding="utf-8") as fh:
+            info = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return reject(f"seed.json 读不出来：{meta}（{exc}）")
+    if not isinstance(info, dict):
+        return reject(f"seed.json 不是 JSON 对象：{meta}")
+    declared_sha = str(info.get("db-sha256", "")).strip().lower()
+    declared_bytes = info.get("db-bytes")
+    declared_program = str(info.get("program-sha256", "")).strip().lower()
+    if not declared_sha or not declared_program or not isinstance(declared_bytes, int):
+        return reject(f"seed.json 缺 db-sha256 / db-bytes / program-sha256：{meta}"
+                      "（生成器版本过旧？重跑 devtools/gen_qol_seeddb.py）")
+    actual_sha = sha256_file(db)
+    if declared_sha != actual_sha or declared_bytes != size:
+        return reject(f"预置库指纹与 seed.json 不符：实测 {actual_sha[:16]}… / {size} B，"
+                      f"声明 {declared_sha[:16]}… / {declared_bytes} B"
+                      "（库被换过或生成器中途失败）")
+    program = erbc_program if erbc_program is not None else resolve_erbc_program()
+    if not program or not os.path.isfile(program):
+        return reject(f"找不到当前 erbc 产物 program.erbc（查 {ENV_ERBC_DIR} 或 "
+                      f"{os.path.join(APP_ROOT, 'tools', 'erbcc', 'build', 'erbc-out', 'erbc.v1')}）："
+                      "无法核对预置库对应的编译产物")
+    actual_program = sha256_file(program)
+    if declared_program != actual_program:
+        return reject(f"预置库对应的 erbc 产物不符：seed.json program-sha256={declared_program[:16]}…，"
+                      f"当前 {program}={actual_program[:16]}…"
+                      "（引擎/语料变了 ⇒ 图要重建，重跑 devtools/gen_qol_seeddb.py）")
+    found.seed = SeedQolDb(path=db, db_sha256=actual_sha, db_bytes=size,
+                           program_sha256=actual_program, origin=origin)
+    return found
+
+
+def seed_qol_db_gradle_args(seed: SeedQolDb | None) -> list[str]:
+    """把发现到的预置库翻成 gradle 参数；None ⇒ []（参数序列与引入前逐字一致）。"""
+    return [f"-PeratwSeedQolDb={seed.path}"] if seed is not None else []
+
+
+def seed_qol_db_report_problems(seed: SeedQolDb | None, require: bool = False,
+                                report: dict | None = None) -> list[str]:
+    """出包后回读 package.report 的 `seed-qol-db <sha256> <bytes>` 做自证。
+
+    「staging 真的吃到了预置库」只有产物能证明：参数带了但 staging 因为
+    `-PeratwSkipAssets` / 无游戏根 / 第三方语料把 overlay 忽略掉时，gradle 只 warn，
+    report 里不会有这一行 —— 这种包在玩家侧仍然要自己建图，必须在出包期挡下来。
+    """
+    pkg = read_package_report() if report is None else report
+    line = str(pkg.get(SEED_QOL_DB_REPORT_KEY, "") or "").strip()
+    if seed is None:
+        if require and not line:
+            return [f"package.report 缺 {SEED_QOL_DB_REPORT_KEY} 行（--require-seed-qol-db）"]
+        if line and not require:
+            print(f"[pack] 注意：包里带 {SEED_QOL_DB_REPORT_KEY} 行（{line}），"
+                  "本次脚本没有指定预置库")
+        return []
+    if not line:
+        msg = (f"package.report 缺 {SEED_QOL_DB_REPORT_KEY} 行：-PeratwSeedQolDb 已给却没有自证 —— "
+               "staging 没吃到预置库（--skip-assets / 无游戏根 / 第三方语料）")
+        if require:
+            return [msg + "（--require-seed-qol-db）"]
+        print(f"[pack] 警告：{msg}")
+        return []
+    fields = line.split()
+    try:
+        actual_sha = fields[0].strip().lower()
+        actual_bytes = int(fields[1])
+    except (IndexError, ValueError):
+        return [f"package.report 的 {SEED_QOL_DB_REPORT_KEY} 行格式不对：{line!r}"
+                "（应为 <sha256> <bytes>）"]
+    problems: list[str] = []
+    if actual_sha != seed.db_sha256:
+        problems.append(f"包里预置库 sha256 与生成物不符：包 {actual_sha[:16]}… / "
+                        f"生成 {seed.db_sha256[:16]}…")
+    if actual_bytes != seed.db_bytes:
+        problems.append(f"包里预置库字节数不符：包 {actual_bytes} / 生成 {seed.db_bytes}")
+    if not problems:
+        print(f"[pack] 预置库自证通过：{SEED_QOL_DB_ASSET_ENTRY} sha256={seed.db_sha256[:16]}… / "
+              f"{seed.db_bytes} B（来源 {pkg.get(SEED_QOL_DB_SOURCE_KEY, '?')}）")
+    return problems
+
+
+def seed_qol_db_generator_cmd(*, game_root: str = "", erbc_dir: str = "",
+                              compare: str = "") -> list[str]:
+    """出包期补跑生成器的命令行（路径与 [SEED_QOL_DB_GENERATOR_REL] 同源）。"""
+    cmd = [sys.executable, os.path.join(APP_ROOT, SEED_QOL_DB_GENERATOR_REL)]
+    if game_root:
+        cmd += ["--game-root", game_root]
+    if erbc_dir:
+        cmd += ["--erbc-dir", erbc_dir]
+    if compare:
+        cmd += ["--compare", compare]
+    return cmd
+
+
+def seed_qol_db_generator_skip_reason(*, disabled: bool, explicit: str, skip_assets: bool,
+                                      foreign_corpus: bool, engine_config: bool,
+                                      verify_only: bool) -> str:
+    """空串 ⇒ 缺库时该自动生成；非空 ⇒ 跳过生成的原因（进日志，便于解释「为什么没跑引擎」）。
+
+    `--no-seed-qol-db` 是显式关掉；显式路径由调用方自己负责；`--skip-assets` /
+    `--foreign-corpus` / 引擎配置模式（第三方引擎档）下预置库本来就不进包或口径不同；
+    `--verify-only` 只体检现成 APK，不在这一步跑引擎。
+    """
+    if disabled:
+        return "--no-seed-qol-db"
+    if explicit:
+        return "已显式指定 --seed-qol-db"
+    if skip_assets:
+        return "--skip-assets"
+    if foreign_corpus:
+        return "--foreign-corpus"
+    if engine_config:
+        return "引擎配置模式（第三方引擎档）"
+    if verify_only:
+        return "--verify-only"
+    return ""
+
+
+def run_seed_qol_db_generator(*, game_root: str = "", erbc_dir: str = "",
+                              compare: str = "") -> int:
+    """现场生成预置库；返回子进程退出码（0 = `build/seeddb/qol_data.db` 已就位）。
+
+    生成器自己保证「两次跑同 sha + 结构校验 + 旧库对拍」，这里只负责在缺库时把它叫起来，
+    并把失败原样带出去 —— 失败后是否判红由调用方按 `--require-seed-qol-db`/`--no-require-...`
+    决定（缺省 release 形态是判红：宁可不发，也不发一个把建图成本退回给玩家的包）。
+    """
+    cmd = seed_qol_db_generator_cmd(game_root=game_root, erbc_dir=erbc_dir, compare=compare)
+    if not os.path.isfile(cmd[1]):
+        print(f"[pack] 预置库生成器不存在：{cmd[1]}（源码树不完整？）", file=sys.stderr)
+        return 2
+    print("[pack] 预置库缺失：自动生成（暖跑约 105s；首次含 :tools:vmdbg 编译约 4-5min）")
+    print(f"[pack]   {' '.join(cmd)}")
+    try:
+        proc = subprocess.run(cmd, cwd=APP_ROOT)
+    except OSError as exc:
+        print(f"[pack] 预置库生成器启动失败：{exc}", file=sys.stderr)
+        return 2
+    if proc.returncode != 0:
+        print(f"[pack] 预置库生成器失败：exit {proc.returncode}", file=sys.stderr)
+    return proc.returncode
+
+
+FORK_KILLED_MARK = "268435466"
+
+
+def run_build_streaming(cmd: list[str], env: dict) -> tuple[int, str]:
+    """跑构建并**边跑边转发**两端输出，同时攒一条尾带（最近 400 行）。
+
+    为什么不用 subprocess.run：共享 gradle daemon 被污染时，Gradle 只用一行
+    `Process ... finished with non-zero exit value 268435466` 说明 fork 的子 JVM 被宿主杀掉
+    （0x1000000A；2026-11-26 实测同一 daemon 连挂两次、--no-daemon 一次过），进程退出码
+    统一是 1 —— 不先抓文本，就没法判断该不该换 --no-daemon 重跑一轮，只能等人肉看日志。
+    stdout/stderr 各一根线程抽干（单管道会死锁），转发保持既有观感（进度行照常实时刷）；
+    两端分开转发是为了不让 stderr 混进进度窗的 stdout 解析面。
+    """
+    proc = subprocess.Popen(
+        cmd, cwd=APP_ROOT, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace", bufsize=1,
+    )
+    tail: collections.deque[str] = collections.deque(maxlen=400)
+    lock = threading.Lock()
+
+    def pump(pipe, sink) -> None:
+        for line in pipe:
+            sink.write(line)
+            sink.flush()
+            with lock:
+                tail.append(line)
+        pipe.close()
+
+    threads = [
+        threading.Thread(target=pump, args=(proc.stdout, sys.stdout), daemon=True),
+        threading.Thread(target=pump, args=(proc.stderr, sys.stderr), daemon=True),
+    ]
+    for t in threads:
+        t.start()
+    code = proc.wait()
+    for t in threads:
+        t.join()
+    with lock:
+        return code, "".join(tail)
+
+
 def run_build(endpoint: str, token: str, skip_assets: bool, dry_run: bool = False,
               game_root: str = "", mirrors: str = "", erbc_stored: bool = False,
-              engine_config=None, foreign_corpus: bool = False) -> int:
+              engine_config=None, foreign_corpus: bool = False,
+              seed_qol_db: str = "", shell_config=None) -> int:
     tasks = ["--configure-on-demand", ":app:assembleRelease"]
     # 优化开关再给一次命令行写法：GRADLE_OPTS 里的 -Dorg.gradle.parallel/caching 取决于
     # 调用方是否 source 过优化环境，出包入口自带这两个开关谁调都一样；8.10.2 下实测与
@@ -655,7 +1002,14 @@ def run_build(endpoint: str, token: str, skip_assets: bool, dry_run: bool = Fals
     # 这类 eraTW 专属目标缺席而判红）。缺省 False ⇒ 不追加，参数序列与引入本开关前逐字一致（I7）。
     if foreign_corpus:
         tasks.append("-PeratwForeignCorpus=1")
+    # 预置 qol_data.db（跳过首次建图）：只在脚本侧指纹对账通过后传入；空串 ⇒ 参数序列与
+    # 引入本功能前逐字一致（I7 零干扰）。必须绝对路径：gradle 侧按各 cwd 解释相对路径会分叉。
+    if seed_qol_db:
+        tasks.append(f"-PeratwSeedQolDb={seed_qol_db}")
     tasks += engine_gradle_args(engine_config)
+    # 壳层品牌配置（SHELL-PROFILE）：无 --shell-profile 时 shell_config=None ⇒ 投影空表，
+    # gradle 参数序列与改动前逐字相同；有配置时把 app label / 加载页 / 教程模式烙进资源。
+    tasks += shell_profile.gradle_args(shell_config)
     # 透传 ERATW_GRADLE_EXTRA_ARGS：放在任务名之后（Gradle 允许全局选项在任务名后），
     # 让主人能追加 --profile 生成 task 级耗时报告；空值/未设置完全不追加。
     tasks += extra_args
@@ -674,13 +1028,20 @@ def run_build(endpoint: str, token: str, skip_assets: bool, dry_run: bool = Fals
         print("[pack] --dry-run：只打印命令，不构建、不体检。")
         return 0
     started = time.time()
-    proc = subprocess.run(cmd, cwd=APP_ROOT, env=env)
-    print(f"[pack] 构建耗时 {time.time() - started:.0f}s，退出码 {proc.returncode}")
-    return proc.returncode
+    code, tail = run_build_streaming(cmd, env)
+    if code != 0 and FORK_KILLED_MARK in tail and "--no-daemon" not in cmd:
+        # 机器级现象，不是本工程的编译错误：共享 daemon 的子进程被宿主杀（见函数 KDoc）。
+        # 自动换 --no-daemon 重跑，别让出包方对着「零输出的非零退出」猜半小时。
+        print("[pack] 检测到 fork 子进程被宿主杀掉（Gradle 报 exit value 268435466 = 0x1000000A，"
+              "子进程零输出）：共享 gradle daemon 环境已污染 —— 本机实测同一 daemon 的孩子必死、"
+              "--no-daemon 正常。自动以 --no-daemon 重跑一轮（本轮不算失败）。", file=sys.stderr)
+        code, tail = run_build_streaming(cmd + ["--no-daemon"], env)
+    print(f"[pack] 构建耗时 {time.time() - started:.0f}s，退出码 {code}")
+    return code
 
 
 def preflight_erbc_digest() -> list[str]:
-    """构建前 CMP-66 预检：把「编译器变了但 erbc 没重编」在半秒内挡下来。
+    """构建前 CMP-66 预检：把「编译器或语料补丁变了但 erbc 没重编」在半秒内挡下来。
 
     旧流程只有 Gradle 跑到 `stageGameAssets` 才会把 compiler-digest 与随包清单对账，
     撞上就是一整轮构建白跑、重编 `:tools:erbcc:compileCorpus`、再出一次包。
@@ -697,20 +1058,38 @@ def preflight_erbc_digest() -> list[str]:
                 else Path(APP_ROOT) / erbc_freshness_probe.MANIFEST_REL)
     if erbc_dir and not manifest.is_file():
         manifest = Path(APP_ROOT) / erbc_freshness_probe.MANIFEST_REL
+    # 校验对象写进每一条结论：`ERATW_ERBC_DIR` 会盖掉缺省目录（app/build.gradle.kts:127-139 同序：
+    # -PeratwErbcDir > ERATW_ERBC_DIR > 兜底），本机实测该变量曾被别的 lane 留在环境里指向别处产物，
+    # 不打印出来就分不清「校验的是我要出的这只包」还是「别人的产物」。
+    src = f"校验对象 {manifest}"
 
     r = erbc_freshness_probe.probe(Path(APP_ROOT), manifest)
     if not r["ok"]:
-        return [f"读不出 compiler-digest 判据：{r['error']}"]
-    if not r["match"]:
+        return [f"读不出 erbc 新鲜度判据：{r['error']}"]
+    # 两个维度分开判、分开给处置：合成一条只会说「不符」，出包方分不清是编译器变了还是补丁变了。
+    if not r.get("compiler_match", r["match"]):
         return [
             "随包 erbc 不是当前编译器源码的产物（compiler-digest 不符）："
-            f"当前 {r['current'][:16]}… / 清单 {r['manifest_digest'][:16]}…",
+            f"当前 {r['current'][:16]}… / 清单 {(r['manifest_digest'] or '')[:16]}…（{src}）",
             "先跑 ./gradlew --configure-on-demand :tools:erbcc:compileCorpus "
             "-PcompileMode=compat -PallowParseFailures=devtools/erbc-degraded-allowlist.tsv "
             "再出包；或直接用 devtools/pack_one/eratw-pack.exe（自动判重编）。",
         ]
-    print(f"[pack] 构建前 erbc 新鲜度预检通过：compiler-digest {r['current'][:16]}… "
-          f"（{r['sources']} 个 .kt / {r['elapsed_ms']} ms）")
+    # 补丁资产指纹（2026-11-20 事故的根因闸）：只改 devtools/corpus-patches 的提交既不动 .kt
+    # 树、也不动语料 ERB mtime，旧复用判据会判「新鲜」而补丁根本不进 erbc；这里与 gradle 侧
+    # ErbcFreshness（1c 段）同口径，构建前 0.5 秒挡下来，不让整轮构建白跑。
+    if not r.get("patches_match", True):
+        man = r.get("patches_manifest_digest")
+        man_disp = (man[:16] + "…") if man else "（manifest 无该留痕行：旧编译器产物）"
+        return [
+            "随包 erbc 不是当前语料补丁资产的产物（corpus-patches-digest 不符）："
+            f"当前 {(r.get('patches_current') or '')[:16]}… / 清单 {man_disp}（{src}）",
+            "devtools/corpus-patches 下任一 .patch / index.yaml 改动后必须重编 "
+            ":tools:erbcc:compileCorpus，否则补丁不会进 erbc（0.2.48x 的料理补丁就是这样静默失效的）。",
+        ]
+    print(f"[pack] 构建前 erbc 新鲜度预检通过：compiler-digest {r['current'][:16]}… / "
+          f"corpus-patches {r['patches_current'][:16]}…（{r['sources']} 个 .kt / "
+          f"{r['patches_files']} 个补丁资产 / {r['elapsed_ms']} ms；{src}）")
     return []
 
 
@@ -996,8 +1375,13 @@ def verify_update_permission(mirrors: str) -> list:
         # Requires ACCESS_NETWORK_STATE，缺它 = 真机上永远取不到默认网络 = Wi-Fi 玩家被当成蜂窝。
         problems.append("合并后的 manifest 没有 ACCESS_NETWORK_STATE —— 判不出 Wi-Fi，"
                         "连着无线的玩家也会被提示「当前不是 Wi-Fi」")
-    if "com.eratw.port.android.updatefiles" not in text:
-        problems.append("合并后的 manifest 没有 UpdateFileProvider —— APK 交不给系统安装器")
+    # authority 跟随 applicationId（第三方包有自己的包名），从合并清单里读实际 package，
+    # 不再钉 eraTW 的字面量：钉死会让第三方包在「包名已分开」后误判为缺 Provider。
+    pkg_match = re.search(r'package="([^"]+)"', text)
+    pkg = pkg_match.group(1) if pkg_match else ""
+    if not pkg or f'android:authorities="{pkg}.updatefiles"' not in text:
+        problems.append(f"合并后的 manifest 没有 {pkg or '<package>'}.updatefiles "
+                        "UpdateFileProvider —— APK 交不给系统安装器")
     return problems
 
 
@@ -1257,7 +1641,11 @@ def erd_bundling_problems(rep: dict) -> list:
 # 游戏根的 mods/rt2 后，ModRuntimeAssembly 才装得上。缺档 / 装了旧字节 / 包名对不上注册表
 # 都是「开闸也装 0 个 mod」的同一种静默失败，出包期必须当场判红，不能等真机日志。
 RT2_BUILTIN_ASSET_PREFIX = "assets/mods/rt2/"
-RT2_MANIFEST_MAGIC = "RT2MANIFEST/3"
+# manifest 线格式版本阶梯（权威锚 = core-vm patch/ManifestCodec.kt 的 encode/decode
+# hasGrants 阶梯：/3 基础形，/4 meta 5 值，/5 settings，/6 min-api，/7
+# declaration-positions，/8 write-grants；/1 /2 解码首行即拒载）。出包体检与
+# 运行期解码器接受同一个集合，不单独钉死某一个版本。
+RT2_MANIFEST_MAGICS = tuple(f"RT2MANIFEST/{n}" for n in range(3, 9))
 RT2_MANIFEST_SUFFIX = ".manifest"
 # RT2-ERBM：ERB 模块容器（.erbm）体检面。头部布局 = ErbModuleContainer.encode：
 # magic 5B `ERTM1` + version u16 + flags u16（DataOutputStream 口径，全部 big-endian）
@@ -1374,26 +1762,44 @@ def declared_rt2_package_ids() -> tuple:
             registry = fh.read()
     except OSError as exc:
         return [package_id, demo_id] + carrier_ids, [f"读不到载体注册表 {MOD_CARRIER_REGISTRY_FILE}：{exc}"]
-    for _, registry_symbol in CARRIER_DECLARATION_SOURCES:
-        if registry_symbol not in registry:
+    # 2026-11-16 起登记面收成一处：声明 object 打 @ModCarrier，构建期 :mod-registry 扫
+    # mod-* 模块生成 ModRegistry.carriers；ModCarrierRegistry 只消费它、不再点名任何载体
+    # （它自己的 KDoc「名单从哪来」节）。体检面因此改对两件事：
+    # ① 每个声明真源仍有 @ModCarrier 注解（漏打 = 构建期注册表不收录 = 静默不生效，
+    #   正是本段要挡的失败）；② 设备侧装配仍消费 ModRegistry.carriers。
+    if "ModRegistry.carriers" not in registry:
+        problems.append(
+            "ModCarrierRegistry 不再消费 ModRegistry.carriers —— "
+            "设备侧装配名单与构建期注册表可能已经分叉，包里的 manifest 会逐 mod fail-closed"
+        )
+    for source_path, _ in CARRIER_DECLARATION_SOURCES:
+        try:
+            with open(source_path, encoding="utf-8") as fh:
+                carrier_source = fh.read()
+        except OSError as exc:
+            problems.append(f"读不到 RT2 载体声明真源 {source_path}：{exc}")
+            continue
+        if "@ModCarrier" not in carrier_source:
             problems.append(
-                f"ModCarrierRegistry 不再引用 {registry_symbol} —— "
-                "注册表与声明真源可能已经分叉，包里的 manifest 会逐 mod fail-closed"
+                f"{os.path.basename(source_path)} 的声明 object 没有 @ModCarrier 注解 —— "
+                "构建期注册表不会收录它，包里的 manifest 会静默不生效"
             )
     return [package_id] + carrier_ids + [demo_id], problems
 
 
 def parse_rt2_manifest_package_id(data: bytes) -> tuple:
-    """解 RT2MANIFEST/3 的 @meta 包名；返回 (包名, 错误文本)，二选一非空。
+    """解 RT2 manifest 的 @meta 包名；返回 (包名, 错误文本)，二选一非空。
 
-    只认固定形状：首行 MAGIC、@meta 后紧跟一行 S 加 UTF-8 的十六进制。坏档不猜、不兼容旧版。
+    首行必须是版本阶梯（RT2MANIFEST_MAGICS，/1 /2 即坏档——设备侧解码器同样拒载）；
+    @meta 段首个 S 行恒为 packageId（/3 一值、/4 起五值，首个恒是包名，
+    锚 = ManifestCodec.encode 的 w.head("meta") 段序）。坏档不猜、不兼容旧版。
     """
     try:
         lines = data.decode("utf-8").split("\n")
     except UnicodeDecodeError as exc:
         return None, f"manifest 不是合法 UTF-8：{exc}"
-    if not lines or lines[0] != RT2_MANIFEST_MAGIC:
-        return None, f"首行不是 {RT2_MANIFEST_MAGIC}（实际「{lines[0] if lines else ''}」）"
+    if not lines or lines[0] not in RT2_MANIFEST_MAGICS:
+        return None, "首行不是 RT2MANIFEST/3..8 之一（实际「%s」）" % (lines[0] if lines else "")
     for i, line in enumerate(lines):
         if line.strip() != "@meta":
             continue
@@ -1932,21 +2338,25 @@ def git_head() -> str:
     return sha + ("-dirty" if st.stdout.strip() else "")
 
 
-def archive_apk(kind: str, out_dir: str = "") -> str:
-    """把 APK 复制成带版本/提交/包型/指纹的名字，落 `build/release-artifacts/`。
+def archive_apk(kind: str, out_dir: str = "",
+                stem: str = shell_profile.ARTIFACT_STEM_FALLBACK,
+                version: tuple | None = None) -> str:
+    """把 APK 复制成带游戏名/版本/提交/包型/指纹的名字，落 `build/release-artifacts/`。
 
     gradle 的 `app-release.apk` 每次构建原地覆盖 —— 只留那儿等于「上周那个包」找不回来。
     名字里带 git7 与产物 sha8：主人问「这个包是哪个提交出的」时不用回来翻日志。
+    `stem` 跟随随包语料（见 `shell_profile.artifact_stem`），第三方包不再顶着 `eratw-` 前缀。
+    `version` 由版本账本给出（第三方包各自的 1.0.x 线）；None ⇒ 读 build.gradle.kts 的 eraTW 取值。
     """
-    name_v, code_v = version_from_gradle()
+    name_v, code_v = version if version else version_from_gradle()
     dst_dir = out_dir or ARTIFACT_DIR
     os.makedirs(dst_dir, exist_ok=True)
     # 归档名里含 sha 前 8 位，先写临时文件，拿到 sha 后才 os.replace 成正式名。
     # 临时名带 pid：两个出包进程并发落同一目录时不会互相踩掉对方的半截文件。
-    tmp = os.path.join(dst_dir, f".eratw-archive-{os.getpid()}.tmp")
+    tmp = os.path.join(dst_dir, f".pack-archive-{os.getpid()}.tmp")
     try:
         sha = digest_and_copy(APK_PATH, tmp)
-        base = f"eratw-{name_v}+{code_v}-{git_head()}-{kind}-{sha[:8]}"
+        base = f"{stem}-{name_v}+{code_v}-{git_head()}-{kind}-{sha[:8]}"
         dst = os.path.join(dst_dir, base + ".apk")
         os.replace(tmp, dst)
     finally:
@@ -2092,12 +2502,30 @@ def main(argv=None) -> int:
                              "APK 瘦 ~366 MiB，解包产物逐字节不变；STORAGE-1）")
     parser.add_argument("--game-root", default="",
                         help="覆盖游戏根（缺省取 ERATW_GAMEDIR；缺了它包会静默退化成不随资源）")
+    parser.add_argument("--seed-qol-db", dest="seed_qol_db", default="", metavar="PATH",
+                        help="预置 qol_data.db（「跳过首次建图」包）的路径；缺省自动发现 "
+                             "build/seeddb/qol_data.db，须有同名 seed.json 且 db/当前 erbc 产物"
+                             "两个 sha256 都对上才生效（对不上宁可不带，也不带一张旧图）")
+    parser.add_argument("--no-seed-qol-db", dest="no_seed_qol_db", action="store_true",
+                        help="不启用预置库（即使 build/seeddb 有产物）")
+    parser.add_argument("--require-seed-qol-db", dest="require_seed_qol_db", action="store_true",
+                        help="保留兼容：正式出包缺省已强制预置库（缺失/指纹不符/自动生成失败即拒）；"
+                             "dev 试包要放宽用 --no-require-seed-qol-db")
+    parser.add_argument("--no-require-seed-qol-db", dest="no_require_seed_qol_db",
+                        action="store_true",
+                        help="dev 档放宽：预置库缺失/自动生成失败只告警不拒包"
+                             "（该包会让玩家首装自己跑 GRAPH_DB_REBUILD）")
     parser.add_argument("--engine-config", dest="engine_config", default="",
                         help="第三方引擎构建模式：engine.config.json 路径（schema v1 = "
                              "{schema,engine,version}；生成印章 build/engine-compat/engine-profile.json，"
                              "注入 -PeratwEngineProfile/-PeratwEngineStampFile，跳过 eraTW 语料根闸，"
                              "要求显式 --game-root，编译后渲染兼容性报告）。"
                              "不带此参数 = eraTW 出包路径与今天逐字一致")
+    parser.add_argument("--shell-profile", dest="shell_profile", default="", metavar="PATH",
+                        help="壳层品牌配置（SHELL-PROFILE schema v1）：指定游戏名 / app 名称 / "
+                             "加载页文案 / 教程模式 / applicationId / 版本号；不带此参数 = eraTW 壳逐字不变")
+    parser.add_argument("--no-bump-version", dest="no_bump_version", action="store_true",
+                        help="第三方包出包成功后不抬版本账本（连续试包时用；正式发版别带）")
     parser.add_argument("--foreign-corpus", dest="foreign_corpus", action="store_true",
                         help="声明本次随包的语料/游戏根不是 devtools/corpus-patches 的 eraTW 根："
                              "编译面与 staging 面整表跳过语料内容补丁（否则第三方游戏根会因为"
@@ -2162,10 +2590,127 @@ def main(argv=None) -> int:
         if not args.verify_only:
             print(f"[pack] 印章文件：{prepare_engine_stamp(engine_cfg)}")
 
+    # 壳层品牌配置（SHELL-PROFILE）：独立通道，可与 --engine-config 组合，也可单独给
+    # （只换壳不换引擎）。配置文件不进 APK，值经 -P 属性烙进 resources.arsc。
+    shell_cfg = None
+    shell_version = None
+    if args.shell_profile:
+        try:
+            shell_cfg = shell_profile.load_profile(args.shell_profile)
+        except shell_profile.ShellProfileError as exc:
+            print(f"[pack] 壳层配置不合格，拒绝出包：\n{exc}", file=sys.stderr)
+            return 2
+        # 版本线（GAME-VERSION）：第三方目标各自从 1.0.0+1 起算，不继承 eraTW 的号段。
+        # 显式配置 > 账本 > 首次默认；出包成功后才抬号，失败不记假账。
+        try:
+            ledger = game_versions.load()
+            shell_version = game_versions.resolve(
+                ledger, shell_cfg["gameName"],
+                shell_cfg.get("versionName"), shell_cfg.get("versionCode"))
+        except game_versions.VersionLedgerError as exc:
+            print(f"[pack] 版本账本不合格，拒绝出包：\n{exc}", file=sys.stderr)
+            return 2
+        shell_cfg = {**shell_cfg,
+                     "versionName": shell_version[0], "versionCode": shell_version[1]}
+        print(f"[pack] 壳层配置模式：{shell_profile.summary(shell_cfg)} "
+              f"applicationId={shell_cfg['applicationId']} "
+              f"version={shell_version[0]}+{shell_version[1]}")
+
+    # 预置 qol_data.db（跳过首次建图）：在启动 Gradle 之前就把「库在不在、是不是这份引擎/语料
+    # 跑出来的」判完。判据见 [discover_seed_qol_db]；require/显式路径下任一不符 ⇒ exit 2，
+    # 不把「参数带了但 staging 忽略」这种静默退化留给玩家侧。
+    if args.no_seed_qol_db and (args.seed_qol_db or args.require_seed_qol_db):
+        print("[pack] --no-seed-qol-db 与 --seed-qol-db / --require-seed-qol-db 互斥",
+              file=sys.stderr)
+        return 2
+    if args.no_require_seed_qol_db and args.require_seed_qol_db:
+        print("[pack] --no-require-seed-qol-db 与 --require-seed-qol-db 互斥", file=sys.stderr)
+        return 2
+    # 正式出包缺省强制：预置库缺失/生成失败 ⇒ 拒绝出包（否则这个包会静默把 36k 行建图
+    # 成本退回给玩家）。dev 档只想试包时用 --no-require-seed-qol-db 放宽。
+    # 但「预置库不适用」的形态（dev 的 --skip-assets、第三方语料、第三方引擎档）本就不带库，
+    # 这里不能拿缺行判红 —— 否则 dev 小包会被自己挡死。
+    seed_applicable = not (args.skip_assets or args.foreign_corpus or engine_cfg is not None)
+    require_seed_qol_db = not args.no_require_seed_qol_db and seed_applicable
+    seed_skip = seed_qol_db_generator_skip_reason(
+        disabled=args.no_seed_qol_db,
+        explicit=args.seed_qol_db,
+        skip_assets=args.skip_assets,
+        foreign_corpus=args.foreign_corpus,
+        engine_config=engine_cfg is not None,
+        verify_only=args.verify_only,
+    )
+    if args.verify_only and not args.seed_qol_db:
+        seed_discovery = SeedQolDbDiscovery()
+        seed_discovery.skipped = "--verify-only 只体检现成 APK，不做预置库发现"
+    else:
+        # 第一趟只看「现成库能不能用」；不能用且该由出包期补跑时就现场生成再判。
+        probe = discover_seed_qol_db(
+            explicit=args.seed_qol_db,
+            require=False,
+            skip_assets=args.skip_assets,
+            foreign_corpus=args.foreign_corpus,
+            engine_config=engine_cfg is not None,
+            disabled=args.no_seed_qol_db,
+        )
+        if not seed_skip and probe.seed is None and not probe.problems:
+            if args.dry_run:
+                print("[pack] 注意（dry-run）：未找到可用预置库；真出包会先自动跑 "
+                      f"{SEED_QOL_DB_GENERATOR_REL}（暖跑约 105s）", file=sys.stderr)
+                # dry-run 的用途是看命令形状，不在这里跑引擎；缺省强制也放宽成告警，
+                # 只有显式 --require-seed-qol-db 才保持判红（调用方要的是形状，不是一次真出包）。
+                require_seed_qol_db = bool(args.require_seed_qol_db)
+            else:
+                rc = run_seed_qol_db_generator(
+                    game_root=effective_game_root(args.game_root),
+                    erbc_dir=os.environ.get(ENV_ERBC_DIR, ""),
+                )
+                if rc != 0:
+                    if require_seed_qol_db:
+                        print("[pack] 预置库自动生成失败，拒绝出包（本包会让玩家首装自己跑 "
+                              "GRAPH_DB_REBUILD；确认要放宽用 --no-require-seed-qol-db）",
+                              file=sys.stderr)
+                        return 2
+                    print("[pack] 警告：预置库自动生成失败，按非强制继续 —— 本包会把建图成本"
+                          "退回给玩家", file=sys.stderr)
+        elif seed_skip:
+            print(f"[pack] 预置库：不自动生成（{seed_skip}）")
+        seed_discovery = discover_seed_qol_db(
+            explicit=args.seed_qol_db,
+            require=require_seed_qol_db,
+            skip_assets=args.skip_assets,
+            foreign_corpus=args.foreign_corpus,
+            engine_config=engine_cfg is not None,
+            disabled=args.no_seed_qol_db,
+        )
+    for item in seed_discovery.warnings:
+        print(f"[pack] 预置库：{item}")
+    if seed_discovery.problems:
+        print("[pack] 预置库不可用，拒绝出包（否则这个包会静默把建图成本退回给玩家）：",
+              file=sys.stderr)
+        for item in seed_discovery.problems:
+            print(f"  - {item}", file=sys.stderr)
+        return 2
+    seed_qol_db = seed_discovery.seed
+    if seed_discovery.skipped:
+        print(f"[pack] 预置库：跳过（{seed_discovery.skipped}）")
+    elif seed_qol_db is not None:
+        print(f"[pack] 预置库：{seed_qol_db.path}（sha256 {seed_qol_db.db_sha256[:16]}… / "
+              f"{seed_qol_db.db_bytes} B，erbc program-sha256 对账通过，来源={seed_qol_db.origin}）")
+    seed_qol_db_arg = seed_qol_db.path if seed_qol_db is not None else ""
+
     endpoint, token, origin = resolve_report_config(args)
     mirrors, mirrors_origin = resolve_update_mirrors(args)
     if args.no_update:
         mirrors = ""
+    # 第三方包不许继承 eraTW 的更新源：那份 manifest 写的是 eraTW 的版本线，
+    # 会把「eratw 0.2.48」当成自家更新推给 eratohoReverse 玩家（装上去就是另一款游戏）。
+    # 只有「脚本缺省」这一档才清 —— 调用方显式给 --mirror/env 时按显式来（自建源场景）。
+    if shell_cfg is not None and mirrors and mirrors_origin.startswith("脚本缺省"):
+        print("[pack] 第三方包不内置 eraTW 更新源（避免串台）：如需更新通道，"
+              "请显式 --mirror 指向本游戏自己的清单。")
+        mirrors = ""
+        mirrors_origin = "第三方包不内置"
 
     # 语料换代闸（4.981 起）：出包游戏根还在指旧 4.980 语料就拒 —— env.sh 的缺省 ERATW_GAMEDIR
     # 仍是旧根，source 过它再出包会得到内部自洽、体检全绿的「旧语料 + 新版本号」包，无一处
@@ -2186,7 +2731,8 @@ def main(argv=None) -> int:
             print(f"[pack] 注意（dry-run）：{item}", file=sys.stderr)
         run_build(endpoint, token, args.skip_assets, True, args.game_root, mirrors,
                   erbc_stored=args.erbc_stored, engine_config=engine_cfg,
-                  foreign_corpus=args.foreign_corpus)
+                  foreign_corpus=args.foreign_corpus, seed_qol_db=seed_qol_db_arg,
+                  shell_config=shell_cfg)
         if not token and not args.offline:
             print(f"[pack] 注：令牌来源={origin.split(' / ')[-1]}，真出包会在这一步 exit 2（dry-run 放行）")
         return 0
@@ -2245,7 +2791,8 @@ def main(argv=None) -> int:
     if not args.verify_only:
         code = run_build(endpoint, token, args.skip_assets, False, args.game_root, mirrors,
                          erbc_stored=args.erbc_stored, engine_config=engine_cfg,
-                         foreign_corpus=args.foreign_corpus)
+                         foreign_corpus=args.foreign_corpus, seed_qol_db=seed_qol_db_arg,
+                         shell_config=shell_cfg)
         if code != 0:
             print("[pack] 构建失败，没有可发的包。", file=sys.stderr)
             return 1
@@ -2262,6 +2809,9 @@ def main(argv=None) -> int:
     if engine_cfg is not None:
         kind_problems += engine_stamp_problems(engine_cfg)
         kind_problems += engine_report_problems(engine_cfg)
+    # 预置库自证：只看产物（package.report 的 seed-qol-db 行）—— 参数带了不等于 staging 吃了。
+    kind_problems += seed_qol_db_report_problems(seed_qol_db,
+                                                 require_seed_qol_db and not args.verify_only)
     report_apk(not args.no_archive)
 
     # 包本身有没有「被 Android 解析」的资格：与上报/更新通道无关，--offline 也要查；
@@ -2330,7 +2880,27 @@ def main(argv=None) -> int:
     if not args.no_archive:
         game_root = read_package_report().get("game-root", "-")
         kind = "skipassets" if args.skip_assets else ("full" if game_root != "-" else "erbconly")
-        archive_apk(kind, args.out)
+        # 归档名前缀跟随随包语料：壳层配置 gameName > 游戏根目录名 > eratw。
+        # 未给 --game-root 时回落到包内自证的那条路径，保证第三方包不会落成 eratw-*。
+        stem = shell_profile.artifact_stem(
+            shell_cfg, args.game_root or ("" if game_root == "-" else game_root))
+        archive_apk(kind, args.out, stem, shell_version)
+
+    # 出包成功才记账（GAME-VERSION）：把该游戏抬到下一条，下次出包自动 +1。
+    # 构建/体检任一处提前 return 都走不到这里 —— 失败绝不写假版本号。
+    if (shell_cfg is not None and shell_version is not None
+            and not args.no_bump_version and not args.verify_only):
+        try:
+            nxt = game_versions.record(
+                game_versions.LEDGER_FILE, shell_cfg["gameName"],
+                shell_version[0], shell_version[1])
+            print(f"[pack] 版本账本已抬号：{shell_cfg['gameName']} "
+                  f"{shell_version[0]}+{shell_version[1]} → 下一次 {nxt[0]}+{nxt[1]}"
+                  f"（{os.path.relpath(game_versions.LEDGER_FILE, APP_ROOT)}）")
+        except (game_versions.VersionLedgerError, OSError) as exc:
+            # 记账失败不回滚已出的包：包本身是好的，只是下次要手工确认版本号。
+            print(f"[pack] 警告：版本账本抬号失败，下次出包前请手工确认：{exc}",
+                  file=sys.stderr)
 
     # 更新通道的最后一句：包里有没有源、下一步该跑什么。缺了源不会编译失败、也不会体检红，
     # 玩家那边的表现只是「永远等不到更新」—— 与上报开关同一种静默失效，所以必须说出来。
@@ -2347,6 +2917,10 @@ def main(argv=None) -> int:
               "致命修复要给老版本兜底就加 --min-supported-version <versionCode>）")
     elif args.no_update:
         print("[pack] 本次刻意不内置更新源（--no-update）：这个包永远等不到自动更新。")
+    elif shell_cfg is not None:
+        print("[pack] 第三方包按设计不内置 eraTW 更新源（避免把 eraTW 的新版推给本游戏）。")
+        print("[pack] 要给自己留更新通道：--mirror https://<本游戏自己的清单目录>/，"
+              "清单里的 versionCode 必须与本游戏账本一致。")
     else:
         print("[pack] ===== 警告：这个包**没有内置更新源** =====")
         print("[pack] 玩家装了它之后不会自动收到任何修复，而且屏上没有任何地方看得出来。")

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  浮层出场：淡出 + 收回一档，120ms 加速收走。
+  出场比进场短：退场是「已经决定完了」的动作，等它就是浪费。
+-->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:interpolator="@android:interpolator/accelerate_cubic"
+    android:fillAfter="true">
+    <alpha
+        android:duration="120"
+        android:fromAlpha="1"
+        android:toAlpha="0" />
+    <scale
+        android:duration="120"
+        android:fromXScale="1.0"
+        android:fromYScale="1.0"
+        android:pivotX="50%"
+        android:pivotY="50%"
+        android:toXScale="0.98"
+        android:toYScale="0.98" />
+</set>

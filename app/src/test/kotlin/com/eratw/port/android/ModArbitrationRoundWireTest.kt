@@ -40,6 +40,14 @@ import org.junit.Test
  */
 class ModArbitrationRoundWireTest {
 
+    /**
+     * 无停用标记的游戏根（目录不存在 ⇒ 停用集为空 ⇒ providers 走全量分支）。
+     * 批2-3 起 [ModCarrierRegistry.providers] 需要 gameRoot 才能读 mods/rt2/ 的标记。
+     */
+    private fun noMarkersRoot(): File =
+        File(System.getProperty("java.io.tmpdir"), "eratw-modcarrier-" + System.nanoTime())
+
+
     private val logs: MutableList<String> = mutableListOf()
 
     // ------------------------------------------------------------------
@@ -80,7 +88,7 @@ class ModArbitrationRoundWireTest {
      * manifest 一一对应；缺一件 = 该包 fail-closed active=false，`生产构造缝`用例同款形状）。
      */
     private fun writeBuiltinManifests(root: Path) {
-        for (packageId in ModCarrierRegistry.providers().map { it.first }) {
+        for (packageId in ModCarrierRegistry.providers(noMarkersRoot()).map { it.first }) {
             val manifest = File("src/main/assets/mods/rt2/$packageId.manifest")
             assertTrue(
                 "内置 RT2 manifest 缺席（先跑 generateBuiltinRt2Manifest）：${manifest.path}",
@@ -277,7 +285,7 @@ class ModArbitrationRoundWireTest {
     fun `判据2 decisionDriver宿主注入 外轮胜者handler期间嵌套轮同键吃RESERVATION_CONFLICT`() {
         val root = tempGameRoot()
         writeBuiltinManifests(root)
-        val providers = ModCarrierRegistry.providers()
+        val providers = ModCarrierRegistry.providers(noMarkersRoot())
         val character = providers.mapNotNull { it.second as? CharacterMod }.single()
         val session = attach(root, VariableStore(), providers)!!
 
@@ -316,7 +324,7 @@ class ModArbitrationRoundWireTest {
     fun `判据3 生产真仲裁装配后仲裁参与不再降级且收口清缝`() {
         val root = tempGameRoot()
         writeBuiltinManifests(root)
-        val providers = ModCarrierRegistry.providers()
+        val providers = ModCarrierRegistry.providers(noMarkersRoot())
         val character = providers.mapNotNull { it.second as? CharacterMod }.single()
         val event = providers.mapNotNull { it.second as? EventMod }.single()
 

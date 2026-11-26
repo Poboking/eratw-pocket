@@ -4,13 +4,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.eratw.port.android.ui.EratwHairline
+import com.eratw.port.android.ui.EratwInk
+import com.eratw.port.android.ui.design.ShellSpace
+import com.eratw.port.android.ui.design.ShellType
 
 /** 「常用置顶」卡的全部写操作；收成一件，避免 Composable 参数表随动作数膨胀。 */
 internal data class RailPinnedActions(
@@ -55,7 +56,7 @@ internal fun RailPinnedCard(
             actionColor = UiColors.TextMuted,
         )
         PinnedChipSection(text = text, pinned = pinned, labelOf = labelOf, onUnpin = actions.onUnpin)
-        HorizontalDivider(color = UiColors.Border, modifier = Modifier.padding(vertical = 8.dp))
+        EratwHairline(modifier = Modifier.padding(vertical = ShellSpace.CardGap))
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -70,10 +71,9 @@ internal fun RailPinnedCard(
         HistoryChipSection(text = text, candidates = candidates, onPin = actions.onPin)
         Text(
             text = text.railPinnedHint,
-            color = UiColors.TextMuted,
-            fontSize = 11.sp,
-            lineHeight = 16.sp,
-            modifier = Modifier.padding(top = 8.dp),
+            color = EratwInk.textMuted(),
+            style = ShellType.Label,
+            modifier = Modifier.padding(top = ShellSpace.CardGap),
         )
     }
 }

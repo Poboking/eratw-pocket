@@ -1,12 +1,21 @@
 package com.eratw.port.android
 
+import android.content.Context
+
 /**
  * 首启教程（复古像素指南）与关于页「重新查阅」入口的三语文案表（ZH / EN / JA）。
  *
  * ## 为什么独立成表
- * 照 [PlayerStatsCopy] 的同款理由：[SettingsStrings] 的构造参数已贴着 JVM 方法签名
- * 255 个参数槽的上限，再加字段会在运行期抛 ClassFormatError。新增文案一律另起小表，
- * 语言只经 [SettingsLanguage] 单路取，形状闸照 `TutorialCopyTest`（改表必改闸）。
+ * 照 [PlayerStatsCopy] 的同款理由：教程文案进独立小表（当初 [SettingsStrings] 的主构造器
+ * 贴着 JVM 方法签名 255 个参数槽的上限才拆表；该表后来改成类体属性 + `tr` 求值突破了
+ * 这个上限，但「新增文案另起小表」的口径照旧，各域文案内聚）。语言只经 [SettingsLanguage]
+ * 单路取，形状闸照 `TutorialCopyTest`（改表必改闸）。
+ *
+ * ## 事实口径
+ * 存档页的互通句必须带 mod 例外限定（未装补丁 = 互通不受影响；装了补丁的存档附 `.rt2`
+ * 扩展数据，PC 读不到扩展部分，传回时上警告而非静默应用），规约锚 = specs 下的
+ * save-format.md 第 11 节与 era-arch-v61u.md 的兼容性矩阵（「100% 互通」表述已作废）。
+ * 例外句在不在场由 `TutorialCopyTest` 钉住（撤句即红）。
  *
  * ## 口径
  * 玩家面措辞为面向玩家的说明口吻；功能落点（分区名、卡名、投放目录、生效时机）逐字对齐
@@ -87,6 +96,9 @@ data class TutorialCopy(
             savesTitle = "存档导入与导出",
             savesBody = "好不容易玩出来的进度，可千万别弄丢了。\n" +
                 "移植版支持与电脑版互通存档，两边使用的是相同的存档格式。因此，无论是想把电脑上的进度移到手机，还是想把手机里的存档带回电脑，都可以通过这里完成。\n" +
+                "有一个例外要知道：没装补丁（MOD）时，互通完全不受影响；装了补丁的存档会多一份随行的 `.rt2` 扩展数据文件，" +
+                "电脑版读不到这份扩展数据，能认的只有 `.sav` 本体，扩展部分在电脑上是玩不了的。另外，若电脑版玩过同一个存档位再传回手机，" +
+                "应用会提醒扩展状态可能滞后或丢失，不会不加提示地直接套用。\n" +
                 "# 在哪里操作？\n" +
                 "打开「设置 → 移植版功能 → 存档」，存档管理就在这个分区的最上方。\n" +
                 "# 导入存档\n" +
@@ -205,6 +217,12 @@ data class TutorialCopy(
             savesTitle = "Save Import and Export",
             savesBody = "Do not lose the progress you worked so hard to build up.\n" +
                 "The port shares save compatibility with the PC version, since both use the same save format. So whether you want to carry your PC progress over to your phone or bring your phone saves back to PC, this is where to do it.\n" +
+                "One exception to know about: with no patches (MODs) installed, this interop is completely " +
+                "unaffected; a save from a patched game comes with a companion `.rt2` extension file " +
+                "that the PC version cannot read; it only recognizes the `.sav` body, so the extension " +
+                "content is not playable there. Also, if the PC version has played the same slot and " +
+                "that save is brought back, the app will warn that the extension state may be stale or lost " +
+                "instead of applying it silently.\n" +
                 "# Where is it?\n" +
                 "Open Settings > Android port features > Saves; save management sits at the very top of this section.\n" +
                 "# Importing saves\n" +
@@ -323,6 +341,10 @@ data class TutorialCopy(
             savesTitle = "セーブデータの読み込みと書き出し",
             savesBody = "せっかく遊んで進めたデータ、なくしてしまっては一大事です。\n" +
                 "移植版はパソコン版とセーブデータをやり取りできます。どちらも同じ形式を使っているからです。パソコンで進めたデータをスマホへ、スマホのセーブをパソコンへ、どちらもここからできます。\n" +
+                "ひとつ例外があります。パッチ（MOD）を入れていなければ、このやり取りはまったく影響を受けません。" +
+                "パッチを入れたセーブには、`.rt2` という拡張データのファイルがひとつ余分に付きます。" +
+                "パソコン版はこの拡張データを読めず、扱えるのは `.sav` 本体だけです。拡張部分はパソコンでは遊べません。" +
+                "また、パソコン版で同じセーブ枠を遊んだあとにスマホへ戻すと、アプリは拡張状態が遅れたり失われたりするおそれがあると知らせます。黙ってそのまま適用することはありません。\n" +
                 "# どこで操作する？\n" +
                 "「設定 → 移植版の機能 → セーブ」を開いてください。セーブの管理はこのセクションの一番上にあります。\n" +
                 "# セーブを読み込む\n" +
@@ -418,11 +440,25 @@ data class TutorialCopy(
             revisitButton = "読み返す",
         )
 
-        /** 与设置页 `text.lang` 同源的单路取值。 */
+        /** 与设置页 `text.lang` 同源的单路取值（eraTW 原七页；JVM 单测也走这条）。 */
         fun of(lang: SettingsLanguage): TutorialCopy = when (lang) {
             SettingsLanguage.ZH -> ZH
             SettingsLanguage.EN -> EN
             SettingsLanguage.JA -> JA
         }
+
+        /**
+         * 纯逻辑选档：壳层配置 `tutorialMode=basic` 时换成中性基础说明，游戏名从配置注入。
+         * 不接 Android API，便于形状闸与「不含 eraTW 专名」断言直接在 JVM 上跑。
+         */
+        fun of(lang: SettingsLanguage, gameName: String, basic: Boolean): TutorialCopy =
+            if (basic) BasicTutorialCopy.of(lang, gameName) else of(lang)
+
+        /** 生产入口：模式与游戏名来自 [ShellBrand] 的构建期资源，语言仍走设置页单路。 */
+        fun of(context: Context, lang: SettingsLanguage): TutorialCopy = of(
+            lang = lang,
+            gameName = ShellBrand.gameName(context),
+            basic = ShellBrand.useBasicTutorial(context),
+        )
     }
 }

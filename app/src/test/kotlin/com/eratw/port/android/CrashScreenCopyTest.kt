@@ -45,6 +45,7 @@ class CrashScreenCopyTest {
         "bannerTitle" to CrashScreenCopy::bannerTitle,
         "bannerBodyFormat" to CrashScreenCopy::bannerBodyFormat,
         "bannerAck" to CrashScreenCopy::bannerAck,
+        "versionLineFormat" to CrashScreenCopy::versionLineFormat,
     )
 
     // ------------------------------------------------------------------
@@ -53,8 +54,8 @@ class CrashScreenCopyTest {
 
     @Test
     fun `三档条目数相等且与显式键清单对账`() {
-        assertEquals(22, keys.size)
-        CopyShapeGate.assertKeyCount("CrashScreenCopy", copies, keys, expectedPerCopy = 23)
+        assertEquals(23, keys.size)
+        CopyShapeGate.assertKeyCount("CrashScreenCopy", copies, keys, expectedPerCopy = 24)
     }
 
     @Test
@@ -84,6 +85,13 @@ class CrashScreenCopyTest {
         assertEquals(CrashScreenCopy.ZH, CrashScreenCopy.of(SettingsLanguage.ZH))
         assertEquals(CrashScreenCopy.EN, CrashScreenCopy.of(SettingsLanguage.EN))
         assertEquals(CrashScreenCopy.JA, CrashScreenCopy.of(SettingsLanguage.JA))
+    }
+
+    @Test
+    fun `崩溃屏版本号行三语各按本族写法填版本名与构建号`() {
+        assertEquals("版本 0.2.47（build 23）", CrashScreenCopy.ZH.versionLine("0.2.47", 23))
+        assertEquals("Version 0.2.47 (build 23)", CrashScreenCopy.EN.versionLine("0.2.47", 23))
+        assertEquals("バージョン 0.2.47（ビルド 23）", CrashScreenCopy.JA.versionLine("0.2.47", 23))
     }
 
     // ------------------------------------------------------------------

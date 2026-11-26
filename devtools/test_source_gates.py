@@ -236,16 +236,10 @@ def test_pack_release_erd() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
-def main() -> int:
+def run_erdpkg_tests() -> None:
+    """原始 erdpkg 四套回归（本文件既有内容，函数体零改动）。"""
     for fn in (test_erd_gate, test_erbc_pack_gate, test_data_source_gate, test_pack_release_erd):
         fn()
-    if FAILS:
-        print(f"\n{len(FAILS)} 条断言失败：")
-        for f in FAILS:
-            print("  -", f)
-        return 1
-    print("\n数据源闸回归全部通过")
-    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -311,12 +305,31 @@ BUSINESS_WORD_WHITELIST = (
     ("adopt", None, "adoptSlice", "引擎自有 API：编译期函数切片收养（FunctionSlice），非家族收养语义"),
     ("adopt", None, "adoptFunction", "引擎自有 API：函数切片收养入口，非家族收养语义"),
     ("adopt", None, "adoptHandoffState", "引擎自有 API：进程状态交接收养，非家族收养语义"),
+    ("adopt", None, "adoptTriggerBridge", "引擎自有 API：Mod 事件触发桥接器采纳（EventDispatchRegistry），非家族收养语义"),
+    ("adopt", None, "adoptKnownEvents", "引擎自有 API：Mod 已知事件键采纳（EventDispatchRegistry），非家族收养语义"),
+    ("adopt", None, "adoptSharedFaces", "引擎自有 API：Mod 共享面采纳（ModContextFaces），非家族收养语义"),
+    ("adopt", None, "adoptHookPipeline", "引擎自有 API：Mod hook 管线采纳（ModContextImpl），非家族收养语义"),
+    ("adopt", None, "adoptInteractionPipeline", "引擎自有 API：Mod 交互管线采纳（ModContextImpl），非家族收养语义"),
+    ("adopt", None, "adoptEventRegistry", "引擎自有 API：Mod 事件注册表采纳（ModContextImpl），非家族收养语义"),
+    ("adopt", None, "adoptServices", "引擎自有 API：Mod 服务注册表采纳（ModServiceRegistryImpl），非家族收养语义"),
+    ("adopt", None, "adoptRandomSeed", "引擎自有 API：Mod 决策随机种子采纳（ModRuntimeHost），非家族收养语义"),
+    ("adopt", None, "adoptTimingLedger", "引擎自有 API：Mod 计时账本采纳（ModContextImpl），非家族收养语义"),
+    ("adopt", None, "adoptHandlerBudget", "引擎自有 API：Mod 处理器预算采纳（ModContextImpl），非家族收养语义"),
+    ("adopt", None, "adoptSettings", "引擎自有 API：Mod 设置快照采纳（ModRuntimeHost），非家族收养语义"),
+    ("adopt", None, "adoptPerModState", "引擎自有 API：Mod 包级状态采纳（ModRuntimeAdopt），非家族收养语义"),
+    ("adopt", None, "adoptStrings", "引擎自有 API：Mod 字符串表采纳（ModStringsRegistry），非家族收养语义"),
+    ("adopt", None, "adoptGameStateWrite", "引擎自有 API：Mod 状态写面采纳（ModDx4WriteGrantGate），非家族收养语义"),
+    ("adopt", None, "adoptPreLoadFaces", "引擎自有 API：Mod 预装载面采纳（ModDx4WriteGrantGate），非家族收养语义"),
     ("family", "FontSidecar.kt", None, "font family（字体家族，排版域），非家族系统业务"),
     ("family", "EngineProfileData.kt", None, "引擎兼容档族参数/查询（engine compat family），非家族系统业务"),
     ("family", "EngineSurface.kt", None, "引擎兼容档族（engine compat family），非家族系统业务"),
     ("family", "CompatCommandAudit.kt", None, "引擎兼容档族（engine compat family），非家族系统业务"),
     ("family", "EngineProfiles.kt", None, "引擎兼容档族（engine compat family），非家族系统业务"),
     ("family", "EngineStamp.kt", None, "引擎兼容档族（engine compat family），非家族系统业务"),
+    ("family", "RuntimeCompatibilityProfile.kt", None, "引擎兼容档族字段 engineFamily/family（EngineFamily），非家族系统业务"),
+    ("family", "DeclarationRegistry.kt", "systemCharaFamily", "系统角色变量族查询（SystemLayout 尺寸族），非家族系统业务"),
+    ("family", "DeclarationRegistry.kt", "family", "局部变量承载 systemCharaFamily 返回值（变量类型族），非家族系统业务"),
+    ("sibling", "ModCsvLoadContext.kt", "siblingTable", "CSV 表名 1↔2 姊妹表互换（同族表），非家族系统业务"),
     ("family", "GameSession.kt", "CompatCommandAudit", "引擎兼容档审计调用点，非家族系统业务"),
     ("family", "GameSession.kt", "CompatProfileMismatchException", "引擎兼容档失配异常，非家族系统业务"),
     ("family", None, "tableFamily", "GDI+ 字体族链字段（排版域），非家族系统业务"),
@@ -459,19 +472,88 @@ def test_business_word_gate() -> None:
           business_word_gate(os.path.dirname(HERE)), want_red=False)
 
 
-_MAIN_FROM_ERDPKG = main
+# ---------------------------------------------------------------------------
+# lane COMPAT-DECOUPLE 追加段（2026-11-19）：语料专名门禁（eraTW 坐标外置的架构护栏）。
+#
+# 语义：core-vm/src/main 与 mod-api/src/main 的**代码行**（剥注释后）不得出现具体 era 游戏的
+# 语料变量名与诊断文案——这些是宿主语料配置，2026-11-19 已外置到 app 侧 EratwForensicsLayout；
+# 本闸防止将来有人再把 eraTW 语料知识写回引擎核心（业务零耦合铁律 era-arch-v61u.md §0）。
+# 注释/KDoc 里的溯源引用合法（剥注释口径）；测试源集与 build 产物排除（同 business gate）。
+# ---------------------------------------------------------------------------
+
+# 具体 era 游戏的语料专名：变量名 + 诊断中文文案。命中即判红（无白名单——这是硬边界）。
+CORPUS_SPECIFIC_TOKENS = (
+    "GENSOKYO_MAP_FIX", "GMF_HOME_MAP", "RANDOM_CHARANUM", "MAIN_MAP",
+    "约会现场", "约会中", "约会道中", "路人号", "路人天赋", "幻想乡",
+)
+
+
+def corpus_specific_gate(repo_root: str) -> list:
+    """扫 core 与 mod-api 主源集代码行，返回语料专名命中（空 = 绿）。"""
+    problems = []
+    for scan_dir in BUSINESS_WORD_SCAN_DIRS:
+        base = os.path.join(repo_root, scan_dir.replace("/", os.sep))
+        if not os.path.isdir(base):
+            problems.append(f"扫描目录缺失: {scan_dir}")
+            continue
+        for dirpath, dirnames, filenames in os.walk(base):
+            rel_dir = os.path.relpath(dirpath, repo_root).replace(os.sep, "/")
+            if any(part in rel_dir + "/" for part in BUSINESS_WORD_EXCLUDED_PATH_PARTS):
+                dirnames[:] = []
+                continue
+            for name in filenames:
+                if not name.endswith((".kt", ".java")):
+                    continue
+                path = os.path.join(dirpath, name)
+                rel_path = os.path.relpath(path, repo_root).replace(os.sep, "/")
+                if any(part in "/" + rel_path for part in BUSINESS_WORD_EXCLUDED_PATH_PARTS):
+                    continue
+                with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                    code = _strip_comments_for_word_gate(fh.read())
+                for lineno, line in enumerate(code.splitlines(), 1):
+                    for token in CORPUS_SPECIFIC_TOKENS:
+                        if token in line:
+                            problems.append(f"{rel_path}:{lineno}: 语料专名「{token}」: {line.strip()[:100]}")
+    return problems
+
+
+def test_corpus_specific_gate() -> None:
+    """语料专名门禁回归：合成绿/红两例 + 真树零命中。"""
+    root = tempfile.mkdtemp(prefix="corpusgate-")
+    try:
+        main_src = os.path.join(root, "core-vm", "src", "main", "kotlin", "com", "example")
+        os.makedirs(main_src)
+        os.makedirs(os.path.join(root, "mod-api", "src", "main", "kotlin"))
+        # 绿例：语料专名只在注释里（溯源合法）。
+        with open(os.path.join(main_src, "Clean.kt"), "w", encoding="utf-8") as fh:
+            fh.write("package com.example\n/** 语料锚 GENSOKYO_MAP_FIX / MAIN_MAP / 约会中 */\nval ok = 1\n")
+        check("corpus_specific_gate：注释里的语料专名不判红", corpus_specific_gate(root), want_red=False)
+        # 红例 1：语料变量名作为读取字面量写进 core。
+        with open(os.path.join(main_src, "Dirty.kt"), "w", encoding="utf-8") as fh:
+            fh.write('package com.example\nval v = read("RANDOM_CHARANUM")\n')
+        check("corpus_specific_gate：core 代码行出现语料变量名判红", corpus_specific_gate(root), want_red=True)
+        os.remove(os.path.join(main_src, "Dirty.kt"))
+        # 红例 2：eraTW 中文诊断文案写进 core。
+        with open(os.path.join(main_src, "DirtyCjk.kt"), "w", encoding="utf-8") as fh:
+            fh.write('package com.example\nval s = "约会现场："\n')
+        check("corpus_specific_gate：core 代码行出现语料中文文案判红", corpus_specific_gate(root), want_red=True)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    # 真树零命中：core 与 mod-api 主源集代码行无语料专名。
+    check("corpus_specific_gate：真实源树零语料专名命中",
+          corpus_specific_gate(os.path.dirname(HERE)), want_red=False)
 
 
 def main() -> int:
-    """既有 main 的追加包装：先原样跑 erdpkg 四套回归，再追加业务词门禁回归。
+    """统一入口：数据源闸 + 业务词门禁 + 语料专名门禁，聚合 FAILS，0/1 退出码。"""
+    run_erdpkg_tests()
+    if FAILS:
+        print(f"\n{len(FAILS)} 条断言失败（数据源闸段）：")
+        for f in FAILS:
+            print("  -", f)
+        return 1
+    print("\n数据源闸回归全部通过")
 
-    既有 main 函数体零改动（经 _MAIN_FROM_ERDPKG 原样转发，其 FAILS 聚合与打印口径不变）；
-    本包装只把自己的回归接进同一退出码口径。函数名按模块级名字解析的次序覆盖原 main
-    （结尾既有的 __main__ 守卫因此调用到本包装），这是不改既有函数前提下的注册方式。
-    """
-    rc = _MAIN_FROM_ERDPKG()
-    if rc != 0:
-        return rc
     test_business_word_gate()
     if FAILS:
         print(f"\n{len(FAILS)} 条断言失败（含业务词门禁段）：")
@@ -479,6 +561,14 @@ def main() -> int:
             print("  -", f)
         return 1
     print("\n业务词 grep 门禁回归全部通过")
+
+    test_corpus_specific_gate()
+    if FAILS:
+        print(f"\n{len(FAILS)} 条断言失败（含语料专名门禁段）：")
+        for f in FAILS:
+            print("  -", f)
+        return 1
+    print("\n语料专名 grep 门禁回归全部通过")
     return 0
 
 

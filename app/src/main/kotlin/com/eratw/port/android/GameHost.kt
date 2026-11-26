@@ -26,6 +26,7 @@ import com.eratw.port.core.diag.LiveSetCensus
 import com.eratw.port.core.diag.PageFunctionTrail
 import com.eratw.port.core.diag.ProgramDiagnostics
 import com.eratw.port.core.err.CodeEE
+import com.eratw.port.core.err.erbDisplayLine
 import com.eratw.port.core.fn.BackgroundAdmission
 import com.eratw.port.core.fn.BuiltinEvalContext
 import com.eratw.port.core.fn.ConfigMethods
@@ -67,6 +68,8 @@ import com.eratw.port.core.loader.BootFailureKind
 import com.eratw.port.core.loader.BootFailures
 import com.eratw.port.core.loader.BootMetadata
 import com.eratw.port.core.loader.ProgramLoader
+import com.eratw.port.core.mod.EraA3AssetOverlay
+import com.eratw.port.core.patch.ModuleLinker
 import com.eratw.port.core.policy.ErbPatchPolicy
 import com.eratw.port.core.proc.BeginType
 import com.eratw.port.core.proc.BootViewMetrics
@@ -75,6 +78,7 @@ import com.eratw.port.core.proc.EngineFunctionPolicy
 import com.eratw.port.core.proc.EngineStampRead
 import com.eratw.port.core.proc.GameSession
 import com.eratw.port.core.proc.InputSinkClosedException
+import com.eratw.port.core.proc.LateInputQueue
 import com.eratw.port.core.proc.ProcessRuntime
 import com.eratw.port.core.proc.QueueInputSink
 import com.eratw.port.core.proc.RootedBuiltinHost
@@ -87,6 +91,9 @@ import com.eratw.port.core.save.SaveFolderMigrationLog
 import com.eratw.port.core.sql.SqlDriver
 import com.eratw.port.core.stmt.StmtInternAudit
 import com.eratw.port.core.update.UpdateTelemetry
+import com.eratw.port.core.vars.VariableStore
+import com.eratw.port.modfamily.FamilyDeclarations
+import com.eratw.port.modfamily.FamilyMod
 import com.eratw.port.platform.audio.AndroidAudioFocusRequester
 import com.eratw.port.platform.audio.AudioFocusSession
 import com.eratw.port.platform.audio.AudioFocusTarget
@@ -124,6 +131,52 @@ import java.util.concurrent.atomic.AtomicLong
 internal const val FAILURE_PREFIX = "启动失败："
 
 /**
+ * 回合边界串表回收的触发上界（UTF-16 code unit 数，≈2 B/char ⇒ 12 M ≈ 24 MiB 串载荷）。
+ *
+ * 为什么会撞上：变量存储的串表是**池下标**模型 —— STR 变量覆盖写只改下标、旧串留在池里
+ * （原版槽里是 C# `string` 引用，覆盖写由 GC 归还）。而池只进不出，中后局一直往 STR 里
+ * 写长串的会话没有运行期回收点；2026-11-25 真机 OOM 报告的驻留串表就是 63,636 条 /
+ * 43,685,878 字符（≈83 MiB，占点名账目的近一半）。同族判例见
+ * `RuntimeCodeCacheBudgetTest` 的三件运行期缓存（同一处置口径：越界整表收）。
+ *
+ * 取 12 M char（≈24 MiB）= 报告实测量的 ≈28%：正常中局远达不到，真灌起来一收就落回地板；
+ * 收完带 +25% 迟滞（见 [VariableStore.reclaimStringPoolIfOver]），不会每回合白扫载体。
+ */
+internal const val STRING_POOL_CHAR_BUDGET = 12_000_000L
+
+/**
+ * 回合边界串表回收的条目上界（池里不同串的条数，200 000 ≈ 十几 MiB 的池表开销）。
+ *
+ * 字符预算管「串有多长」，这条管「串有多少条」：压实要按条数重建反查表，池里条目多、
+ * 串短的形态若只按字符预算触发，收池会在堆最紧的一刻再付一份「老表 + 新表」的峰值。
+ * 报告实测 63,636 条，正常中局远不到这条线。
+ */
+internal const val STRING_POOL_ENTRY_BUDGET = 200_000
+
+/**
+ * 堆压回收运行期代码缓存的堆水位线（used/max 百分比）。
+ *
+ * 为什么需要这条自救：代码缓存**有上界 ≠ 上界够小**。2026-11-26 真机报告（512 MiB 堆、
+ * 崩溃时 used 461 MiB）里账面点名只有 149 MiB；桌面 512m 浸泡的类直方图把差额指到解码
+ * 结点簇（结点对象 + 字面串 + 容器，约 120~150 MiB）—— 那是「丢了重解即可」的缓存，
+ * 不是活数据。上界收小会把正常推进拖进逐条重解码，所以走**压力触发**：稳态零成本，
+ * 堆吃紧时整块还回去。
+ *
+ * 取 88%：报告现场 bg.heaptop 在 480/512（93%）才发现，那一档只剩 32 MiB 余量，
+ * 一次 40 B 的分配就可能判死；88%（≈450 MiB）留出 ~60 MiB 让 GC 与回收动作自己走路。
+ */
+internal const val CODE_CACHE_RELEASE_HEAP_PERCENT = 88L
+
+/**
+ * 两次堆压回收的最小间隔（毫秒）。
+ *
+ * 回收的代价是「下一轮逐条重解码」，间隔太密等于把热代码反复驱逐（页中检查点 250 ms
+ * 一次，真按水位每拍回收会把长页拖成龟速）。30 s 与图形回收同量级：真 OOM 现场一次
+ * 回收就能腾出上百 MiB，足够撑过一整段。
+ */
+internal const val CODE_CACHE_RELEASE_MIN_GAP_MS = 30_000L
+
+/**
  * 「内存不够」失败族所处阶段 —— 失败屏出口与自动降档的唯一判据来源。
  *
  * - [PREFLIGHT_REJECTED]：静态估算已判定上限小于需求，装载未开始，禁止自动重试以免引发进程级 OOM。
@@ -156,6 +209,84 @@ internal fun heapOomText(
 ): String {
     val where = if (stage.isNullOrBlank()) "" else copy.fill(copy.heapOomWhereFormat, stage)
     return copy.fill(copy.heapOomFormat, peakMiB, maxMiB, where, oomDetail)
+}
+
+/**
+ * 脚本线程异常穿出装载与驱动大块后的收口分级（RECON-STAB-A A1 的修复判据；纯函数，JVM 单测
+ * 钉在 `RuntimeFaultActionTest`）。
+ *
+ * 输入只有两个状态位 + 异常类型，三向分流：
+ * - [RuntimeFaultAction.SUPPRESS_BY_CLOSE]：宿主已 [GameHost.close] —— 关闭竞态是正常退出
+ *   路径，静默收口（口径与 [GameHost.handleLoadOrRuntimeFault] 的 closed 首查、backToTitle
+ *   复活线程 catch 的关闭首查同源）。
+ * - [RuntimeFaultAction.LOAD_FAULT]：维持既有「启动失败」收口一字不动。三种来路：
+ *   ① 脚本泵还没进入（`pumpEntered == false`）—— 故障在装载与装配期，会话从未交给界面，
+ *   「启动失败」与事实相符；
+ *   ② [CodeEE] —— 可恢复的 CodeEE 在 `drive` / `pumpUntilTerminal` 内部就走
+ *   `scriptErrorTerminal` 红字终局，穿不进这里；能穿到这里的是非可恢复 CodeEE
+ *   （DeviceBudget / CallStackOverflow），登记形态照旧挂装载失败收口（现场转储
+ *   `deadloop-site.txt` 挂在那条路上，见 `isRecoverableScriptError` 的 KDoc）；
+ *   ③ [Error] —— OOM 归内存族失败屏（`HeapFailureStage` / `canRetryCompat` 一整族读数），
+ *   StackOverflowError 收失败屏优于原版进程即死（RECON-STAB-A §2 的登记判定），都不改。
+ * - [RuntimeFaultAction.RUNTIME_FAULT]：会话已建立后的执行期非 CodeEE 异常。原版 DoScript
+ *   顶层 `catch (Exception)` 是宽捕获（`Process.cs:462`），意外异常走 `handleException` 的
+ *   意外分支（`Process.cs:651-660`）：异常类型 + 消息 + 堆栈红字上屏，**会话保留**，玩家可回
+ *   标题。移植侧此前把它们错收进「启动失败」屏 + 会话销毁 + 报告误归档（A1 的三个可见差异），
+ *   本判据是分流的唯一落点；红字上屏后脚本线程照常终局——不是吞异常继续跑。
+ */
+internal enum class RuntimeFaultAction {
+    SUPPRESS_BY_CLOSE,
+    LOAD_FAULT,
+    RUNTIME_FAULT,
+}
+
+/**
+ * 决定脚本线程异常按哪一条收口走（判据细节见 [RuntimeFaultAction] 的 KDoc）。
+ *
+ * 接线两处：主泵装载与驱动大块的 catch（`loadAndRun`，`pumpEntered` 用局部变量实传），
+ * 以及 backToTitle 复活线程的 catch（C4 接线；`pumpEntered` 恒传 true —— 能点「回到标题」
+ * 的会话必然已进过泵，不存在装载期相位）。可恢复 CodeEE 的精分（[isRecoverableScriptError]）
+ * 不在本判据内：主泵里它在判据之前就被 drive / pumpUntilTerminal 拦走，复活线程里由
+ * catch 的精分支拦 —— 两处都不让可恢复 CodeEE 落进 LOAD_FAULT 支的既有收口。
+ *
+ * @param closed 宿主是否已 close（生产读 [GameHost] 的 `@Volatile closed`）
+ * @param pumpEntered 脚本泵是否已进入（`drive` 被调起；true 之后穿出的异常才可能算执行期）
+ * @param t 穿出装载与驱动大块的异常本体
+ */
+internal fun runtimeFaultAction(closed: Boolean, pumpEntered: Boolean, t: Throwable): RuntimeFaultAction = when {
+    closed -> RuntimeFaultAction.SUPPRESS_BY_CLOSE
+    !pumpEntered -> RuntimeFaultAction.LOAD_FAULT
+    t is CodeEE -> RuntimeFaultAction.LOAD_FAULT
+    t is Error -> RuntimeFaultAction.LOAD_FAULT
+    else -> RuntimeFaultAction.RUNTIME_FAULT
+}
+
+/**
+ * 执行期收口红字头的**裸异常位置后缀**（RECON-STAB-A 接线②的形态补齐项；纯函数，
+ * JVM 单测钉在 `RuntimeFaultLocationTest`）。
+ *
+ * 原版意外分支的头串带当前语句位置：`handleException` 对没有自带位置的意外异常取
+ * `current.Position`（当前语句）格式化成位置串（蛇版 `Process.cs:645-652`），再把它
+ * 拼进 `HasUnexpectedError` 头串（蛇版 `Process.cs:695`；文案 `Lang.cs:2994`
+ * `{0}予期しないエラーが発生しました:{1}` / zhs `emuera-zhs.xml:744`
+ * `{0}发生了意料之外的错误:{1}`）。移植侧头串是「类型 + 消息」在前、位置后缀随尾
+ * （`scriptLocation` 的同一段收尾），本函数只补裸异常缺的那一段：取 [frame]
+ * （`ProcessRuntime.erbFrameStack` 抛点镜像的最内帧 —— VM 在 `run()` 的 catch 里、
+ * 回卷前镜像的当前语句位置，任意异常离栈都镜像，`Vm.kt:1493-1496`）的
+ * 「函数名 + 1 基物理行」，形状与 `scriptLocation` 的 CodeEE 后缀同构
+ * （`（函数名 行N）`；行号 0 基 → 1 基走 [erbDisplayLine] 单一换算口，不另加一）。
+ *
+ * 诚实降级：[frame] 为 null（异常出自 VM 之外 / 镜像已清）或函数名与行号**都**读不出
+ * = 返回空串，头串退回「类型 + 消息」原形 —— 不造假位置。CodeEE 家族不走本函数
+ * （调用方先试 `scriptLocation`，家族路红字头一字不动）。
+ */
+internal fun bareFaultLocationSuffix(frame: ProcessRuntime.ErbFrame?, copy: ShellFailureCopy): String {
+    frame ?: return ""
+    val parts = ArrayList<String>(2)
+    frame.function?.takeIf { it.isNotBlank() }?.let { parts += it }
+    val displayLine = erbDisplayLine(frame.line)
+    if (displayLine >= 0) parts += copy.fill(copy.scriptLocationLineFormat, displayLine)
+    return if (parts.isEmpty()) "" else copy.fill(copy.scriptLocationWrapFormat, parts.joinToString(" "))
 }
 
 /**
@@ -208,8 +339,21 @@ class GameHost(
     private val liveReflow: Boolean = false,
     private val disableBadApple: Boolean = true,
     private val echoInput: Boolean = false,
+    /**
+     * 指令收尾的按键等待（COMEND-WAIT，玩家面缺省开 = 原版）：true = 每条返回非 0 的指令
+     * 回菜单前等一次回车（`Process.cs:2417` / `:2449-2455`），打出来的口上留在屏上；
+     * false = 不等。与 `echoInput` 同口径：装配期定死，设置页改完重开一局生效。
+     */
+    private val commandEndWait: Boolean = true,
     private val busyIndicator: Boolean = true,
     private val modRuntime: Boolean = false,
+    /**
+     * 路 B dex 载体供给缝（ADR-013 S5，MODDX4-DEX 组长接线）：`MainActivity` 在 **UI 线程**经
+     * [androidDexCarrierProvision] 构造好单路传入（总闸快照与目录读数在构造期定死，装配线程只
+     * 消费现成实例，与 `modRuntime` 同一条线程纪律）。缺省 null = 未接线，装配段整段旁路；
+     * 缝实现内判 dex 总闸（关 = 不扫 code 目录、不建类加载器、返回空表），总闸缺省关 = 出厂零行为差。
+     */
+    private val dexCarriers: DexCarrierProvision? = null,
     /**
      * RT2 玩家排序配置（L2 组长收口接线）：`UiPrefs.preferredPackageIds` 在 **UI 线程**读好
      * 经构造参数单路传入（与 `modRuntime` 同一条线程纪律：装配期在 VM 线程上不许摸偏好表）。
@@ -239,6 +383,16 @@ class GameHost(
 
     private val compatExplicit: Boolean =
         compatProfile != null || engineStamp is EngineStampRead.Present
+
+    /**
+     * Mod 装配总闸的**会话有效值**（COMPAT-3P-MOD）：玩家偏好总闸 [modRuntime] 与「非第三方档」
+     * 的与。第三方档（合法引擎印章 [EngineStampRead.Present]）强制旁路 eraTW 业务 mod 装配 +
+     * global/slot 侧车接线 —— 实测第三方语料的 SYSTEM_TITLE `SAVEGLOBAL` 在侧车配对事务下抛异常
+     * （`CodeEE(ErrorSavingGlobalData)`），而侧车未装的原生路径可正常进标题、收输入。
+     * eraTW 包（[EngineStampRead.Missing] / [EngineStampRead.Malformed]）恒等于 [modRuntime]，
+     * 行为逐字不变；构造参数原文与 MainActivity 传参点均未改（守门测试钉原文）。
+     */
+    private val modActive: Boolean = modRuntime && engineStamp !is EngineStampRead.Present
 
     /** 设置页语言：壳层一次取好，后台线程/渲染回调都用这一份（不各自读 SharedPreferences）。 */
     private val settingsLanguage: SettingsLanguage = UiPrefs.settingsLanguage(view.context)
@@ -291,6 +445,18 @@ class GameHost(
     @Volatile
     internal var loadPhaseSink: ((LoadProgress?) -> Unit)? = null
 
+    /**
+     * 第三方代码包载体来源（ADR-013 S6b）：已信任的 dex 代码包在装配期并进载体名单。
+     *
+     * 照 [loadPhaseSink] 的回调惯例由宿主在构造后、start 之前赋值，**不进构造参数表**
+     * （进参数表会改掉 baseline 里既有的 LongParameterList 结构性 ID）。壳层在 UI 线程
+     * 把总闸与 `DexClassLoader` 工厂定死（`ModCodeCarrierProvider.forGate`）后经
+     * [ModCodeCarrierSource] 交进来，装配期（VM 线程）只调一次、不再摸偏好表。
+     * 缺省 null = 没有代码包来源，行为与接线前逐位一致（注册表两参重载只返回内置载体）。
+     */
+    @Volatile
+    internal var modCodeCarriers: ModCodeCarrierSource? = null
+
     @Volatile
     internal var lastInfiniteLoopAlert: InfiniteLoopAlert? = null
 
@@ -328,6 +494,24 @@ class GameHost(
 
     @Volatile
     private var modRuntimeSession: ModRuntimeSession? = null
+
+    /**
+     * mod 面 logSink 的**唯一定义**（ERAFIN2 从 [assembleSession] 局部提升为类属性）：
+     * canonical 行进 [ModManageDiagnostics] + Logcat。装配期（链装配 / attach）与 Lane DZ
+     * 页边界重装路径（`retryRolledBackMod` 的 dex 取件归因）走同一份，不建第二份定义
+     * 防漂移（Lane DP「格式只在会话侧 canonical 行生产处定义一次」口径的落点）。
+     */
+    private val modLogSink: (String) -> Unit = { line -> ModManageDiagnostics.record(line); Log.i(TAG, "modrt: $line") }
+
+    /**
+     * 本会话的游戏根（Lane DZ 回滚态重装的载体实例来源）。
+     *
+     * 只在 [assembleSession] 里赋值一次（与 `modRuntimeSession` 同一段装配代码），退出清场
+     * 与它一起置空。设置页拿不到这个 File（另一个 Activity），所以重装请求只能经
+     * [ModReinstallRequests] 数据队列投递到页边界，由这里定取载体实例。
+     */
+    @Volatile
+    private var modGameRoot: File? = null
 
     @Volatile
     private var lastScreen: ConsoleScreen? = null
@@ -369,6 +553,22 @@ class GameHost(
     private val pendingLock = Any()
     private val inputReceived = AtomicLong(0L)
     private val inputGateDropped = AtomicLong(0L)
+
+    /**
+     * 执行期入力的滞留队列（PLAY-INPUT-LATE · 2026-11-23）。
+     *
+     * 落点与语义见 [LateInputQueue] 类头：`deliver` 在 `!sink.isAwaiting`（= VM 正在跑一段
+     * 无等待的脚本，动态地图页每 `ANIMATERECOLOREDMAPS` 毫秒一次整屏重印就落在这一段）时，
+     * 不再直接丢，而是**有界限时**地留住；下一个帧发布边界（
+     * [`LineBufferConsoleSink.onFramePublished`]，= 原版脚本跑到 `WaitInput` 的 `DoEvents`
+     * 时机，`EmueraConsole.cs:1040-1082`）由 [replayLateInputs] 按当刻版面裁决后交回输入队列。
+     *
+     * 只由 `pendingLock` 保护（与 [deliver] 同锁，见 [submitInternal] 的调用形态）。
+     */
+    private val lateInputs = LateInputQueue()
+
+    /** 执行期被留住（未丢）的笔数，诊断面用。 */
+    private val inputGateQueued = AtomicLong(0L)
 
     private val turnStartNs = AtomicLong(0L)
 
@@ -451,6 +651,9 @@ class GameHost(
     private var lastMidPageCheckAtMs = -1L
     private var lastLongTurnPinAtMs = -1L
     private var lastCensusPinAtMs = -1L
+
+    /** 上一次堆压回收运行期代码缓存的时刻（[CODE_CACHE_RELEASE_MIN_GAP_MS] 的冷却钟）。 */
+    private var lastCodeCacheReleaseAtMs = -1L
 
     private var progressPublishWarned = false
     private var busyIndicatorWarned = false
@@ -712,6 +915,10 @@ class GameHost(
         lastFailureScreenKind = FailureScreenKind.LOAD
         trace.mark("start")
 
+        // A1 分级的状态位：drive 被调起即置位。之后穿出大块的非 CodeEE 异常按执行期收口
+        // （runtimeFaultAction → handleRuntimeFault），之前的一律维持装载失败收口。局部变量
+        // 即可：本函数只跑在 VM 线程，catch 与置位同线程，无需 volatile。
+        var pumpEntered = false
         try {
             awaitPreviousHosts(trace)
             if (closed) return
@@ -833,9 +1040,17 @@ class GameHost(
                 return
             }
 
+            // ERA-W1：音声面解析先过 mod 覆盖侧车（A3 生产消费接线）。modRuntime 关态 =
+            // 聚合口都不进（B1 零接触），resolver 拿空表、行为逐字等同改造前；开态空链 /
+            // 无声明也回落官方解析（坏档侧车由 collect 整包跳过不采信）。
+            val soundOverlay = if (modActive) {
+                assetOverlayFor(gameRoot, fresh.modLinkOrderIds) { line -> Log.w(TAG, "assetmap: $line") }
+            } else {
+                EraA3AssetOverlay.AssetMap.EMPTY
+            }
             sound.delegate = TableSoundSink(
                 fresh.store.aux,
-                FileSoundSourceResolver(File(gameRoot, SOUND_DIR_NAME)) { file ->
+                FileSoundSourceResolver(File(gameRoot, SOUND_DIR_NAME), gameRoot, soundOverlay) { file ->
                     MediaPlayerChannelDecoder(file)
                 },
             )
@@ -863,11 +1078,19 @@ class GameHost(
                 onConsoleReady = null
                 view.post { cb() }
             }
+            pumpEntered = true
             drive(fresh)
         } catch (e: InputSinkClosedException) {
             Log.i(TAG, "输入队列已关闭，脚本线程退出")
         } catch (t: Throwable) {
-            handleLoadOrRuntimeFault(t, trace)
+            // A1 分级：同一 catch 承接装载期与执行期两种相位，判据单一来源（RuntimeFaultActionTest
+            // 钉判据函数 + 源码哨兵钉接线）；handleLoadOrRuntimeFault 内的 closed 首查保留兜底。
+            when (runtimeFaultAction(closed, pumpEntered, t)) {
+                RuntimeFaultAction.SUPPRESS_BY_CLOSE ->
+                    Log.i(TAG, "装载期间已关闭，脚本线程退出（${t.javaClass.simpleName}: ${t.message}）")
+                RuntimeFaultAction.LOAD_FAULT -> handleLoadOrRuntimeFault(t, trace)
+                RuntimeFaultAction.RUNTIME_FAULT -> handleRuntimeFault(t, trace)
+            }
         }
     }
 
@@ -894,7 +1117,90 @@ class GameHost(
         }
         drainSaveCheckpoint("turn")
         modRuntimeSession?.onTurnBoundary()
+        // 设置页写入的热通知（DX-A2）：VM 线程页边界 drain 积压并转发会话（会话缺席 = 丢弃）。
+        ModSettingsNotifyChannel.drain().forEach { (packageId, keys) ->
+            modRuntimeSession?.notifySettingsChanged(packageId, keys)
+        }
+        // 设置页「重试装载」积压（Lane DZ）：同一拍、同一条 VM 线程页边界执行，
+        // 会话缺席 = 请求丢弃（未兑现积压在收口 clear 里一并清）。
+        ModReinstallRequests.drain().forEach { packageId -> retryRolledBackMod(packageId) }
+        drainModHeirBridge()
         memory.releaseImagePixelsIfHeapHigh()
+        // 串表运行期回收（同一拍、同一条 VM 线程页边界）。**只能挂在这种安全点上**：
+        // compact 会就地改写全部载体里的池下标，语句/表达式执行中途调会把 Kotlin 局部里
+        // 待写回的下标指到别的串上（静默错值，比响更坏）。此处是 WAIT 语句内、VM 线程停在
+        // 输入等待 —— ERB 调用帧仍在，但语义层只经 readStr/writeStr 交换 String、不持下标，
+        // 下标的全部持有面就是 VariableStore.strIdCarriers 的清单 ⇒ 没有跨输入等待活着的下标。
+        // 异常不吞：真抛了交给 A1 分级按运行期故障处置。
+        fresh.store.reclaimStringPoolIfOver(STRING_POOL_CHAR_BUDGET, STRING_POOL_ENTRY_BUDGET)?.let { r ->
+            Log.i(TAG, "turn.strpool " + r.line)
+            EventJournal.record("turn.strpool", mapOf("line" to r.line))
+        }
+        releaseCodeCachesIfHeapHigh("turn")
+    }
+
+    /**
+     * 一个「重试装载」请求（Lane DZ）的消费端：忘掉旧失败读数 → 定取载体新实例 → 会话内重装。
+     *
+     * 三道早退都只让请求**静默作废**（队列语义：不回流、不重投）：
+     * - 会话缺席（收口后 / 未装配）：没有可重装的对象；
+     * - 游戏根缺席：拿不到载体表（防御性，正常装配段必定已赋值）；
+     * - 载体表里没有该 packageId（或玩家已停用）：不是内置载体，不可重装。
+     *
+     * `forget` 排在取实例之后：取不到实例时旧失败行必须留着（界面继续报真实读数），
+     * 取到才清——重装成败由 `host.install` 打出的 canonical `mod.install` 行重新写回。
+     * 跑在 VM 线程页边界（`onTurnBoundaryReached`），与诊断面的写线程口径一致。
+     */
+    private fun retryRolledBackMod(packageId: String) {
+        val session = modRuntimeSession
+        val root = modGameRoot
+        val mod = if (session != null && root != null) {
+            // Lane DZ（ERAFIN2）：内置 Kotlin 载体定取口优先；不在注册表（第三方 dex 包）
+            // 回退 dex 供给核单包取件（同一条闸链现造新实例，归因行与装配期同形）。
+            // 供给缝缺省 carrierFor = null（fail-closed），未接线时请求静默作废。
+            ModCarrierRegistry.providerFor(root, packageId)
+                ?: dexCarriers?.carrierFor(root, packageId, modLogSink)?.second
+        } else {
+            null
+        }
+        if (session != null && mod != null) {
+            ModManageDiagnostics.forget(packageId)
+            session.reinstallRolledBack(packageId, mod)
+        }
+    }
+
+    /**
+     * 设置页「家督继任」请求的消费端（task-160 / Lane HB）：页边界把玩家意图翻成作者面调用，
+     * 再把作者面真值回写成设置页快照。
+     *
+     * 早退口径与 [retryRolledBackMod] 一致：请求一次性投递、不回流。本局 family 载体不在
+     * [ModRuntimeSession.activePackages]（没装 / 停用 / 装载失败 / 总闸关 / 已收口）⇒ 清空
+     * 快照并丢弃请求：设置页下次渲染整块不显示，不出现「点了没反应」的按钮。活载体实例走
+     * [ModRuntimeSession.carrierModOf]（与装进宿主的是同一实例），继承规则原文走
+     * `context.settings.enumName`（会话内视图，无盘 IO）。
+     *
+     * 兜底 runCatching 只保护「设置页数据面不许把异常抛回页边界」：失败即清快照 + 记日志，
+     * 绝不把 VM 主循环带走。跑在 VM 线程页边界，与既有两条 drain 同拍。
+     */
+    private fun drainModHeirBridge() {
+        val requests = ModHeirRequests.drain()
+        val session = modRuntimeSession
+        val family = if (session != null && FamilyDeclarations.PACKAGE_ID in session.activePackages) {
+            session.carrierModOf(FamilyDeclarations.PACKAGE_ID) as? FamilyMod
+        } else {
+            null
+        }
+        val mode = if (family != null) {
+            session?.host?.contextOf(FamilyDeclarations.PACKAGE_ID)
+                ?.settings?.enumName(FamilyDeclarations.SUCCESSION_MODE_KEY)
+        } else {
+            null
+        }
+        runCatching { ModHeirBridge.apply(requests, family?.api, mode) }
+            .onFailure { t ->
+                ModHeirFeed.clear()
+                Log.w(TAG, "家督继任桥未生效（快照已清空，请求丢弃）", t)
+            }
     }
 
     /**
@@ -1000,6 +1306,56 @@ class GameHost(
     }
 
     /**
+     * 执行期非 CodeEE 异常的收口（VM 线程，RECON-STAB-A A1 修复；与装载收口
+     * [handleLoadOrRuntimeFault] 并列，由 [runtimeFaultAction] 分流）。
+     *
+     * 与原版同构：DoScript 顶层 `catch (Exception)` 宽捕获（`Process.cs:462`）→
+     * `handleException` 的意外异常分支（`Process.cs:651-660`）—— 异常类型 + 消息 + 堆栈
+     * **红字上屏**，进程与会话都保留（红字后玩家停在原地、可回标题）。移植侧对应三件事：
+     *
+     * 1. 红字上屏：类型 + 消息一行 + 位置后缀 + 堆栈首段（逐帧 `printError`，与原版逐行
+     *    PrintError 同形；截 16 帧防刷屏——报告里有全量堆栈）。位置后缀：CodeEE 家族走
+     *    `scriptLocation` 既有口径；裸异常走 `bareFaultLocationSuffix`（RECON-STAB-A 接线②
+     *    ——原版意外分支头串带当前语句位置，蛇版 `Process.cs:645-652` / `:695`）。**不吞**：
+     *    脚本线程就此终局，屏上是明确报错，玩家可见（原版红字同样是明确报错）；不是静默继续跑。
+     * 2. 失败屏按 IN_GAME 族渲染（`scriptErrorTerminal` 同款：会话保留、`canBackToTitle`
+     *    通道可达），不再复用「启动失败」屏、不再销毁会话——本函数**绝不调**
+     *    [shutdownForExit]，释放权留在玩家后续的回标题 / close 那两条路上。
+     * 3. 报告归档为「脚本意外错误」（`phase = IN_GAME`）——原「启动失败」类目会污染收件箱
+     *    分诊（与 2026-11-03「关闭竞态一天 6 份」同形的错标噪声）。
+     */
+    private fun handleRuntimeFault(t: Throwable, trace: LoadTrace) {
+        runCatching { trace.mark(LoadTrace.FAIL_STAGE) }
+        val text = "${t.javaClass.name}: ${t.message ?: ""}" +
+            (scriptLocation(t).ifEmpty { bareFaultLocationSuffix(runtimeThrowFrame(t), failureCopy) })
+        runCatching { session?.console?.printError(text) }
+            .onFailure { Log.w(TAG, "意外异常红字上屏失败（继续收口）", it) }
+        // 堆栈首段逐帧上屏（原版 handleException 意外分支逐行 PrintError 的同形，Process.cs:655-659）。
+        runCatching {
+            t.stackTrace.take(RUNTIME_FAULT_STACK_LINES).forEach { frame ->
+                val at = "  at ${frame.className}.${frame.methodName}" +
+                    "(${frame.fileName}:${frame.lineNumber})"
+                session?.console?.printError(at)
+            }
+        }.onFailure { Log.w(TAG, "意外异常堆栈上屏失败（继续收口）", it) }
+        recordFailure(
+            kind = FailureScreenKind.IN_GAME,
+            heapStage = HeapFailureStage.NONE,
+            text = failureCopy.fill(failureCopy.scriptAbortFormat, text),
+        )
+        writeErrorReport(
+            "脚本意外错误",
+            t,
+            listOf(
+                "中止点：执行期意外异常（非 CodeEE；原版由 DoScript 顶层宽捕获转红字上屏，会话保留）",
+                "证据：Process.cs:462 / Process.cs:651-660",
+            ),
+        )
+        Log.e(TAG, "脚本意外错误终局（会话保留，可回标题）：$text", t)
+        session?.let { stopAudioForTerminal(it) }
+    }
+
+    /**
      * 取本宿主唯一的 SQLite 驱动；首次在 VM 线程装配 fresh [GameSession] 前创建。
      *
      * 两个根的语义（`CONTRACT-SQLITE-MIGRATION` §3，W1 工厂的形参）：
@@ -1038,6 +1394,14 @@ class GameHost(
         flatStatementsOn: Boolean,
         bootMetrics: BootViewMetrics?,
     ): GameSession? {
+        // Lane DXR：会话装配开始 = 诊断面归零 —— 失败行口径是「本会话事实」，不跨会话继承。
+        // 位置承重：必须早于本函数内的链装配（`ModChainAssembly.assembleWithCatalog`）与
+        // `ModRuntimeAssembly.attach` —— 二者写的 canonical 行都在归零之后产生，不会被抹掉；
+        // 反过来说，归零若挪到链装配之后，装配期拒载行就丢了（`ModDiagnosticsSessionScopeE2ETest`
+        // 组 F 与 `ModDiagnosticsSessionScopeWireTest` 的源码序哨兵成对钉这一条）。
+        // 换局 / 兼容档重试 / 设置页重启都是新 `GameHost` ⇒ 新会话，全走这里；
+        // 从后台接回同一会话（`reattachView`）不经过本函数，故意不归零（运行中会话的失败行得留着）。
+        ModManageDiagnostics.reset()
         StmtInternAudit.enabled = File(view.context.filesDir, "fold-audit.on").exists()
         flatStatementsActive = flatStatementsOn
         val program = ProgramLoader.loadMapped(
@@ -1074,6 +1438,12 @@ class GameHost(
         val metadata = metaTask?.await() ?: BootMetadata.read(metaFile.toPath())
         trace.mark("meta")
         if (closed) return null
+        // 侧车装载警告捕获（DBG-TOOLING 波）：erbcc 编译期告警随 program.meta 落盘（file/line/
+        // message 结构化），此前全仓零生产消费者（BOARD P2 挂账）。GameSession 构造会收走
+        // metadata（GameSession.kt:97「装配完成后本类不再持有它」）⇒ 必须在构造**前**把清单
+        // 捕获成局部值；上报统一延到下面 sharpWarnings 段的 best-effort 区（装载线程不做网络）。
+        val sidecarWarnings = runCatching { metadata.loadWarningsOrEmpty() }.getOrDefault(emptyList())
+        for (w in sidecarWarnings) Log.i(TAG, "侧车装载警告：${w.file}:${w.line} ${w.message}")
 
         trace.forceGc("session")
         // CONTRACT-SQLITE-MIGRATION W3：真实 SQLite 驱动在 fresh GameSession 的构造点装配，
@@ -1085,25 +1455,41 @@ class GameHost(
         // 逐位不变；有 .erbm 容器即真装配，坏档 / 配对不齐 / 摘要不符整包 fail-closed
         // （不半装、不静默丢弃）。builtinVariableNames 走惰性 lambda：关态与空表连
         // 静态表都不建（B1 纪律）。
-        val csvContext = if (modRuntime) {
+        // Lane DP：装配期（链装配）与会话期（attach）共用同一个诊断/logSink —— 整链级拒载
+        // 发生在 attach 之前，只有走这条线留痕，玩家重启后 ModManageDiagnostics 收得到、
+        // 设置页失败小节才渲染（格式只在会话侧 canonical 行生产处定义一次，避免漂移）。
+        // ERAFIN2：本 sink 提升为类属性（见 [modLogSink]）——Lane DZ 页边界重装路径的
+        // dex 取件归因行要与装配期同一通道，不能有第二份定义。
+        val csvContext = if (modActive) {
             // M1-4 阶段二：装载相位先产出注入上下文（唯一一次 ManifestLoader.load），
             // 让 Mod 链装配与 GameSession 扩容共用同一份快照/容量/计划（裁定 3）。
-            ModRuntimeAssembly.csvLoadContext(gameRoot) { line -> Log.w(TAG, "modcsv: $line") }
+            // Lane DY（task-124）：这是装配链**第一道** fail-closed 闸（声明冲突 / 坏 manifest
+            // 在 ManifestLoader.load 当场抛），留痕必须走与链装配 / attach 同一条 modLogSink，
+            // 否则设置页失败小节看不到、只有启动失败屏。包装函数在原样重抛（类型/消息/时机
+            // 不变）前留一行；`assembleWithCatalog` 不包进来（内部已有 catch+重抛，会双份）。
+            ModPreloadTrace.csvLoadContextTraced(gameRoot, modLogSink) { line -> Log.w(TAG, "modcsv: $line") }
         } else {
             null
         }
-        val modChain = ModChainAssembly.assemble(
+        val modChainOutcome = ModChainAssembly.assembleWithCatalog(
             ChainAssemblyInputs(
                 gameRoot = gameRoot,
-                enabled = modRuntime,
+                enabled = modActive,
                 base = program,
                 baseMetas = metadata.functions,
                 builtinVariableNames = { ModRuntimeAssembly.builtinVariableNames() },
                 csvContext = csvContext,
                 // L2 组长收口接线：玩家排序配置 → LinkOrder（Kahn 就绪优先级；空表 = 缺省规范序）。
                 linkOrder = com.eratw.port.core.patch.LinkOrder(modPackageOrder),
+                // Lane DP：装配期整链拒载的包级留痕与 attach 会话面同一条 sink（同一 λ 实例）。
+                logSink = modLogSink,
             ),
         )
+        // ABI-8 路线 a 的 T1 取数缝：本段 = 上一交界（meta）到 mod 链装配完成的耗时，
+        // 只加 mark 不挪语句（上方 :1371-1374 的「位置承重」约束）；关态与空表走旁路，这一段应≈0，
+        // 非零即说明旁路没生效（真机读数表 <internal-workdir>/HANDOFF-PERF.md 的 modchain 列）。
+        trace.mark("modchain")
+        val modChain = modChainOutcome?.plan
         val fresh = GameSession(
             gameRoot = gameRoot.toPath(),
             program = program,
@@ -1139,9 +1525,14 @@ class GameHost(
             disabledFunctions = if (disableBadApple) EngineFunctionPolicy.DEFAULT_DISABLED else emptySet(),
             reflowConsole = liveReflow,
             echoInputMode = if (echoInput) EchoInputMode.REPLICA else EchoInputMode.SUPPRESSED,
+            // COMEND-WAIT（2026-11-22）：指令收尾按键等待的总闸，玩家侧缺省开 = 原版口径。
+            waitAfterCommand = commandEndWait,
             // RT2 G2 波：链接产物三视图（program / FunctionTable / dispatch 同源）非 null 时
             // GameSession 三处取值只从这里来；null = 完全旁路（今天生产恒此态）。
             modChain = modChain,
+            // ERA-W1：随包角色模板的链接序真源 = plan.catalog.candidates 的 ownerPackageId
+            // 首现序（候选列表序即链接序，SymbolCatalog 类 KDoc）；空表 = 既有目录名序逐位不变。
+            modLinkOrderIds = modLinkOrderIdsOf(modChainOutcome),
             functionDispatch = null,
             modCsvContext = csvContext,
             bootViewMetrics = bootMetrics,
@@ -1149,24 +1540,89 @@ class GameHost(
         )
         trace.mark("session")
 
+        // MOD_LINK_CATALOG_SLOT 生产写侧（Lane V）：把装配点的链接产物快照挂进会话 store.aux。
+        // 时序硬约束（见 ModRuntimeAssembly.kt 的事件名存在性闸读缝）：必须晚于 GameSession
+        // 构造（store 此时才存在）、早于本函数尾段的 ModRuntimeAssembly.attach —— 后者的
+        // host.knownEventKeys 事件名闸从该槽取快照（entityRuntime 回填的 catalog 自 SUPCAT-W
+        // 起改走 attach inputs 供给，见下方 catalog= 行）。旁路会话
+        // （modChainOutcome == null，含 modRuntime 关态）不写槽：没有链接产物可写。
+        modChainOutcome?.installCatalogSlot(fresh.store)
+
         wirePageFunctionTrail(fresh)
         wireUpdateCheckHost(fresh)
         wireSaveMemoryReclaim(fresh)
         wireCorpusNativeMethods(fresh)
 
-        val sharpWarnings = prefillSharpLinks(fresh.store.aux, fresh.runtime.program)
-        for (w in sharpWarnings) Log.w(TAG, "CALLSHARP 装载警告：$w")
-        fresh.recordSharpLoadWarnings(sharpWarnings)
-
+        // B3（2026-11-26）：mod attach 前移到 prefillSharpLinks **之前** —— mod 的
+        // FunctionApi.override（显式覆盖宿主内建）必须在装载趟裁决之前进注册终表，
+        // 否则常量名 CALLSHARP 行联结期已绑死宿主本体，覆盖永远不生效（残疾）。
+        // 相位模型对齐原版：PluginManager（插件 DLL）先于脚本装载/联结填好。
+        // 顺序仍满足既有约束：wireCorpusNativeMethods（宿主终表，mod override 的目标先就位）
+        // → mod attach（宿主不抛、mod 回调已隔离，失败语义不变）→ prefillSharpLinks（裁决看到
+        // 的是**终表**）→ drive()。attach 的输入全部在此之前就绪（gameRoot/store/providers/
+        // catalog/dexCarriers 均不依赖 sharpWarnings/prefill）。
+        modGameRoot = gameRoot
         modRuntimeSession = ModRuntimeAssembly.attach(
             gameRoot = gameRoot,
             store = fresh.store,
             nativeRegistry = nativeMethods(fresh.store.aux),
             onVmThread = { onVmThread() },
-            enabled = modRuntime,
-            logSink = { line -> Log.i(TAG, "modrt: $line") },
-            modProviders = if (modRuntime) ModCarrierRegistry.providers() else emptyList(),
+            enabled = modActive,
+            logSink = modLogSink,
+            modProviders = if (modActive) {
+                // ADR-013 S6b：内置载体先算，已占 id 集交给代码包来源；只有「不重名且未重复
+                // 运行期身份」的代码包才被追加（判据在 ModCodeCarrierProvider 内，一次一套）。
+                ModCarrierRegistry.providers(gameRoot) { builtinIds ->
+                    modCodeCarriers?.carriersFor(builtinIds).orEmpty()
+                }
+            } else {
+                emptyList()
+            },
+            // SUPCAT-W 判据 2：链接产物快照经 attach inputs 供给 entityRuntime 回填
+            // （HAS_SUPER 判据源随链走；旁路 modChain == null 时为 null = 未装配语义）。
+            catalog = modChain?.catalog,
+            dexCarriers = dexCarriers,
         )
+        // 作者面语言码：壳层这里已按唯一单路取好语言（`:244` settingsLanguage），装配层拿不到
+        // Android Context、也不许自判 Locale，故由壳层注入给宿主，供 `context.strings.of()` 用。
+        modRuntimeSession?.host?.language = settingsLanguage.stored
+
+        val sharpWarnings = prefillSharpLinks(fresh.store.aux, fresh.runtime.program)
+        // ERA-W1：随包角色模板装配告警（modLinkOrderIds 声明非法降级等）落宿主日志通道。
+        fresh.charaTemplateWarnings.forEach { Log.w(TAG, "chara 模板：$it") }
+        for (w in sharpWarnings) Log.w(TAG, "CALLSHARP 装载警告：$w")
+        fresh.recordSharpLoadWarnings(sharpWarnings)
+        // 2026-11-17 覆盖补齐：装载期警告过去只 Log.w + 回填读数面（侧车 loadWarnings 全仓零
+        // 消费者）。这里把每条告警喂进聚合器，每型每局头两次落代表报告并上报，其余计数 ——
+        // 语料/第三方口上的译名与常量问题从此能主动进端点，不必等玩家反馈。
+        // 走 app 壳的 best-effort 入口；装载线程上绝不因上报抛异常或做网络。
+        if (sharpWarnings.isNotEmpty()) {
+            runCatching {
+                for (w in sharpWarnings) {
+                    ErrorReportCollector.recordDiagnostic(
+                        view.context, DiagnosticEventLog.DiagnosticKind.LOAD_WARNING,
+                        null, "CALLSHARP: $w",
+                    )
+                }
+            }
+        }
+        // 侧车告警（erbcc 编译期流水）同通道聚合上报（DBG-TOOLING 波）：where 带 文件:行
+        // 让签名把「不同文件同类告警」分开、同文件同告警（换读数）被抹数字归一合并。
+        // 条数可能上百，刷屏由 DiagnosticEventLog 的每型落盘上限封顶（PER_KIND_REPORT_MAX）。
+        if (sidecarWarnings.isNotEmpty()) {
+            runCatching {
+                for (w in sidecarWarnings) {
+                    ErrorReportCollector.recordDiagnostic(
+                        view.context, DiagnosticEventLog.DiagnosticKind.LOAD_WARNING,
+                        null, "侧车装载警告: ${w.file}:${w.line} ${w.message}",
+                    )
+                }
+            }
+        }
+
+        // 新局/读档通知的接线必须排在 attach 之后（attach 已前移到 prefillSharpLinks 之前，B3）：
+        // 两个回调都转发到 modRuntimeSession。
+        wireModLifecycleHooks(fresh)
         SaveFolderMigrationLog.of(fresh.store)?.latest?.notice?.let { notice ->
             view.post {
                 if (!closed) {
@@ -1195,7 +1651,15 @@ class GameHost(
         }.onFailure { Log.w(TAG, "PNG 堆外载荷通道未装（回落堆内闭包）", it) }
 
         val spritePool = session.store.aux.slot<SpritePool>(SpriteBitmapSource.SLOT_SPRITE) { SpritePool() }
-        val contents = ResourceContents.load(spritePool, ResourceCsvHost(gameRoot, decoder))
+        // ERA-W1：CSV 资源表装载先过 mod 覆盖侧车（A3 生产消费接线；GameHost.kt:1451 挂账收账）。
+        // modRuntime 关态 = 聚合口都不进（B1 零接触），拿空表、装载逐字等同改造前；开态下
+        // 映射目标打不开的消费面回落 + WARN 由 core 侧 fail-closed 口径负责（ResourceContents.kt:262-272）。
+        val assetOverlay = if (modActive) {
+            assetOverlayFor(gameRoot, session.modLinkOrderIds) { line -> Log.w(TAG, "assetmap: $line") }
+        } else {
+            EraA3AssetOverlay.AssetMap.EMPTY
+        }
+        val contents = ResourceContents.load(spritePool, ResourceCsvHost(gameRoot, decoder), assetOverlay)
         resourceCensusLine = ResourceContents.censusLine(contents)
         Log.i(TAG, "CSV 资源表：文件=${contents.fileCount} sprite=${contents.spriteCount} 动画=${contents.animeCount}")
         contents.warnings.forEach { Log.w(TAG, "CSV 资源：$it") }
@@ -1427,6 +1891,19 @@ class GameHost(
         return true
     }
 
+    /**
+     * 本宿主当前是否挂在 [candidate] 这张视图上（UI 线程的归属判据）。
+     *
+     * 冻结与「无壳期间重新入槽」都要认这个主，不能用 [SessionVault] 的槽归属：
+     * * 槽在 [SessionVault.takeoverIfAlive] 时已清空，接回壳自己后续被系统销毁时
+     *   槽归属恒为 false —— 照它跳过冻结/入槽，会话就成了无主孤儿，下个实例冷启回标题，
+     *   挂起的后台存档检查点也再没有 VM 安全点可兑现（2026-11-17 玩家反馈的两个现象）；
+     * * [reattachView] 会把 view 换成新壳的视图，双壳窗口里旧壳迟到的 `onDestroy`
+     *   一看 view 已不是自己，冻结与入槽一并跳过，绝不打扰新壳刚解冻的会话。
+     */
+    fun isBoundToView(candidate: CanvasConsoleView): Boolean =
+        synchronized(pauseLock) { view === candidate }
+
     /** [SessionVault.takeoverIfAlive] 的接回判据口（宿主终态；close 一经置位不再翻转）。 */
     val isClosedForTakeover: Boolean get() = synchronized(pauseLock) { closed }
 
@@ -1450,20 +1927,55 @@ class GameHost(
                 Log.i(TAG, "gotoTitle: outcome=${first.outcome} from=${first.from.name}")
                 view.post { if (!closed) attachConsoleFeed(active, gfx, screen) }
                 pumpUntilTerminal(active)
-            } catch (t: Throwable) {
-                if (backToTitleFaultAction(closed) == BackToTitleFaultAction.SUPPRESS_BY_CLOSE) {
-                    Log.i(TAG, "回到标题途中宿主关闭，静默收口（${t.message ?: t.javaClass.simpleName}）")
+            } catch (e: CodeEE) {
+                // C4 分型第一层（RECON-STAB-C）：CodeEE 单独一捕，结构与主泵 pumpUntilTerminal
+                // 的 CodeEE 分支同构（closed 首查 → isRecoverableScriptError 精分）。可恢复
+                // CodeEE 只可能来自 gotoTitle()（pumpUntilTerminal 自己捕 CodeEE，可恢复的
+                // 走不到外层）：主泵里它是 scriptErrorTerminal 红字终局，这里同样红字上屏 +
+                // 会话保留、可再点「回到标题」，不再折成「回到标题失败」屏 —— 原版 GotoTitle
+                // 与普通脚本同在 DoScript 收口内，handleException 打屏后会话保留
+                // （Process.cs:438-478 → :651-660）。
+                if (closed) {
+                    Log.i(TAG, "回到标题途中宿主关闭，静默收口（${e.message ?: e.javaClass.simpleName}）")
+                } else if (!isRecoverableScriptError(e)) {
+                    // 非可恢复 CodeEE（装置预算 / 爆栈闸）是真故障：重抛给下面的统一收口，
+                    // 经 runtimeFaultAction 落 LOAD_FAULT 支 —— 与主泵 drive 的重抛同一条路。
+                    throw e
                 } else {
-                    recordFailure(
-                        kind = FailureScreenKind.IN_GAME,
-                        text = failureCopy.fill(
-                            failureCopy.backToTitleFailedFormat,
-                            (t.message ?: t.javaClass.simpleName) + scriptLocation(t),
-                        ),
-                    )
-                    Log.e(TAG, "回到标题失败", t)
-                    writeErrorReport("回到标题失败", t)
+                    scriptErrorTerminal(active, e)
+                    stopAudioForTerminal(active)
                 }
+            } catch (t: Throwable) {
+                // C4 分型第二层：非 CodeEE 的意外异常与上面重抛进来的真故障统一收口（正体
+                // 见 [handleBackToTitleRuntimeFault]，判据源与主泵同一条）。
+                handleBackToTitleRuntimeFault(t)
+            }
+        }
+    }
+
+    /**
+     * 「回到标题」复活线程非 CodeEE 异常的统一收口（RECON-STAB-C C4 分型第二层）。
+     *
+     * 判据源与主泵同一条 [runtimeFaultAction]。`pumpEntered` 恒真 —— 能进 backToTitle 的
+     * 会话必然已通过 drive 进过脚本泵并停在脚本错误终局（canBackToTitle 三要件），这里
+     * 不存在装载期相位。SUPPRESS 之外的两支都是真故障：维持既有「回到标题失败」屏与报告
+     * 一字不动。不吞异常 —— 上屏/落报告后线程照常终局，现场全部留档；重抛进来的非可恢复
+     * CodeEE 在判据里落 LOAD_FAULT 支，与主泵 drive 的重抛同一条路。
+     */
+    private fun handleBackToTitleRuntimeFault(t: Throwable) {
+        when (runtimeFaultAction(closed, pumpEntered = true, t)) {
+            RuntimeFaultAction.SUPPRESS_BY_CLOSE ->
+                Log.i(TAG, "回到标题途中宿主关闭，静默收口（${t.message ?: t.javaClass.simpleName}）")
+            RuntimeFaultAction.LOAD_FAULT, RuntimeFaultAction.RUNTIME_FAULT -> {
+                recordFailure(
+                    kind = FailureScreenKind.IN_GAME,
+                    text = failureCopy.fill(
+                        failureCopy.backToTitleFailedFormat,
+                        (t.message ?: t.javaClass.simpleName) + scriptLocation(t),
+                    ),
+                )
+                Log.e(TAG, "回到标题失败", t)
+                writeErrorReport("回到标题失败", t)
             }
         }
     }
@@ -1484,8 +1996,15 @@ class GameHost(
 
     fun submit(text: String) = submitInternal(text, mesSkip = false)
 
-    fun submitButton(text: String) =
+    fun submitButton(text: String) {
+        // 按钮点击 = 一次鼠标事件（MainWindow.cs:834/847 口径）：画布触摸链在 ACTION_DOWN
+        // 已写鼠标现场（updatePointer），右栏芯片等没有事件流的调用点不写——脚本侧弹窗锚在
+        // MOUSEX()/MOUSEY() 上（QOL_USERCOM.ERB:260-261 的 X_POS=MOUSEX()+20），不补写就
+        // 落在上一次触摸的陈旧坐标（玩家报「用右栏点 + 弹窗乱跳」）。统一在提交语义里补：
+        // 把指针指到屏上同值按钮中心（div 弹窗按钮优先），屏上没有同值按钮时保持现场不动。
+        updatePointerToOption(text)
         submitInternal(text, mesSkip = false, clickIntent = true, mouseButton = 1)
+    }
 
     fun submitSkip(text: String) = submitInternal(text, mesSkip = true)
 
@@ -1493,12 +2012,22 @@ class GameHost(
         synchronized(pendingLock) {
             session?.inputSink?.submitMappedColor(color)
         }
+        // 鼠标点色字 = 玩家真实点击（不进 deliver 漏斗，单独采集）。
+        modRuntimeSession?.hostSeams?.interactionWire?.notePlayerInput(
+            ModInteractionWire.SOURCE_CLICK,
+            "mapped-color:$color",
+        )
     }
 
     fun submitCbgButtonValue(value: Long) {
         synchronized(pendingLock) {
             session?.inputSink?.submitCbgButtonValue(value)
         }
+        // Cbg 按钮点击同属玩家真实点击。
+        modRuntimeSession?.hostSeams?.interactionWire?.notePlayerInput(
+            ModInteractionWire.SOURCE_CLICK,
+            "cbg-button:$value",
+        )
     }
 
     private fun submitInternal(
@@ -1539,9 +2068,24 @@ class GameHost(
     ) {
         inputReceived.incrementAndGet()
         if (!sink.isAwaiting) {
-            inputGateDropped.incrementAndGet()
+            // 执行期（VM 正在跑无等待脚本：动态地图页每 tick 的整屏重印、长计算链）的
+            // 入力不再当场丢弃，改为有界限时滞留、到下一个等待边界按当刻版面回放一次
+            // （见 [lateInputs] 与 [replayLateInputs]）。原版这一段就是 Windows 消息队列：
+            // 脚本与消息泵同线程，点击躺在队列里到 `WaitInput` 的 `DoEvents` 才被取出
+            // （`EmueraConsole.cs:1040-1082`），既不丢、也按取出那一刻的版面命中。
             if (clickIntent) keyInput.noteClickIntent(text)
             if (mesSkip) sink.noteSkipIntent()
+            // 返回值只表示「有没有挤掉更旧的一笔」，**不是**「这笔被丢了」——新的一笔恒被留下，
+            // 所以这里不拿它记丢弃（2026-11-23 组长口径：桶不许说谎）。真丢的账全在
+            // [LateInputQueue] 的 overflow/expired/layoutMismatch 三个桶里。
+            lateInputs.offer(
+                nowMs = SystemClock.elapsedRealtime(),
+                kind = if (mouseButton != null) LateInputQueue.Kind.BUTTON else LateInputQueue.Kind.TEXT,
+                text = text,
+                mesSkip = mesSkip,
+                mouseButton = mouseButton,
+            )
+            inputGateQueued.incrementAndGet()
             return
         }
         turnStartNs.compareAndSet(0L, System.nanoTime())
@@ -1553,7 +2097,92 @@ class GameHost(
         } else {
             sink.submit(text, mesSkip)
         }
+        // RT2 P0-LAST：玩家**真实输入**证据（UI/输入线程写，VM 页边界消费一次 → 交互管线）。
+        // 只记成功交付的那一笔（上面 !isAwaiting 的丢入力不触发作者交互，口径与引擎一致）。
+        modRuntimeSession?.hostSeams?.interactionWire?.notePlayerInput(
+            if (mouseButton != null) ModInteractionWire.SOURCE_CLICK else ModInteractionWire.SOURCE_COMMAND,
+            text,
+        )
     }
+
+    /**
+     * 执行期入力的回放（PLAY-INPUT-LATE · 2026-11-23）：在**帧已经发布**的那一刻
+     * （[replayLateInputs] 由 `LineBufferConsoleSink.onFramePublished` 在 VM 线程同步调）
+     * 把 [lateInputs] 里滞留的笔按提出顺序交回输入队列。
+     *
+     * 为什么是这一刻：原版没有「执行期丢入力」这回事 —— 脚本与消息泵同线程，点击躺在
+     * Windows 消息队列里，到脚本跑进 `WaitInput` 的那轮 `DoEvents`（`EmueraConsole.cs:1040-1082`）
+     * 才被取出，且命中用的是**取出那一刻**的版面。移植侧的等价时刻 = 帧发布边界
+     * （发布帧与 `publishedOptions` 同刻换新，见 `LineBufferConsoleSink.flushGateOnce`）。
+     *
+     * 裁决口径（命中不到就丢，不许猜）：
+     * - 按钮（[LateInputQueue.Kind.BUTTON]）：当刻发布帧的选项集里必须有同值项，否则记
+     *   `layoutMismatch` 丢弃 —— 版面已经换页，按旧值点下去就是误点；
+     * - 文本（键盘提交）：原版文本框提交与选项集无关，原样放行（回显时机照旧在交付点）。
+     *
+     * 线程：只在 VM 线程执行（`onFramePublished` 的调用线程；[onVmThread] 兜底）。
+     */
+    private fun replayLateInputs(session: GameSession) {
+        if (!onVmThread()) return
+        val sink = session.inputSink
+        val optionValues = session.console.publishedOptions().map { it.submitValue }
+        val plan = lateInputs.drainForLayout(SystemClock.elapsedRealtime(), optionValues)
+        val entries = plan.entries
+        if (entries.isEmpty()) return
+        synchronized(pendingLock) {
+            for (e in entries) {
+                turnStartNs.compareAndSet(0L, System.nanoTime())
+                pageStartNs.set(System.nanoTime())
+                val button = e.mouseButton
+                if (button != null) {
+                    sink.submitButtonClick(e.text, button, e.mesSkip)
+                } else {
+                    sink.submit(e.text, e.mesSkip)
+                }
+                modRuntimeSession?.hostSeams?.interactionWire?.notePlayerInput(
+                    if (button != null) ModInteractionWire.SOURCE_CLICK
+                    else ModInteractionWire.SOURCE_COMMAND,
+                    e.text,
+                )
+            }
+        }
+    }
+
+    /**
+     * 执行期入力滞留的桶读数（诊断面，DevTools 的 `rev` / `where` 直接带出来）：
+     * `queued` / `expired` / `overflow` / `layoutMismatch` / `replayed` + `ambiguous` + `pending`。
+     */
+    fun debugLateInputCounters(): String =
+        "late queued=${inputGateQueued.get()} expired=${lateInputs.expired} " +
+            "overflow=${lateInputs.overflow} layoutMismatch=${lateInputs.layoutMismatch} " +
+            "replayed=${lateInputs.replayed} ambiguous=${lateInputs.ambiguousHits} " +
+            "pending=${lateInputs.size}"
+
+    /**
+     * mod 交互浮层的表面句柄（RT2 P0-LAST UiApi 真接线）：关态/未装配返回 null。
+     *
+     * 只给 MainActivity 的 Compose 浮层取「当前贡献项快照 + 点击派发口」用；主线程读的是
+     * 不可变快照（VM 边界重拍），不直接碰 VM 侧注册表。
+     */
+    internal fun modUiSurface(): ModUiSurface? = modRuntimeSession?.hostSeams?.uiSurface
+
+    /**
+     * mod 运行时概览的只读快照（Lane AW；设置页取数用）：关态 / 未装配 / 账本 null ⇒ null。
+     *
+     * 只读账本与预算，不写盘、不改 mod 状态；与 [modUiSurface] 同一「活引用」口径——
+     * 会话收口后（[modRuntimeSession] 置 null）读到的就是空，不是已关闭的旧会话。
+     */
+    internal fun modRuntimeDataFor(packageIds: List<String>): ModRuntimeData? =
+        modRuntimeSession?.let { runtimeOverviewDataOf(it.host, it.activePackages, packageIds) }
+
+    /**
+     * 「最近日志」读数（MODDX4-G8 组长接线）：设置页回看入口经 [ModRuntimeLogViewerEntry]
+     * 的活引用通道走这里；会话收口后（[modRuntimeSession] 置 null）读到空表 = 诚实空态，
+     * 与 [modRuntimeDataFor] 同一「活引用」口径。按包聚合委托 core 侧
+     * [ModRuntimeHost.recentLogs]，本壳不做第二份缓冲。
+     */
+    internal fun modLogsFor(packageId: String): List<String> =
+        modRuntimeSession?.host?.recentLogs(packageId) ?: emptyList()
 
     private fun attachSession(fresh: GameSession): Boolean {
         val closedBeforeAttach = synchronized(pendingLock) {
@@ -1566,6 +2195,11 @@ class GameHost(
                 keyInput.clearClickIntent()
                 installMouse(fresh)
                 fresh.inputSink.onWaitEntered = { keyInput.clearClickIntent() }
+                // 执行期入力的回放点 = 每个「真的产出一帧」的发布边界（VM 线程）：
+                // 原版脚本跑到 WaitInput 的 DoEvents 那一刻。`onWaitEntered` 的 KDoc 明写
+                // 不得回调 sink 自身（会自锁），所以不用它；帧发布边界在 sink 的锁外，
+                // 且此刻 `publishedOptions` 已与 revision 同刻换新 ⇒ 可以按当刻版面裁决。
+                fresh.console.onFramePublished = { replayLateInputs(fresh) }
                 while (pendingBeforeSession.isNotEmpty()) {
                     val queued = pendingBeforeSession.removeFirst()
                     deliver(
@@ -1600,6 +2234,30 @@ class GameHost(
         mouse.setPointerPosition(x, y)
         mouse.windowCreated = true
         pointerPointing = view.buttonAtClient(x, y)?.toPointing()
+    }
+
+    /**
+     * 右栏芯片提交前的鼠标现场写入：把指针指到屏上同值按钮的中心
+     * （[CanvasConsoleView.buttonCenterClientForValue]）。
+     *
+     * 画布触摸链有真实事件坐标（[updatePointer]），右栏芯片没有——而脚本侧弹窗普遍锚在
+     * MOUSEX()/MOUSEY() 读数上（QOL_USERCOM.ERB:260-261 的 X_POS=MOUSEX()+20），
+     * 不写现场弹窗就会落在上一次触摸的陈旧坐标（玩家报「点 + 弹窗乱跳」）。此处与
+     * [updatePointer] 共用同一写入口径（setClientSize→setPointerPosition→windowCreated→指向态），
+     * 屏上无同值按钮时返回 false、现场原样保留。
+     * UI 线程调用（读渲染层命中表）。
+     */
+    fun updatePointerToOption(value: String): Boolean {
+        val live = session ?: return false
+        val (clientWidth, clientHeight) = view.clientSizePx()
+        if (clientWidth <= 0 || clientHeight <= 0) return false
+        val center = view.buttonCenterClientForValue(value) ?: return false
+        val mouse = mouseStateOf(live.store.aux)
+        mouse.setClientSize(clientWidth, clientHeight)
+        mouse.setPointerPosition(center.first, center.second)
+        mouse.windowCreated = true
+        pointerPointing = view.buttonAtClient(center.first, center.second)?.toPointing()
+        return true
     }
 
     fun pendingRequest(): InputRequest? = session?.inputSink?.awaiting
@@ -1651,6 +2309,17 @@ class GameHost(
             InputRequest.InputType.STR -> ButtonAcceptance.STR
             null -> ButtonAcceptance.ANY
         }
+    }
+
+    /**
+     * 悬停闸：本轮是否正在等按钮/按键输入。与原版 `canSelect` 同形
+     * （`EmueraConsole.cs:2574-2577`：Error 态或 `IsWaitInputState && NeedValue` ——
+     * 原版 MoveMouse 在 `IsInProcess` 直接返回，脚本执行期悬停一律不亮；
+     * Error 分支由移植侧弹窗层承担，不并入本闸）。
+     */
+    fun awaitingInput(): Boolean {
+        val sink = session?.inputSink ?: return false
+        return sink.awaitingAnyKey || sink.isAwaiting
     }
 
     fun isRunning(): Boolean = thread?.isAlive == true
@@ -1718,6 +2387,20 @@ class GameHost(
         heartbeat?.markVm(SystemClock.elapsedRealtime(), "midpage")
         val strongDone = memory.drainReclaimRequests("midpage", "页中检查点")
         drainSaveCheckpoint("midpage")
+        // 串表运行期回收的**第二个安全点**（长页专用）：跳日期那种「一页跑很多天」的会话，
+        // 页尾要等几十秒到几分钟才来，只有 onTurnReady 那一处收口的话池子在这一整页里一路涨
+        // （2026-11-25 真机报告：页中检查点 where=midpage、串池 65,460 条 / 52,588,062 字符）。
+        // 此处是 VM 指令循环取指之前（[Vm.pressureCheckpoint] 的挂点，两条指令之间、语句体
+        // 不会被截断）：语义层没有攥在 Kotlin 局部里的待写回下标，持有面仍是 strIdCarriers 清单。
+        // 检查点 250ms 一次，但本调用先做 O(1) 上界比较，未越界时只两条比较、不扫载体。
+        session?.store
+            ?.reclaimStringPoolIfOver(STRING_POOL_CHAR_BUDGET, STRING_POOL_ENTRY_BUDGET)
+            ?.let { r ->
+                Log.i(TAG, "midpage.strpool " + r.line)
+                EventJournal.record("midpage.strpool", mapOf("line" to r.line))
+            }
+        // 同一拍、同一安全点：代码缓存的堆压回收（跳日期那种长页里崩，就是这里救）。
+        releaseCodeCachesIfHeapHigh("midpage")
 
         // 长页判据只读按 turn 边界收口的页尺；turnStartNs 归 pumpUntilTerminal 的 step 延迟专用。
         val startedNs = pageStartNs.get()
@@ -1844,6 +2527,19 @@ class GameHost(
         Log.i(TAG, "CALLSHARP 本地方法表（本版无 .NET 插件）：注册 ${registry.names()} · 策略禁用 $absent")
     }
 
+    /**
+     * 把「新开一局 / 读档走到末尾」两个游戏相位通知接到 mod 运行时
+     * （[com.eratw.port.modapi.EraMod.onNewGame] / [com.eratw.port.modapi.EraMod.onSaveLoaded]）。
+     *
+     * 挂在 [ConsoleBeginHost] 的可变字段上而不是构造参数：本类的构造点在山另一头
+     * （`GameSession` 装配），六项位置参已经很长，且 mod 运行时是**装配完之后**才有的，
+     * 天然只能后接。回调在 VM 线程上发生，两个转发函数各自带隔离，不外抛。
+     */
+    private fun wireModLifecycleHooks(session: GameSession) {
+        session.beginHost.onNewGameStartedHook = { modRuntimeSession?.notifyNewGame() }
+        session.beginHost.onSaveLoadedHook = { modRuntimeSession?.notifySaveLoaded() }
+    }
+
     // =========================================================================
     // 14. 生命周期管理（onPause / onResume / setBackgroundPaused / close）
     // =========================================================================
@@ -1920,6 +2616,17 @@ class GameHost(
      *    未完成时通道保持打开（映射保持有效），VM 收尾 drain 期间不存在解映射竞态；
      * 4. 下一局装载经 [SessionHandoff.awaitOthersGone] 等旧 VM 线程死亡（超时由堆基线闸兜底）。
      *
+     * ## 有界 join（C2 修复，2026-11-18）：为什么「不等 VM 线程退出」与 `VM_EXIT_JOIN_MS`
+     * 的几百 ms join 不矛盾
+     *
+     * 上面第 1 条拒绝的是**无界**等待（合法长链 130s）；`thread?.interrupt()` 之后插的
+     * [awaitVmExitForClose] 是**常量上限**的 join：检查点每 65536 步一次（玩家机
+     * ≈30ms 一次，见 `Vm.kt` 关闭闸注释），点查语料（SQL 调用 324 条里的 199 条 WHERE
+     * 点查）ms 级即可走到检查点收口——join 成功 = UI 走到 `session.close()` 时 VM 线程
+     * 已死，SQL 并发面整个消灭；join 超时 = 维持本节的原状语义（不等，交
+     * [shutdownForExit] 现状并发收尾），残余窄窗口由 `SqlSession` 的语句边界互斥锁兜成
+     * 「close 让到在途语句边界」的确定序（该锁的等待上界 = 当前语句剩余时长，不是 VM 链）。
+     *
      * 两条顺序铁律：
      * 1. **先放行三把询问闩（迁移 / UPDATECHECK / 死循环）再打断**：interrupt 对
      *    `CountDownLatch.await` 可中断、能收口，但主动放行给的是**确定的**读数
@@ -1948,6 +2655,13 @@ class GameHost(
             .onFailure { Log.w(TAG, "关闭：音频出口关闭失败（继续收后面的）", it) }
         runCatching { thread?.interrupt() }
             .onFailure { Log.w(TAG, "关闭：VM 线程打断失败（继续收后面的）", it) }
+        // C2 修复：interrupt 之后对 VM 线程做有界 join（常量上限，不持 pauseLock——
+        // 上面 synchronized 块已出域）。点查场景 VM 在上限内走到 65536 步检查点收口，
+        // join 成功即把「UI close 与 VM 语句执行并发」的窗口整个消灭；超时维持既有
+        // 「不等 VM 线程退出」语义，残余并发由 SqlSession 语句边界互斥锁兜成确定序。
+        if (!awaitVmExitForClose(thread, VM_EXIT_JOIN_MS)) {
+            Log.w(TAG, "关闭：VM 线程 ${VM_EXIT_JOIN_MS}ms 内未收口（在途语句/长链），按关闭协议交并发收尾")
+        }
 
         if (!loadPipeline.cancelInflightMeta()) {
             Log.w(TAG, "装载中途关闭：eratw-meta ${LoadPipeline.META_JOIN_MS}ms 内未收口（daemon，随进程退出）")
@@ -2046,6 +2760,16 @@ class GameHost(
         runCatching { modRuntimeSession?.shutdown() }
             .onFailure { Log.w(TAG, "退出清场：Mod 运行时 shutdown 失败（继续收后面的）", it) }
         modRuntimeSession = null
+        modGameRoot = null
+        // 未兑现的设置通知积压随会话丢弃（DX-A2）：不许漏进下一局的首边界。
+        ModSettingsNotifyChannel.clear()
+        // 同上口径（Lane DZ）：未兑现的重装请求也不许漏进下一局首边界。
+        ModReinstallRequests.clear()
+        // 同上口径（task-134 ③）：未兑现的卸载回收请求同属一次性投递，不跨会话。
+        ModStorageReclaimRequests.clear()
+        // 同上口径（task-160）：未兑现的家督继任请求与上一局的快照都不许漏进下一局。
+        ModHeirRequests.clear()
+        ModHeirFeed.clear()
 
         val released = runCatching { session?.close() }
             .onFailure { Log.w(TAG, "退出清场：会话关闭抛异常（引用照常置空）", it) }
@@ -2054,8 +2778,30 @@ class GameHost(
             Log.w(TAG, "产物通道未释放：惰性回读仍有未 pin 住的段（语句段串表超 pin 上限或段 2 换块），fd 保留优先")
         }
         session = null
-        ErrorReportCollector.resetThrottle("shutdownForExit")
+        flushSummaryThenClearLedger()
         lastScreen = null
+    }
+
+    /**
+     * 会话结束前把本局聚合的诊断事件（UI异常/启动异常/装载警告各型×次数）汇总成一份报告
+     * 上报（2026-11-17 覆盖补齐，「聚合汇总」真正进端点的落点），随后清账。
+     *
+     * **读数面同步、写面异步**（C2 修复，2026-11-18）：快照在调用线程拍好（close 路 =
+     * UI 线程），落盘交 [ErrorReportCollector.flushDiagnosticSummaryAsync] 的一次性非
+     * daemon 线程——close 路径不再发生同步写盘。账面即时清零：后台写用的是快照，与
+     * reset 无竞态；后台写成功自会清 checkpoint（防次启误判异常死亡重报同一份账），
+     * 写被进程退出截断时 checkpoint 留存，次启 `reportOrphanCheckpoint` 并报兜底。
+     * best-effort，上报失败不影响清场。
+     */
+    private fun flushSummaryThenClearLedger() {
+        val summarySnapshot = runCatching { DiagnosticEventLog.summaryLines() }.getOrDefault(emptyList())
+        if (summarySnapshot.isNotEmpty()) {
+            runCatching {
+                ErrorReportCollector.flushDiagnosticSummaryAsync(view.context.applicationContext, summarySnapshot)
+            }.onFailure { Log.w(TAG, "退出清场：诊断汇总投递后台失败（checkpoint 留给次启并报）", it) }
+        }
+        DiagnosticEventLog.reset()
+        ErrorReportCollector.resetThrottle("shutdownForExit")
     }
 
     // =========================================================================
@@ -2070,6 +2816,11 @@ class GameHost(
 
     fun debugVmThread(): Thread? = thread
 
+    /**
+     * 输入闸计数（诊断面）：`received` = 收到过的玩家入力总笔数；`dropped` = 被**直接丢弃**的
+     * 笔数。PLAY-INPUT-LATE 起执行期入力不再丢，`dropped` 因此几乎恒 0 —— 真丢的账改由
+     * [debugLateInputCounters] 的 `overflow`/`expired`/`layoutMismatch` 三个桶报。
+     */
     fun debugInputGateCounters(): Pair<Long, Long> = inputReceived.get() to inputGateDropped.get()
 
     fun debugInputTrail(): QueueInputSink.InputTrailReadout? =
@@ -2120,7 +2871,11 @@ class GameHost(
                 spritePool = aux.peek<SpritePool>(SpriteBitmapSource.SLOT_SPRITE),
                 fullScan = true,
                 residentFace = reportResidentScratch,
-            ).render()
+            )
+                // 报告面走按段断行的成文口：`render()` 那一整行满档 ~430 字，会被报告拼装侧的
+                // 400 字单行闸剪掉尾巴「代码缓存」四键（2026-11-17 lane-g-mem 真机三份 OOM
+                // 报告实证）。内嵌换行由 `ErrorReport` 摊平成物理行后逐行剪。
+                .renderReportLines().joinToString("\n")
         }.getOrNull()
     }
 
@@ -2196,6 +2951,22 @@ class GameHost(
         codeErr.funcName?.takeIf { it.isNotBlank() }?.let { parts += it }
         if (codeErr.line >= 0) parts += failureCopy.fill(failureCopy.scriptLocationLineFormat, codeErr.displayLine)
         return if (parts.isEmpty()) "" else failureCopy.fill(failureCopy.scriptLocationWrapFormat, parts.joinToString(" "))
+    }
+
+    /**
+     * 裸异常的抛点帧（[bareFaultLocationSuffix] 的取数口，RECON-STAB-A 接线②）。
+     *
+     * 只在因果链无 CodeEE 时读 [ProcessRuntime.erbFrameStack] —— core 已有的公开只读面
+     * （`Vm` 在 `run()` 的 catch 里回卷前镜像的抛点帧栈，任意异常离栈都镜像，绝不抛），
+     * 不为展示形态给 core 加新面。本收口跑在 VM 线程上（主泵 catch 处），VM 已回卷、
+     * 镜像在场，与错误报告 erb 帧段同一取数源（`ErrorReportCollector.vmStackLines`）；
+     * 最内帧（列表首位）= 抛错指令所在语句。CodeEE 家族返回 null：家族路的位置后缀照旧
+     * 走 `scriptLocation`，红字头一字不动。镜像缺席（异常出自 VM 之外等）= null →
+     * 后缀为空（诚实降级，不造假位置）。
+     */
+    private fun runtimeThrowFrame(t: Throwable): ProcessRuntime.ErbFrame? {
+        if (t.findFirstCauseOfType<CodeEE>() != null) return null
+        return session?.runtime?.erbFrameStack()?.firstOrNull()
     }
 
     private fun heapShortageDuringLoad(t: Throwable, trace: LoadTrace): String {
@@ -2302,6 +3073,42 @@ class GameHost(
         return usedMiB to maxMiB
     }
 
+    /**
+     * 堆压回收运行期代码缓存（语句条目表 + 两张节点表），见 [CODE_CACHE_RELEASE_HEAP_PERCENT]。
+     *
+     * 只在**堆吃紧**时动手，两条闸：水位 ≥ 88% 且距上次 ≥ 30 s。动手时刻必须是 VM 指令/
+     * 语句边界（两个调用点：[midPageCheckpoint] 与回合边界 `onTurnBoundaryReached`）——
+     * 回收只清缓存槽，正在执行的语句/表达式实例照旧有效，之后同一下标重解出逐字段相同的
+     * 新实例；钉住表（CALLSHARP 候选 ∪ 数据节）的条目按槽留下，身份契约不变（含钉住的块不再
+     * 整块丢掉，只清掉其余槽，清空后连背衬一并弃）。
+     *
+     * 失败方向：回收自身抛掷只记一笔警告（游戏照常）且**不动冷却钟**（可复现故障，下一次水位
+     * 判据再试）；没有可还的块（非惰性池 / 已经还空）时**照样拨钟**、只是不刷日志 —— 页中检查点
+     * 250 ms 一次，缓存已空却每拍重扫「块表 × 块宽」在堆最紧的时刻纯属白扫加垃圾。
+     */
+    private fun releaseCodeCachesIfHeapHigh(where: String) {
+        val live = session ?: return
+        val now = SystemClock.elapsedRealtime()
+        val cooledDown =
+            lastCodeCacheReleaseAtMs < 0L || now - lastCodeCacheReleaseAtMs >= CODE_CACHE_RELEASE_MIN_GAP_MS
+        val (usedMiB, maxMiB) = heapSnapshotMiB()
+        val overWater = maxMiB > 0L && usedMiB * 100L / maxMiB >= CODE_CACHE_RELEASE_HEAP_PERCENT
+        if (cooledDown && overWater) {
+            val release = runCatching { live.program.releaseRuntimeCodeCaches() }
+                .onFailure { t -> Log.w(TAG, "cache.code $where 回收失败（游戏照常）", t) }
+                .getOrNull()
+            if (release != null) {
+                // 冷却钟在**空读数时也拨**（见 KDoc 末段）：否则堆一贴到 88%，页中检查点每 250 ms
+                // 都会把块表与块宽重扫一遍，而这时恰恰是最不该制造垃圾的时刻。
+                lastCodeCacheReleaseAtMs = now
+                if (!release.isEmpty) {
+                    Log.i(TAG, "cache.code $where " + release.line + " used=${usedMiB}MiB/$maxMiB")
+                    EventJournal.record("cache.code", mapOf("where" to where, "line" to release.line))
+                }
+            }
+        }
+    }
+
 
     private class PendingInput(
         val text: String,
@@ -2390,6 +3197,14 @@ class GameHost(
         private const val SQLITE_WRITE_DIR_NAME = "sql"
         private const val VM_THREAD_NAME = "eratw-vm"
 
+        /**
+         * close() 对 VM 线程的 join 上限（毫秒，C2 修复）：钉死几百 ms 量级，绝不回归
+         * 「无界等」——合法长链 2.9 亿指令 ≈130s（见 [close] KDoc）。检查点 ≈30ms 一次
+         * （玩家机 2.2M 指令/秒），点查 ms 级；500ms 覆盖慢机的检查点间隔 + 在途短语句
+         * + 异常收尾，仍远小于销毁路径可接受的停留。
+         */
+        internal const val VM_EXIT_JOIN_MS = 500L
+
         internal const val RM_GID_BITS_VAR = "RM_GID_BITS"
         internal const val RM_GID_BIT_ELEMENTS = 100
         internal const val RM_GMAP_NAME = "map:グラフィックス"
@@ -2398,6 +3213,9 @@ class GameHost(
         private const val SESSION_HANDOFF_WAIT_MS = 15_000L
         private const val TAG = "GameHost"
         private const val STAMP_ECHO_LIMIT = 400
+
+        /** 执行期意外异常红字上屏的堆栈帧数上限（全量在报告里，屏上防刷屏）。 */
+        private const val RUNTIME_FAULT_STACK_LINES = 16
         private const val SAVE_PRE_RECLAIM_PERCENT = 90L
         private const val STALE_SESSION_BASELINE_MIB = 120L
         private const val TURN_LOG_LIMIT = 64
@@ -2414,6 +3232,26 @@ class GameHost(
         internal fun consoleTailOf(sink: LineBufferConsoleSink?, limit: Int): List<Pair<Long, String>> {
             if (limit <= 0 || sink == null) return emptyList()
             return sink.lines().takeLast(limit).map { it.serial to sink.textOf(it) }
+        }
+
+        /**
+         * close() 的有界 join 纯函数缝（C2 修复）：app 的 JVM 单测面实例化不了
+         * `GameHost`（Android 壳），与 [consoleTailOf] 同款「判据抽成 companion 纯函数」
+         * 口径——`GameHostCloseTimingTest` 用假 VM 线程（循环 + 检查点响应中断）钉住
+         * 「点查场景上限内退出 / 长链场景不越过上限」两条路径。
+         *
+         * @return true = 线程已在上限内退出（或本就没有 VM 线程）；false = 超时（或
+         *   self-join 不成立——close 只许 UI 线程调，防御未知调用形状）。
+         */
+        internal fun awaitVmExitForClose(worker: Thread?, boundMs: Long): Boolean {
+            // null = 无可等（立即确认）；self = close 误上 VM 线程（不空转一个上限）。
+            if (worker == null || worker === Thread.currentThread()) return worker == null
+            return try {
+                worker.join(boundMs)
+                !worker.isAlive
+            } catch (ignored: InterruptedException) {
+                false
+            }
         }
 
         private val SAVEDATA_DATE_FORMAT = object : ThreadLocal<SimpleDateFormat>() {
@@ -2462,4 +3300,53 @@ internal object HeapCensusPin {
         maxMiB > 0L &&
             usedMiB * 100L >= maxMiB * NEAR_TOP_PERCENT &&
             (sinceLastPinMs < 0L || sinceLastPinMs >= PIN_COOLDOWN_MS)
+}
+
+// ---------------------------------------------------------------------------
+// ERA-W1：A2/A3 生产接线共用面（真链接序提取 + 覆盖侧车聚合）。
+// 独立顶层 internal 函数：GameSession 装配段与 installGraphics / 音声装配三处消费同一份，
+// 测试（EraW1*）可直接点名，不在 GameHost 类内加方法（detekt 文件阈值不动）。
+// ---------------------------------------------------------------------------
+
+/**
+ * 随包角色模板 / 素材覆盖面共用的**链接序真源**提取（ERA-W1）。
+ *
+ * 源 = [ModChainAssemblyOutcome] 携带的链接产物快照（plan.catalog.candidates）：
+ * 候选列表序即链接序（SymbolCatalog 类 KDoc），base 候选带合成标记 ModuleLinker.BASE_OWNER_ID
+ * （ModuleLinker.kt:115 / ModChainAssembly.kt:331-333）、模块候选带真实 packageId
+ * （SymbolCandidate.ownerPackageId）。按首现序去重即得 base 之后的模块链接序。
+ *
+ * 旁路（modRuntime 关态 / 无容器，outcome = null）= 空表 ⇒ 两个消费面整体回落既有确定性
+ * 兜底序（模板目录名序 / 覆盖聚合退化为盘上文件名序），零行为差。
+ */
+internal fun modLinkOrderIdsOf(outcome: ModChainAssemblyOutcome?): List<String> =
+    outcome?.plan?.catalog
+        ?.candidates
+        ?.map { it.ownerPackageId }
+        ?.filter { it != ModuleLinker.BASE_OWNER_ID && it.isNotEmpty() }
+        ?.distinct()
+        ?: emptyList()
+
+/**
+ * 素材覆盖侧车的生产聚合口（sprite / 音声两消费面共用，ERA-W1）。
+ *
+ * 遍历序 = 「链接序在先、其余在库包在后」：[linkOrderIds]（[modLinkOrderIdsOf] 的真链接序）
+ * 先按序聚合；已启用的在库包（rt2 目录下的 manifest 文件，ModRuntimeAssembly.manifestFilesIn
+ * 同一实现：停用包不进聚合面）里不在链接序的——纯资源包载体 / manifest-only 无 .erbm 的包，
+ * 链跳过但覆盖声明仍应生效——按文件名序追加在后，与 LinkOrder「未指定者排后按序兜底」的
+ * 冻结语义同形。侧车读取与跨包 last-wins 裁决全部委托 EraA3AssetOverlay.collect（A3 单一
+ * 真源，坏档整包跳过不采信），本函数不自建第二份聚合语义。modRuntime 关态由调用方先闸
+ * （本函数不做开关判定）：关态整条 mod 行为缺席，连聚合口都不进（B1 零接触）。
+ */
+internal fun assetOverlayFor(
+    gameRoot: File,
+    linkOrderIds: List<String>,
+    logSink: (String) -> Unit = {},
+): EraA3AssetOverlay.AssetMap {
+    val rt2Dir = ModRuntimeAssembly.manifestDirFor(gameRoot)
+    val chainSet = linkOrderIds.toHashSet()
+    val remaining = ModRuntimeAssembly.manifestFilesIn(rt2Dir)
+        .map { it.name.removeSuffix(ModPackageInventory.MANIFEST_EXTENSION) }
+        .filter { it !in chainSet }
+    return EraA3AssetOverlay.collect(rt2Dir, linkOrderIds + remaining, logSink)
 }

@@ -42,9 +42,20 @@ class MouseButtonWireGateTest {
     @Test
     fun `真机命中与右侧栏选项都汇到 submitButton`() {
         val main = codeOf("MainActivity.kt")
+        // 判据已抽进 ConsoleTapDecision 纯函数（b4cd2343d）：旧哨兵钉的
+        // `if (current) submitButtonValue(submitted)` 随重构消失，但语义不变——
+        // 命中当前世代 + 可提交 ⇒ Submit(value) ⇒ submitButtonValue。改钉新形状，
+        // 别反过来把纯函数那份覆盖削掉（世代/收栏/可提交各有独立定向用例）。
+        val tapBody = main.substringAfter("private fun handleConsoleTap(")
+            .substringBefore("private fun blankTap(")
         assertTrue(
-            "handleConsoleTap 的命中分支没交 submitButtonValue ⇒ 画面按钮点击丢了",
-            main.contains("if (current) submitButtonValue(submitted)"),
+            "handleConsoleTap 的 Submit 分支没交 submitButtonValue ⇒ 画面按钮点击丢了",
+            tapBody.contains("ConsoleTapDecision.Outcome.Submit ->") &&
+                tapBody.contains("submitButtonValue(decision.value)"),
+        )
+        assertTrue(
+            "命中闸缺 currentGeneration：上一页按钮仍会被当成当前按钮提交",
+            Regex("currentGeneration\\s*=\\s*[^\\n]*isCurrentGeneration\\(hit\\)").containsMatchIn(tapBody),
         )
         assertTrue(
             "submitButtonValue 必须走 active.submitButton(value)",

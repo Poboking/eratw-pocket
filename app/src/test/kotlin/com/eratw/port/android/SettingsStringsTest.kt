@@ -339,6 +339,26 @@ class SettingsStringsTest {
     }
 
     /**
+     * COMEND-WAIT 开关（2026-11-22 新增的两条文案）：三语齐备、互不重复，且提示要点明
+     * 「默认开 = 原版」与「重开一局生效」这两个玩家会踩的口径。
+     */
+    @Test
+    fun `指令后等待按键文案三语齐备且互不重复`() {
+        val all = SettingsLanguage.entries.map { SettingsStrings.of(it) }
+        all.forEach { t ->
+            assertTrue("${t.lang} 的标题为空", t.commandEndWaitTitle.isNotEmpty())
+            assertTrue("${t.lang} 的提示为空", t.commandEndWaitHint.isNotEmpty())
+        }
+        assertEquals("标题三语重复", 3, all.map { it.commandEndWaitTitle }.distinct().size)
+        assertEquals("提示三语重复", 3, all.map { it.commandEndWaitHint }.distinct().size)
+        assertEquals("指令后等一次按键", all[0].commandEndWaitTitle)
+        assertEquals("Wait for a tap after each command", all[1].commandEndWaitTitle)
+        assertEquals("コマンド後に一度タップを待つ", all[2].commandEndWaitTitle)
+        assertTrue("中文提示要点明默认开", all[0].commandEndWaitHint.contains("默认开"))
+        assertTrue("中文提示要点明重开一局", all[0].commandEndWaitHint.contains("重开一局"))
+    }
+
+    /**
      * PRAY-BUSY 开关（2026-11 新增的两条文案）的形状闸：三语都给值、互不互抄，
      * 且中文底稿点名「少女祈祷中」与 1 秒阈值（玩家得知道它什么时候出现）。
      */
@@ -475,35 +495,6 @@ class SettingsStringsTest {
         assertEquals("このように実行：会話×5", all[2].railQuickMacroPreview("会話×5"))
     }
 
-    /**
-     * 玩家排序配置（RT2 L2）新增的三条文案：按 UpdateNotifyCopyTest 的「条目点名清单计数」
-     * 形状闸钉住（AGENTS §6.2：只改表不改闸 = 验收红）。反射完整性用例只钉「非空 + 占位符」，
-     * 这里逐条点名、钉三语互不重复，且中文说明必须点明「优先级」与依赖造成的调整
-     * （契约 §1.2 产品裁定，避免玩家把配置误读成对最终序的逐位指定）。
-     */
-    @Test
-    fun `Mod 装载优先级文案三语齐备且点明优先级语义`() {
-        val all = SettingsLanguage.entries.map { SettingsStrings.of(it) }
-        // 条目点名清单：本次新增 3 条，逐条列出（改名 / 漏档 / 只补一种语言都在这里红）。
-        val keys: List<Pair<String, (SettingsStrings) -> String>> = listOf(
-            "modPackageOrderTitle" to { s: SettingsStrings -> s.modPackageOrderTitle },
-            "modPackageOrderHint" to { s: SettingsStrings -> s.modPackageOrderHint },
-            "modPackageOrderEmpty" to { s: SettingsStrings -> s.modPackageOrderEmpty },
-        )
-        assertEquals("新增文案条目数变了（现有 3 条）", 3, keys.size)
-        keys.forEach { (name, getter) ->
-            val texts = all.map(getter)
-            texts.forEach { assertTrue("$name 有一档空文案", it.isNotEmpty()) }
-            assertEquals("$name 三语重复", 3, texts.distinct().size)
-        }
-        assertEquals("Mod 装载优先级", all[0].modPackageOrderTitle)
-        assertEquals("Mod load priority", all[1].modPackageOrderTitle)
-        assertEquals("Mod 読み込み優先度", all[2].modPackageOrderTitle)
-        // 产品裁定（契约 §1.2）：说明要点明「优先级」而非「完整顺序」，且点明依赖会改变实际序。
-        assertTrue("中文说明没点明优先级", all[0].modPackageOrderHint.contains("优先级"))
-        assertTrue("中文说明没点明不是完整顺序", all[0].modPackageOrderHint.contains("完整顺序"))
-        assertTrue("中文说明没点明依赖改变装载序", all[0].modPackageOrderHint.contains("依赖"))
-    }
 
     /**
      * 竖屏字号档一族（L29 PORTRAIT-SETTINGS 新增的 6 条文案）的形状闸：三语都给值、互不互抄；
@@ -521,8 +512,13 @@ class SettingsStringsTest {
             "portraitColLargeLabel" to { s: SettingsStrings -> s.portraitColLargeLabel },
             "portraitColStandardLabel" to { s: SettingsStrings -> s.portraitColStandardLabel },
             "portraitColSmallLabel" to { s: SettingsStrings -> s.portraitColSmallLabel },
+            // 2026-11-26 信息架构收口补的四条「当前档取舍说明」，与档名同源同序。
+            "portraitColExtraLargeHint" to { s: SettingsStrings -> s.portraitColExtraLargeHint },
+            "portraitColLargeHint" to { s: SettingsStrings -> s.portraitColLargeHint },
+            "portraitColStandardHint" to { s: SettingsStrings -> s.portraitColStandardHint },
+            "portraitColSmallHint" to { s: SettingsStrings -> s.portraitColSmallHint },
         )
-        assertEquals("新增文案条目数变了（现有 6 条）", 6, keys.size)
+        assertEquals("新增文案条目数变了（现有 6 条档名/标题 + 4 条档说明）", 10, keys.size)
         keys.forEach { (name, getter) ->
             val texts = all.map(getter)
             texts.forEach { assertTrue("$name 有一档空文案", it.isNotEmpty()) }
@@ -547,5 +543,60 @@ class SettingsStringsTest {
                 t.portraitFontColumnLabel(136),
             )
         }
+    }
+
+    /**
+     * Mod 卡缺依赖行（ModDX2-C 新增 1 条）的形状闸：三语齐备互不互抄；包名占位灌数后
+     * 不留槽位，中文底稿点名「缺前置包」这个玩家会踩的口径。
+     */
+    @Test
+    fun `缺前置包文案三语齐备且包名占位灌数`() {
+        val all = SettingsLanguage.entries.map { SettingsStrings.of(it) }
+        // 条目点名清单：本次新增 1 条（改名 / 漏档 / 只补一种语言都在这里红）。
+        val keys: List<Pair<String, (SettingsStrings) -> String>> = listOf(
+            "modMissingRequires" to { s: SettingsStrings -> s.modMissingRequires("eratw.foo") },
+        )
+        assertEquals("新增文案条目数变了（现有 1 条）", 1, keys.size)
+        keys.forEach { (name, getter) ->
+            val texts = all.map(getter)
+            texts.forEach { assertTrue("$name 有一档空文案", it.isNotEmpty()) }
+            assertEquals("$name 三语重复", 3, texts.distinct().size)
+        }
+        // 参数化句式逐字钉住：包名占位灌数后无槽位残留（fill 单趟替换的自检）。
+        assertEquals("缺前置包：eratw.foo（装上后重启生效）", all[0].modMissingRequires("eratw.foo"))
+        assertEquals("Missing dependency: eratw.foo (install it and restart)", all[1].modMissingRequires("eratw.foo"))
+        assertEquals("前置パッケージが未導入：eratw.foo（インストール後に再起動で有効）", all[2].modMissingRequires("eratw.foo"))
+        all.forEach { t ->
+            assertFalse("${t.lang} 的缺依赖行有槽位残留", t.modMissingRequires("x").contains("{"))
+        }
+    }
+
+    /**
+     * 应用偏好三个子分组标题（2026-11-26 信息架构收口新增 6 条）的形状闸：三语齐备互不互抄；
+     * 中文底稿点名各组装什么，玩家扫一眼分组标题就知道下一类设置在哪。
+     */
+    @Test
+    fun `应用偏好分组标题三语齐备`() {
+        val all = SettingsLanguage.entries.map { SettingsStrings.of(it) }
+        val keys: List<Pair<String, (SettingsStrings) -> String>> = listOf(
+            "displayGroupTitle" to { s: SettingsStrings -> s.displayGroupTitle },
+            "displayGroupSubtitle" to { s: SettingsStrings -> s.displayGroupSubtitle },
+            "railGroupTitle" to { s: SettingsStrings -> s.railGroupTitle },
+            "railGroupSubtitle" to { s: SettingsStrings -> s.railGroupSubtitle },
+            "launchGroupTitle" to { s: SettingsStrings -> s.launchGroupTitle },
+            "launchGroupSubtitle" to { s: SettingsStrings -> s.launchGroupSubtitle },
+        )
+        assertEquals("分组文案条目数变了（现有 3 组 × 标题/说明）", 6, keys.size)
+        keys.forEach { (name, getter) ->
+            val texts = all.map(getter)
+            texts.forEach { assertTrue("$name 有一档空文案", it.isNotEmpty()) }
+            assertEquals("$name 三语重复", 3, texts.distinct().size)
+        }
+        assertEquals("字号与画面", all[0].displayGroupTitle)
+        assertEquals("Rail and shortcuts", all[1].railGroupTitle)
+        assertEquals("起動とメンテナンス", all[2].launchGroupTitle)
+        assertTrue("显示组说明要点名随改随存", all[0].displayGroupSubtitle.contains("随改随存"))
+        assertTrue("右栏组说明要点名快捷宏", all[0].railGroupSubtitle.contains("快捷宏"))
+        assertTrue("启动组说明要点名自动更新", all[0].launchGroupSubtitle.contains("自动更新"))
     }
 }
