@@ -81,12 +81,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- badges/players.json badges/active-today.json badges/downloads.json; then
+          # README 顶部的三枚数据徽章吃的是**仓内 SVG**（badges/*.svg），不是 shields
+          # 动态端点 —— 后者在渲染时要现查目标，GitHub 图片代理（camo）会超时并把 504
+          # 缓存住，徽章整段坏掉。所以提交时 JSON 与 SVG 都要带上：只带 JSON 的话
+          # README 上的值会冻在最后一次提交。
+          if git diff --quiet -- \
+              badges/players.json badges/active-today.json badges/downloads.json \
+              badges/players.svg badges/active-today.svg badges/downloads.svg; then
             echo "读数没变或本轮跳过，不提交"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add badges/players.json badges/active-today.json badges/downloads.json
+          git add badges/players.json badges/active-today.json badges/downloads.json \
+              badges/players.svg badges/active-today.svg badges/downloads.svg
           git commit -m "chore(badges): refresh anonymous player counts [skip ci]"
           git push
