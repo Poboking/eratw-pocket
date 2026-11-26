@@ -97,9 +97,14 @@ configured through variables / properties:
 | `ERATW_KCORE_ROOT` | Where devtools locate the sibling engine checkout (default `../Kotera`) |
 | `ERATW_T63_PROF_DIR` / `ERATW_T63_DIAG_DIR` | Output directories for the `t63_*` on-device profile / diagnostic scripts |
 
-`local.report.properties` is gitignored; see
-[local.report.properties.example](local.report.properties.example). Leaving it
-unconfigured only disables the reporting chain — packaging is unaffected.
+
+
+**The authoritative corpus root is the Kotera root** (`eratw-画蛇添足版eratw4.980`,
+NOW_VERSION 20260326). This repo and the engine repo share one frozen baseline: the
+corpus-dependent readings (the byte-for-byte `emuera.config` sha256 of the config
+round-trip gate, …) are all frozen against that root. Running against a different root
+will disagree with the frozen values, which is a **corpus version change**, not a
+regression.
 
 ## Packaging & Toolchain
 

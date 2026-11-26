@@ -94,9 +94,11 @@ CI 等价命令为：
 | `ERATW_KCORE_ROOT` | devtools 定位姐妹引擎仓（缺省 `../Kotera`） |
 | `ERATW_T63_PROF_DIR` / `ERATW_T63_DIAG_DIR` | `t63_*` 真机 profile / 诊断脚本的输出目录 |
 
-`local.report.properties` 已被 gitignore；模板见
-[local.report.properties.example](local.report.properties.example)。不配置只会关闭
-上报链，不影响构建与出包。
+
+
+**权威语料根 = Kotera 根**（`eratw-画蛇添足版eratw4.980`，NOW_VERSION 20260326）。
+本仓与引擎仓共用同一冻结口径：配置往返闸（`emuera.config` 逐字节 sha256）等语料读数
+都按这棵根冻结。换根跑会与冻结值对不上，那是**语料换代**不是回归。
 
 ## 出包与工具链
 
