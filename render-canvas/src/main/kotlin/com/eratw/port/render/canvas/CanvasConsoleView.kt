@@ -731,6 +731,21 @@ class CanvasConsoleView @JvmOverloads constructor(
     private var drawFailureReported = false
 
     /**
+     * 宿主注入的「是否在等待任意键」读数 —— 逐帧诊断包（[FrameTrace]）里 `awaitingAnyKey` 那一列。
+     *
+     * null = 未接线（该列恒 false）。**只在诊断包开启时被调用**，关闭时一次都不会被触达，
+     * 所以这里挂生产读口不会给关闭态增加任何成本。
+     */
+    var anyKeyProvider: (() -> Boolean)? = null
+
+    /** 逐帧诊断包（默认关；关时 [onDraw] 只多一次 `@Volatile` 字段读）。 */
+    @Volatile
+    private var frameTrace: FrameTrace? = null
+
+    /** 诊断包的帧序号（本 View 生命周期内单调递增）。 */
+    private var frameTraceNo = 0L
+
+    /**
      * 指针按下态（纯绘制标记，不参与命中）：行是**命中口径**的行下标，列是屏幕半角格；
      * -1 = 无指针。真正的状态源是 `ConsoleScreen.buttons` 的 `ButtonLayer`，这里只留一份
      * 坐标用于在绘制侧反查「当前被按住的命中区」（`ButtonLayer` 只给 `isPressed(target)`，
@@ -740,6 +755,9 @@ class CanvasConsoleView @JvmOverloads constructor(
     private var pointerHitCol = -1
     private var pointerDown = false
     private var pointerAcceptance = ButtonAcceptance.ANY
+
+    /** 指针来自悬停（鼠标/触控板/悬停手写笔）而非按下：绘制高亮口径见 [setPointer]。 */
+    private var pointerHover = false
 
     /** 复用的裁剪/目标矩形：`onDraw` 每帧都要用到，不能每帧 new（帧零分配约定）。 */
     private val srcRect = Rect()
@@ -1420,6 +1438,26 @@ class CanvasConsoleView @JvmOverloads constructor(
     }
 
     /**
+     * 兜底判据的度量口（CANVASTAP1）：把 View 的私有度量与行表入口交给文件末尾的
+     * [PixelTapMetrics] 扩展。十个成员一行一转发、**不含任何判据** —— 判据改坏必须由
+     * CanvasPixelCellFallbackBehaviorTest 报红，不许活在这里。
+     */
+    private val tapMetrics = object : PixelTapMetrics {
+        override fun contentLeftPx(): Float = this@CanvasConsoleView.contentLeftPx()
+        override val paddingTop: Int get() = this@CanvasConsoleView.paddingTop
+        override val halfCellPx: Float get() = this@CanvasConsoleView.halfCellPx
+        override fun windowColumns(): Int = this@CanvasConsoleView.windowColumns()
+        override fun rowLayout(console: ConsoleScreen, cmds: List<DrawCmd>): RowLayout.Plan =
+            this@CanvasConsoleView.rowLayout(console, cmds)
+        override fun extraRowsAbove(console: ConsoleScreen): Int =
+            this@CanvasConsoleView.extraRowsAbove(console)
+        override val fontPixelSize: Float get() = this@CanvasConsoleView.fontPixelSize
+        override val lineHeightPx: Float get() = this@CanvasConsoleView.lineHeightPx
+        override fun clientX(viewX: Float): Int = this@CanvasConsoleView.clientX(viewX)
+        override fun clientY(viewY: Float): Int = this@CanvasConsoleView.clientY(viewY)
+    }
+
+    /**
      * tap 的命中半段（**贴底前的视图**）：屏幕坐标 → 行列 → `ConsoleScreen.click`。
      * 与 [tap] 拆开是为了让贴底无论命中与否都发生（原版 `MainWindow.cs:801-805`
      * 在命中判定之前执行、不因 early return 被跳过）；点在余量/空白/窗口外返回 null。
@@ -1443,26 +1481,7 @@ class CanvasConsoleView @JvmOverloads constructor(
                 return null
             }
         }
-        val div = console.divHitAt(clientX(x), clientY(y))
-        if (div != null) {
-            // 命中层的 DivHit 没有「行下标×列」这组坐标（像素条目），行号塞 -1 只作占位；
-            // `selectedString` 只用 value + acceptance，不读几何（见其实现）。
-            return console.buttons.selectedString(
-                HitTarget(-1, div.colStart, div.colEnd, div.value, div.label),
-                acceptance,
-            )
-        }
-        val hit = cellHitAt(console, x, y) ?: return null
-        // 直接命中走行内矩形口径（纵门 + 压缩行 k）；溢出图形的锚行回退保留旧口径 ——
-        // 那一路的 tap 点不在锚行带内，纵门由 GraphicTapAnchor 在解析锚行时已经判过。
-        return if (hit.gated) {
-            console.clickInline(
-                hit.row, hit.col, hit.yInRowPx, fontPixelSize.toInt(), acceptance,
-                hit.rowHeightPx, lineHeightPx, hit.pureArtRow,
-            )
-        } else {
-            console.click(hit.row, hit.col, acceptance)
-        }
+        return tapMetrics.tapFallback(console, x, y, acceptance)
     }
 
     /**
@@ -1510,54 +1529,14 @@ class CanvasConsoleView @JvmOverloads constructor(
     }
 
     /**
-     * 一次命中换算的**全部产物**：命中口径行、列，以及该行内纵坐标与行几何（按行内
-     * 矩形口径判命中时要用）。[gated] = 该行是**直接命中**（没走溢出图形的锚行回退）——
-     * 只有直接命中才叠行内纵门：锚行回退的 tap 点本来就不在锚行带里，硬套纵门会把
-     * 跨行立绘的点击判死（那一路的纵向几何由 [GraphicTapAnchor] 自己判过）。
+     * 屏幕坐标 -> 命中产物。判据本体在文件末尾的 [cellHitAt]（[PixelTapMetrics] 扩展）：
+     * CANVASTAP1 把那份换算逐字节搬出去，是因为本类继承 Android View、JVM 单测面
+     * 造不出实例（render-canvas/build.gradle.kts 无 Robolectric），兜底链此前只有源码文本闸。
+     * 形状照同文件既有的 [LiveReflowPlan]：判据抽出来直测，这里只交度量口。
+     * [cellAt] / [hitOnCurrentView] / [setPointer] / [tooltipAt] 仍然共用同一份换算。
      */
-    private data class CellHit(
-        val row: Int,
-        val col: Int,
-        val yInRowPx: Float,
-        val rowHeightPx: Float,
-        val pureArtRow: Boolean,
-        val gated: Boolean,
-    )
-
-    /**
-     * 屏幕坐标 → 命中产物（[CellHit]）。[cellAt] / [hitOnCurrentView] / [setPointer] 共用
-     * 这一份换算，保证「点得中」「长按查得到」「按下高亮在哪」永远一致。
-     *
-     * 行内纵门（[CellHit.gated] + [CellHit.yInRowPx]）是 IMG-A4 / B1 的落地口：渲染层
-     * `ButtonLayer.hitInline` 已有纵盒判式与压缩行 k，但此前**没有生产调用点**（只活在
-     * 单测里）；点击派发改走 `ConsoleScreen.clickInline` 后，图上方的行内空白才真的
-     * 点不中（原版 `EmueraConsole.cs:2368` 的 `num4 < Top || num4 > Bottom`）。
-     */
-    private fun cellHitAt(console: ConsoleScreen, x: Float, y: Float): CellHit? {
-        val contentLeft = contentLeftPx()
-        val contentTop = paddingTop.toFloat()
-        if (x < contentLeft || y < contentTop) return null
-        // 逐行纵布局与 drawScreen 同源（见 [rowLayout]）：图片行被压缩后，行号不能再用
-        // 「(y - originY) / lineHeight」估，必须查同一张行顶表。
-        val layout = rowLayout(console, console.list.render())
-        val idx = layout.rowIndex(y)
-        if (idx < 0) return null
-        val col = floor((x - contentLeft) / halfCellPx).toInt()
-        if (col >= windowColumns()) return null
-        // 只做一次换算：idx 就是快照行（行表按窗口建行，不再有 minRow 平移），
-        // 减去绘制窗口多取的 extraRows 就是命中行；直接命中为空时走溢出图形的
-        // 锚行回退（与 setPointer 共用 [pointerCellRow]，CellHitRow 的教训：换算只许一份）。
-        val hitRow = pointerCellRow(console, layout, idx, x, y)
-        val direct = hitRowForCell(0, idx, extraRowsAbove(console))
-        return CellHit(
-            row = hitRow,
-            col = col,
-            yInRowPx = y - (layout.tops.getOrNull(idx) ?: contentTop),
-            rowHeightPx = layout.heights.getOrNull(idx) ?: 0f,
-            pureArtRow = layout.artOnly.getOrNull(idx) ?: true,
-            gated = hitRow == direct,
-        )
-    }
+    private fun cellHitAt(console: ConsoleScreen, x: Float, y: Float): CellHit? =
+        tapMetrics.cellHitAt(console, x, y)
 
     /**
      * 长按取按钮提示：该点的 `<button title='…'>` / `<nonbutton title='…'>` 原文
@@ -1672,6 +1651,37 @@ class CanvasConsoleView @JvmOverloads constructor(
     }
 
     /**
+     * 按提交值反查屏上按钮的客户区中心（右栏芯片提交前的鼠标现场锚点）。
+     *
+     * 右栏芯片点击没有触摸事件流，MOUSEX()/MOUSEY() 不会跟随手指；脚本侧弹窗锚在
+     * X_POS=MOUSEX()+20（QOL_USERCOM.ERB:260）一类的读数上，不写鼠标现场就会
+     * 弹在上一次触摸的陈旧坐标。此处优先取 div 弹窗按钮（命中表自带像素矩形，与
+     * [hitOnCurrentView] 的 div 优先级同判据），其次正文行按钮：列中心 = 内容左沿 +
+     * 半角格中心，行中心 = 命中行顶 + 行高一半（换算口径与 [buttonAtClient] /
+     * [setPointer] 完全同源）。同值多枚取最新一行（玩家看到的是当前帧最后印出的那枚）。
+     * null = 屏上没有同值按钮（已滚出视口等），调用方保持鼠标现场不动。
+     *
+     * 返回**客户区像素**（与 MOUSEX/MOUSEY 的原始坐标同口径，勿再减 contentLeft/paddingTop）。
+     * 只在 UI 线程调用——读 DisplayList/ButtonLayer，不是跨线程结构。
+     */
+    fun buttonCenterClientForValue(value: String): Pair<Int, Int>? {
+        val console = feed?.screen ?: screen ?: return null
+        console.buttons.divTargets().lastOrNull { it.value.toString() == value }?.let {
+            return (it.xPx + it.widthPx / 2f).toInt() to (it.yPx + it.heightPx / 2f).toInt()
+        }
+        val target = console.buttons.all().lastOrNull { it.value.toString() == value } ?: return null
+        val layout = rowLayout(console, console.list.render())
+        val extra = extraRowsAbove(console)
+        val idx = layout.tops.indices.firstOrNull { i -> hitRowForCell(0, i, extra) == target.row }
+            ?: return null
+        val top = layout.tops[idx]
+        val height = layout.heights.getOrNull(idx) ?: 0f
+        val x = contentLeftPx() + (target.colStart + target.colEnd) / 2f * halfCellPx
+        val y = top + height / 2f - paddingTop
+        return x.toInt() to y.toInt()
+    }
+
+    /**
      * 触摸按下/抬起 → 行内按钮的按下态高亮（只记绘制标记，不消费事件、不产输入）。
      *
      * 为什么放在这里而不是等装配层接线：main@2d94f78e 的 `MainActivity.attachGestures`
@@ -1706,12 +1716,23 @@ class CanvasConsoleView @JvmOverloads constructor(
      * `setPointer(x, y, pressed = true, acceptance)`，在 `ACTION_UP` / `ACTION_CANCEL` 调
      * `setPointer(x, y, pressed = false, ...)` 或 [clearPointer]。当前 main 的
      * 装配侧已接线（2026-11-06 收口）：`MainActivity` 的触摸段在 `ACTION_DOWN` 调 [setPointer]`(pressed = true)`、`ACTION_UP`/`ACTION_CANCEL` 调 [clearPointer]`()`，按下/焦点高亮因此真的上屏。
+     * **悬停接线（2026-11-18 引擎 hover 第一步）**：`MainActivity` 的 hover 段在
+     * `ACTION_HOVER_ENTER`/`ACTION_HOVER_MOVE` 调 `setPointer(x, y, pressed = false, acceptance, hover = true)`、
+     * `ACTION_HOVER_EXIT` 清指针——原版 `isFocus` / `isSelecting` 本就由 MoveMouse 悬停驱动
+     * （`EmueraConsole.cs:2524-2585`、`ConsoleButtonString.cs:279-280`），外接鼠标/触控板/
+     * 悬停手写笔设备据此恢复 PC 同形高亮；触屏不产 hover 事件 ⇒ 行为不变。
      * 本方法总会 [invalidate]，按下/抬起立刻上屏 —— 但**不走** [requestRedraw]
      *（强制整幅，PERF 2026-11-03）：按下态只改按下行内 BUTTON 段的像素，
      * [rowSignature] 对它的判定与 [drawCmd] 逐字同源，普通文本帧只重栅格化那一行；
      * 含图形/图层的帧本来就恒整幅，两边都不需要整张签名表作废。
      */
-    fun setPointer(x: Float, y: Float, pressed: Boolean, acceptance: ButtonAcceptance = ButtonAcceptance.ANY) {
+    fun setPointer(
+        x: Float,
+        y: Float,
+        pressed: Boolean,
+        acceptance: ButtonAcceptance = ButtonAcceptance.ANY,
+        hover: Boolean = false,
+    ) {
         val console = feed?.screen ?: screen
         if (console == null) {
             resetPointerState(null)
@@ -1749,11 +1770,13 @@ class CanvasConsoleView @JvmOverloads constructor(
         pointerHitRow = row
         pointerHitCol = col
         pointerDown = pressed
+        pointerHover = hover
         pointerAcceptance = acceptance
-        // CBG 按钮按下态：绘制侧据此把 `buttonValue == 该值` 的层改画 `spriteNameB`
+        // CBG 按钮高亮态：绘制侧据此把 `buttonValue == 该值` 的层改画 `spriteNameB`
         // （`EmueraConsole.cs:1840-1843`）。取值口径与 [hitOnCurrentView] 同一条取色图换算。
-        cbgPressedValue = if (pressed) cbgButtonHitAt(x, y)?.value else null
-        console.buttons.setPointer(row, col, pressed, acceptance)
+        // hover 也算（PC 上 CBG 按钮的换图同样由悬停 isFocus 驱动）。
+        cbgPressedValue = if (pressed || hover) cbgButtonHitAt(x, y)?.value else null
+        console.buttons.setPointer(row, col, pressed, acceptance, hover)
         // div 子行按钮的**像素**指针（CONTRACT-DIV-HIT2）：div 子行不在行列表里，
         // 没有「行下标 × 列」这组坐标，命中/焦点/按下走独立入口（客户区像素，
         // 与 [clientX]/[clientY] 同一套原点；即 drawScreen 的内容区坐标）。
@@ -1762,16 +1785,8 @@ class CanvasConsoleView @JvmOverloads constructor(
     }
 
     /**
-     * 指针/点击的公共换算尾段：命中口径行号 + 溢出图形的锚行回退。
-     *
-     * [cellAt]（tap / tooltip / MOUSEB 取色）与 [setPointer]（按下高亮）必须落在同一格，
-     * 所以回退也只此一份：直接命中（`ButtonLayer.hit`，ANY 口径）为空时，按
-     * [GraphicTapAnchor.resolveAnchorRow] 就近找盖住该点的溢出图形按钮、解析回锚行
-     * （点击立绘无反应的修法；几何与 drawScreen 两趟铺墨同源，出处见该类文档）。
-     * 直接命中存在时不回退 —— 类型筛选（acceptance）仍由 `ConsoleScreen.click` 收口，
-     * 与原版「先类型闸后 escaped 支」的顺序等价。
-     *
-     * @param idx 点击点的绘制口径行（`RowLayout.Plan.rowIndex` 的产物，>= 0）
+     * 指针/点击的公共换算尾段：判据本体在文件末尾的 [pointerCellRow]（[PixelTapMetrics] 扩展，
+     * CANVASTAP1 逐字节搬出，与 [cellHitAt] 共用同一份换算、只许一处）。这里只交度量口。
      */
     private fun pointerCellRow(
         console: ConsoleScreen,
@@ -1779,27 +1794,7 @@ class CanvasConsoleView @JvmOverloads constructor(
         idx: Int,
         x: Float,
         y: Float,
-    ): Int {
-        val col = floor((x - contentLeftPx()) / halfCellPx).toInt()
-        val direct = hitRowForCell(0, idx, extraRowsAbove(console))
-        if (console.buttons.hit(direct, col) != null) {
-            return direct
-        }
-        val anchor = GraphicTapAnchor.resolveAnchorRow(
-            rows = console.visibleRows(),
-            tops = layout.tops,
-            tapRow = idx,
-            tapCol = col,
-            tapY = y,
-            fontSizePx = fontPixelSize.toInt(),
-            // B1 行几何：锚行的 k 必须与 drawImage 用同一个 rowHeight/lineHeight/artOnly，
-            // 否则「画出来的图」与「锚行回退判的图」在压缩行上会差一截。
-            heights = layout.heights,
-            artOnly = layout.artOnly,
-            lineHeightPx = lineHeightPx,
-        )
-        return if (anchor >= 0) hitRowForCell(0, anchor, extraRowsAbove(console)) else direct
-    }
+    ): Int = tapMetrics.pointerCellRow(console, layout, idx, x, y)
 
     /** 清掉按下/焦点态（触摸取消、滚出按钮、会话重建时用）；无指针时也幂等。 */
     fun clearPointer() {
@@ -1807,6 +1802,18 @@ class CanvasConsoleView @JvmOverloads constructor(
         // 与 [setPointer] 同口径：按下态的像素面只覆盖按下行，invalidate 即可
         //（强制整幅的理由已在 [layoutFingerprint] 的 KDoc 说明）。
         invalidate()
+    }
+
+    /**
+     * 仅当指针处于**悬停**态时清指针（hover 移出 / 进入非等待态时用）。
+     *
+     * 触屏按下态不受影响：hover 事件流与触摸事件流互斥（Android 对鼠标只发
+     * `ACTION_HOVER_*`，对手指只发 `ACTION_*`），但两路共用同一份指针状态，
+     * 清之前必须分辨来源，否则鼠标移出会把正在按着的手指高亮一起抹掉。
+     */
+    fun clearPointerIfHovering() {
+        if (!pointerHover) return
+        clearPointer()
     }
 
     /**
@@ -1848,6 +1855,7 @@ class CanvasConsoleView @JvmOverloads constructor(
         pointerHitRow = -1
         pointerHitCol = -1
         pointerDown = false
+        pointerHover = false
         pointerAcceptance = ButtonAcceptance.ANY
         cbgPressedValue = null
         if (console != null) {
@@ -2598,6 +2606,96 @@ class CanvasConsoleView @JvmOverloads constructor(
     @Volatile var dbgFrameRows: Long = 0L; private set
 
     /**
+     * 单帧墙钟的**慢帧通知口**（2026-11-20 ANR 归因；写侧装配一次，读侧 `onDraw` 判定）。
+     *
+     * 为什么放在本类而不是 MainActivity：帧墙钟只在 `onDraw` 的 finally 里拿得到
+     * （`frameStartNs` 就在那一帧的栈上），而装配侧只需要「某帧慢了」这一件事。
+     * 单帧墙钟超过 [SLOW_FRAME_NOTIFY_MS] 时以毫秒数回调一次；回调方（app 层）自己做
+     * 冷却与落盘，本类不做节流 —— 节流判据（[com.eratw.port.android.SlowUiGate]）与
+     * 阈值的单一来源都在 app 层，这里只递原始读数。
+     *
+     * `@Volatile` + 一次性装配：`onDraw` 每帧读一次引用（成本与读 `dbgFrameCount` 同级），
+     * 装配早于首帧（onCreate 路径），lambda 本体在调用线程跑。
+     */
+    @Volatile
+    var slowFrameNotify: ((ms: Long) -> Unit)? = null
+
+    /**
+     * 挂/摘逐帧诊断的**接收端**（DevTools `frames on|off` 与设置页开关共用同一个环）。
+     *
+     * 传 `null` = 关：`onDraw` 只剩一次 `@Volatile` 字段读 + 一次判空，不建对象、不碰行表、
+     * 不调 [anyKeyProvider]。传非 null = 往那个环里记（环的归属与清空由调用方负责 ——
+     * 生产侧是 `FrameTraceChannel`，它与报告生成方共享同一个实例）。
+     */
+    fun setFrameTrace(sink: FrameTrace?) {
+        frameTraceNo = 0L
+        frameTrace = sink
+    }
+
+    /** 逐帧诊断是否在记。 */
+    fun frameTraceOn(): Boolean = frameTrace != null
+
+    /**
+     * DevTools `frames [n]`：读出最近 [limit] 帧的版面事实 + 判定结论。
+     *
+     * 判据（真机现场唯一的区分手段）：版面量（`lineH` / `hLines` / `vBase` / `planH`）
+     * 相邻帧有变 ⇒ 视图层在动；全稳而屏仍动 ⇒ 问题在 canvas 贴图/硬件加速层。
+     * 完整口径见 [FrameTrace] 类文档。
+     */
+    fun debugFrames(limit: Int = FrameTrace.DEFAULT_CAPACITY): String {
+        val sink = frameTrace ?: return "frameTrace: 关（先在设置页打开「记录逐帧诊断」或 `frames on`）"
+        return sink.dump(limit)
+    }
+
+    /**
+     * 记一帧诊断样本（**只在** [frameTraceEnabled] 为真时调用）。
+     *
+     * `artAdvance` 的取法：`RowLayout.plan` 不把它单独返回（只有 `heights` 数组），
+     * 所以这里按同一判据反推 —— 只有「可压的纯图行」会拿到 `artAdvance`
+     * （`RowLayout.kt:202-206`），因此取 `heights` 里第一个不等于执行行高的值即可；
+     * 没有这样的行就是「不压缩」，此时 `artAdvance == lineHeightPx`（`:189` 的初值）。
+     * 诊断读数不许成为第二份几何口径，故不重算压缩算式。
+     *
+     * @param rebaked 本帧是否重建过行位图（由 `ImageFrameSource.cacheRebuilds` 变化判定）
+     */
+    private fun recordFrameSample(rebaked: Boolean) {
+        val sink = frameTrace ?: return
+        val console = feed?.screen ?: screen ?: return
+        val layout = rowLayout(console, console.list.render())
+        var planHeight = 0f
+        for (h in layout.heights) planHeight += h
+        var artRows = 0
+        var artAdvance = lineHeightPx
+        for (i in layout.artOnly.indices) {
+            if (!layout.artOnly[i]) continue
+            artRows++
+            if (layout.heights[i] != lineHeightPx) artAdvance = layout.heights[i]
+        }
+        frameTraceNo += 1
+        sink.record(
+            FrameSample(
+                frameNo = frameTraceNo,
+                revision = feed?.sink?.revision ?: 0L,
+                rows = console.list.rowCount,
+                visibleRowBase = console.visibleRowBase,
+                hitRowBase = console.hitRowBase,
+                offsetFromEnd = console.viewport.offsetFromEnd,
+                lineHeight = lineHeightPx,
+                viewHeight = height,
+                rowsVisible = console.visibleRows().size,
+                rebaked = rebaked,
+                awaitingAnyKey = anyKeyProvider?.invoke() == true,
+                heightLines = console.viewport.heightLines,
+                fontPx = fontPixelSize,
+                rowCount = layout.tops.size,
+                planHeight = planHeight,
+                artAdvance = artAdvance,
+                artRows = artRows,
+            ),
+        )
+    }
+
+    /**
      * DevTools `stats` 命令：一行读数量化「谁在驱动重绘」「一帧花在哪」，并带上字号/列数排障读数。
      *
      * 末尾 `f.*` 是**自上次读取以来**的帧内分解（读完立即清零，下次读到的又是新一段）：
@@ -2755,8 +2853,23 @@ class CanvasConsoleView @JvmOverloads constructor(
         } catch (t: RuntimeException) {
             onDrawFailed(t)
         } finally {
-            dbgFrameDrawNanos += System.nanoTime() - frameStartNs
+            val frameNs = System.nanoTime() - frameStartNs
+            dbgFrameDrawNanos += frameNs
             dbgFrameCount += 1L
+            // 慢帧通知（2026-11-20 ANR 归因）：单帧墙钟超阈值才走回调（dbgFrameDrawNanos 是
+            // 跨帧累计、会被 debugStats 清零，不能当单帧值）。runCatching —— 归因回调抛什么都
+            // 只是「这一帧没留下读数」，不许把绘制路径拖出第二场事故。
+            val frameMs = frameNs / 1_000_000L
+            if (frameMs > SLOW_FRAME_NOTIFY_MS) {
+                runCatching { slowFrameNotify?.invoke(frameMs) }
+            }
+            // 逐帧诊断包（默认关）：判据与「零开销」口径见 [FrameTrace] 类文档。
+            // 关闭时这里只有一次 @Volatile 字段读 + 判空，不建对象、不碰行表。
+            if (frameTrace != null) {
+                runCatching {
+                    recordFrameSample(rebaked = (frameSource?.cacheRebuilds ?: 0L) != rebuildsBefore)
+                }
+            }
             // 本帧重建过位图 ⇒ 这一帧的行可能画的是合成半成品：再排一帧。
             // 收敛性：下一帧取到的是按新写代数重建的源位图、签名随之改变，计数不再变 ⇒ 不自激。
             if ((frameSource?.cacheRebuilds ?: 0L) != rebuildsBefore) postInvalidateOnAnimation()
@@ -3048,15 +3161,18 @@ class CanvasConsoleView @JvmOverloads constructor(
         // 所以画 behind 时基址 0、画 front 时基址 `behind.size`（顺序与 [divOverlayFrame] 同一份）。
         val focusedDiv = console.focusedDiv()
         val pressedDiv = console.pressedDiv()
-        // 按下态命中区：每帧只查一次（绘制循环里零分配）。行列换算是
+        // 高亮命中区（按下或悬停）：每帧只查一次（绘制循环里零分配）。行列换算是
         // 「命中口径 → 绘制口径」，与 tap 用同一套基准（ConsoleScreen.hitRowToSnapshotRow）。
+        // 口径 = 原版 `isSelecting || isFocus`（`ConsoleButtonString.cs:279-280`，PC 上
+        // 两者都由 MoveMouse 悬停驱动；触屏用按下代偿，指针设备走 hover，见
+        // [ButtonLayer.isHighlighted]）。
         var pressedRow = -1
         var pressedLo = 0
         var pressedHi = 0
-        if (pointerDown) {
+        if (pointerDown || pointerHover) {
             val layer = console.buttons
             val target = layer.hit(pointerHitRow, pointerHitCol, pointerAcceptance)
-            if (target != null && layer.isPressed(target)) {
+            if (target != null && layer.isHighlighted(target)) {
                 val row = console.hitRowToSnapshotRow(target.row)
                 if (row != null) {
                     pressedRow = row
@@ -4908,6 +5024,21 @@ class CanvasConsoleView @JvmOverloads constructor(
         private const val TAG = "EratwRender"
 
         /**
+         * 单帧墙钟的「慢帧」阈值（毫秒）：60 Hz 正常帧 < 16 ms，300 ms = 玩家已可感知的
+         * 异常帧。公开给 app 层的 [com.eratw.port.android.SlowUiGate] 做同一常量源
+         * （阈值单一来源；本类只递原始毫秒读数，不做节流与落盘）。
+         */
+        const val SLOW_FRAME_NOTIFY_MS = 300L
+
+        /**
+         * 逐帧诊断包的环形缓冲容量（帧）。
+         *
+         * 公开给 app 层的 DevTools `frames` 命令用（`FrameTrace` 本身是模块内 `internal`，
+         * 承载它的人读口径不外溢）；60fps 下约 4 秒现场，够覆盖一次整屏重印突发。
+         */
+        const val FRAME_TRACE_CAPACITY = FrameTrace.DEFAULT_CAPACITY
+
+        /**
          * 留白比例的防御上限：偏好层白名单已夹在 0.12（`UiPrefs.CONTENT_MARGIN_OPTIONS`），
          * 这里再兜一道 0.5 —— 任何构造实参都不许把「每侧留白」算到吃掉半屏以上。
          */
@@ -5141,3 +5272,179 @@ internal object LiveReflowPlan {
     }
 }
 
+
+
+/**
+ * CANVASTAP1 抽出的「像素 -> 格」兜底缝（**输入状态机**层的判据本体）。
+ *
+ * [CellHit] / [cellHitAt] / [pointerCellRow] / [tapFallback] 四个声明的函数体是从
+ * [CanvasConsoleView] 同名的私有成员与 hitOnCurrentView 的尾段**逐字节搬来**的（只改签名行
+ * 与整体缩进）。搬移动机不是复用而是**可驱动性**：该类继承 Android View，JVM 单测面
+ * 实例化不了（render-canvas/build.gradle.kts 无 Robolectric、无 testOptions），于是这条
+ * 兜底链此前只有源码文本闸（CanvasTapOutcomeAuditTest）—— 把 cellHitAt(...) ?: return null
+ * 改成伪造空命中、把 gated 的两条派发口 clickInline / click 写反，闸门全绿。
+ * 判词 7 的余波就是这个洞；形状先例 = 同文件的 [LiveReflowPlan]。
+ *
+ * [PixelTapMetrics] 只把 View 的度量与行表入口交给判据，**自身不含任何判据**；生产侧唯一
+ * 实现是 CanvasConsoleView.tapMetrics（一行一转发的匿名对象）。测试侧的假实现另带一个
+ * rowLayout 计数口，把「早闸先于行表换算」从文本钉子升级成行为断言。
+ */
+internal interface PixelTapMetrics {
+
+    /** 内容区左沿像素（含居中偏移）—— 与绘制侧同一个原点，早闸的横边。 */
+    fun contentLeftPx(): Float
+
+    /** 内容区上沿（View 的 paddingTop）—— 早闸的纵边。 */
+    val paddingTop: Int
+
+    /** 半角格宽（像素），列号换算的唯一度量源。 */
+    val halfCellPx: Float
+
+    /** 本屏窗口列数（超宽即无格可命中）。 */
+    fun windowColumns(): Int
+
+    /**
+     * 逐行纵布局（行顶表）。**必须由实现方惰性给**：早闸路径一次都不许算它，
+     * 走到兜底才给一行。这条纪律钉在 CanvasPixelCellFallbackBehaviorTest 的计数断言上。
+     */
+    fun rowLayout(console: ConsoleScreen, cmds: List<DrawCmd>): RowLayout.Plan
+
+    /** 绘制窗口比命中窗口多取的最上面一排数（格行号 -> 显示行下标）。 */
+    fun extraRowsAbove(console: ConsoleScreen): Int
+
+    /** 生效字号（像素），交给 clickInline 的纵向带判定。 */
+    val fontPixelSize: Float
+
+    /** 执行行高（像素），压缩行的 k 因子分母。 */
+    val lineHeightPx: Float
+
+    /** 视图坐标 -> 客户区横坐标（div 覆盖层按客户区像素登记）。 */
+    fun clientX(viewX: Float): Int
+
+    /** 视图坐标 -> 客户区纵坐标。 */
+    fun clientY(viewY: Float): Int
+}
+
+/**
+ * 一次命中换算的**全部产物**：命中口径行、列，以及该行内纵坐标与行几何（按行内
+ * 矩形口径判命中时要用）。[gated] = 该行是**直接命中**（没走溢出图形的锚行回退）——
+ * 只有直接命中才叠行内纵门：锚行回退的 tap 点本来就不在锚行带里，硬套纵门会把
+ * 跨行立绘的点击判死（那一路的纵向几何由 [GraphicTapAnchor] 自己判过）。
+ */
+// internal 仅为暴露面所需（顶层 private 会被 internal 扩展的返回类型暴露），不是公共 API：别拿它当缝用。
+internal data class CellHit(
+    val row: Int,
+    val col: Int,
+    val yInRowPx: Float,
+    val rowHeightPx: Float,
+    val pureArtRow: Boolean,
+    val gated: Boolean,
+)
+
+/**
+ * 屏幕坐标 → 命中产物（[CellHit]）。[cellAt] / [hitOnCurrentView] / [setPointer] 共用
+ * 这一份换算，保证「点得中」「长按查得到」「按下高亮在哪」永远一致。
+ *
+ * 行内纵门（[CellHit.gated] + [CellHit.yInRowPx]）是 IMG-A4 / B1 的落地口：渲染层
+ * `ButtonLayer.hitInline` 已有纵盒判式与压缩行 k，但此前**没有生产调用点**（只活在
+ * 单测里）；点击派发改走 `ConsoleScreen.clickInline` 后，图上方的行内空白才真的
+ * 点不中（原版 `EmueraConsole.cs:2368` 的 `num4 < Top || num4 > Bottom`）。
+ */
+internal fun PixelTapMetrics.cellHitAt(console: ConsoleScreen, x: Float, y: Float): CellHit? {
+    val contentLeft = contentLeftPx()
+    val contentTop = paddingTop.toFloat()
+    if (x < contentLeft || y < contentTop) return null
+    // 逐行纵布局与 drawScreen 同源（见 [rowLayout]）：图片行被压缩后，行号不能再用
+    // 「(y - originY) / lineHeight」估，必须查同一张行顶表。
+    val layout = rowLayout(console, console.list.render())
+    val idx = layout.rowIndex(y)
+    if (idx < 0) return null
+    val col = floor((x - contentLeft) / halfCellPx).toInt()
+    if (col >= windowColumns()) return null
+    // 只做一次换算：idx 就是快照行（行表按窗口建行，不再有 minRow 平移），
+    // 减去绘制窗口多取的 extraRows 就是命中行；直接命中为空时走溢出图形的
+    // 锚行回退（与 setPointer 共用 [pointerCellRow]，CellHitRow 的教训：换算只许一份）。
+    val hitRow = pointerCellRow(console, layout, idx, x, y)
+    val direct = hitRowForCell(0, idx, extraRowsAbove(console))
+    return CellHit(
+        row = hitRow,
+        col = col,
+        yInRowPx = y - (layout.tops.getOrNull(idx) ?: contentTop),
+        rowHeightPx = layout.heights.getOrNull(idx) ?: 0f,
+        pureArtRow = layout.artOnly.getOrNull(idx) ?: true,
+        gated = hitRow == direct,
+    )
+}
+
+/**
+ * 指针/点击的公共换算尾段：命中口径行号 + 溢出图形的锚行回退。
+ *
+ * [cellAt]（tap / tooltip / MOUSEB 取色）与 [setPointer]（按下高亮）必须落在同一格，
+ * 所以回退也只此一份：直接命中（`ButtonLayer.hit`，ANY 口径）为空时，按
+ * [GraphicTapAnchor.resolveAnchorRow] 就近找盖住该点的溢出图形按钮、解析回锚行
+ * （点击立绘无反应的修法；几何与 drawScreen 两趟铺墨同源，出处见该类文档）。
+ * 直接命中存在时不回退 —— 类型筛选（acceptance）仍由 `ConsoleScreen.click` 收口，
+ * 与原版「先类型闸后 escaped 支」的顺序等价。
+ *
+ * @param idx 点击点的绘制口径行（`RowLayout.Plan.rowIndex` 的产物，>= 0）
+ */
+internal fun PixelTapMetrics.pointerCellRow(
+    console: ConsoleScreen,
+    layout: RowLayout.Plan,
+    idx: Int,
+    x: Float,
+    y: Float,
+): Int {
+    val col = floor((x - contentLeftPx()) / halfCellPx).toInt()
+    val direct = hitRowForCell(0, idx, extraRowsAbove(console))
+    if (console.buttons.hit(direct, col) != null) {
+        return direct
+    }
+    val anchor = GraphicTapAnchor.resolveAnchorRow(
+        rows = console.visibleRows(),
+        tops = layout.tops,
+        tapRow = idx,
+        tapCol = col,
+        tapY = y,
+        fontSizePx = fontPixelSize.toInt(),
+        // B1 行几何：锚行的 k 必须与 drawImage 用同一个 rowHeight/lineHeight/artOnly，
+        // 否则「画出来的图」与「锚行回退判的图」在压缩行上会差一截。
+        heights = layout.heights,
+        artOnly = layout.artOnly,
+        lineHeightPx = lineHeightPx,
+    )
+    return if (anchor >= 0) hitRowForCell(0, anchor, extraRowsAbove(console)) else direct
+}
+
+/**
+ * hitOnCurrentView 的尾段（搬自该方法原 :1464-1483，体一字未改）：div 让位之后
+ * 由像素格产出可点格目标。三格行为闸（键全负 / 混合键 / 兜底失败不伪造命中）
+ * 钉的就是这里。
+ */
+internal fun PixelTapMetrics.tapFallback(
+    console: ConsoleScreen,
+    x: Float,
+    y: Float,
+    acceptance: ButtonAcceptance,
+): String? {
+    val div = console.divHitAt(clientX(x), clientY(y))
+    if (div != null) {
+        // 命中层的 DivHit 没有「行下标×列」这组坐标（像素条目），行号塞 -1 只作占位；
+        // `selectedString` 只用 value + acceptance，不读几何（见其实现）。
+        return console.buttons.selectedString(
+            HitTarget(-1, div.colStart, div.colEnd, div.value, div.label),
+            acceptance,
+        )
+    }
+    val hit = cellHitAt(console, x, y) ?: return null
+    // 直接命中走行内矩形口径（纵门 + 压缩行 k）；溢出图形的锚行回退保留旧口径 ——
+    // 那一路的 tap 点不在锚行带内，纵门由 GraphicTapAnchor 在解析锚行时已经判过。
+    return if (hit.gated) {
+        console.clickInline(
+            hit.row, hit.col, hit.yInRowPx, fontPixelSize.toInt(), acceptance,
+            hit.rowHeightPx, lineHeightPx, hit.pureArtRow,
+        )
+    } else {
+        console.click(hit.row, hit.col, acceptance)
+    }
+}

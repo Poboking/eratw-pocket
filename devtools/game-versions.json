@@ -1,0 +1,10 @@
+{
+  "_note": "每款游戏各自一条版本线；pack_release 出包成功后自动抬号。手工改也行，但 versionCode 必须单调递增。",
+  "schema": 1,
+  "games": {
+    "eratohoReverse": {
+      "versionName": "1.0.5",
+      "versionCode": 6
+    }
+  }
+}

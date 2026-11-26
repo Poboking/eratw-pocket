@@ -170,6 +170,83 @@ class GameAssetInstallerDeferTest {
         assertEquals(0, result.copiedFiles)
     }
 
+    @Test
+    fun `让位档补拷缺文件时摘要版本头不回拨`() {
+        // 场景 = UpdatePolicy.effectiveDiskDataVersion KDoc 的在册可达中间态：数据包应用段
+        // 先落摘要（第 24 版）、data-version.txt 改名失败只记日志 ⇒ marker 读数 0，让位判定
+        // 只靠 digest 版本撑着。此时让位档冷启补拷一条被手删的 CSV，摘要并表落盘 ——
+        // 版本头若随本轮拨回随包版（22），下一班 max(marker, digest) 塌回 22，让位判定
+        // 恒不成立 ⇒ 首启档长度判据把整棵数据包语料打回 APK 旧版（真机约 919 MiB），
+        // 「下载完更新、重启后还是旧版」以同形复发。digest 半边必须与 marker 半边
+        // （UpdateManager.advanceDataVersion 只升不降）同一纪律。
+        val newCsv = bytes(200, seed = 4)
+        val missing = bytes(120, seed = 6)
+        asset("CSV/a.csv", bytes(100, seed = 3))
+        asset("CSV/b.csv", missing)
+        onDisk("CSV/a.csv", newCsv)
+        onDisk(
+            "update/data-digest.txt",
+            GameAssetInstaller
+                .encodeDataDigest(
+                    24L,
+                    mapOf(
+                        "CSV/a.csv" to DataDigestEntry(newCsv.size.toLong(), sha256(newCsv)),
+                        // 第 24 版的 b.csv 内容与 APK 随包版不同；补拷后条目应更新为实际落盘字节。
+                        "CSV/b.csv" to DataDigestEntry(missing.size.toLong(), sha256(bytes(120, seed = 99))),
+                    ),
+                ).toByteArray(),
+        )
+
+        val result = install(diskDataVersion = 24L)
+
+        assertEquals("让位档只补缺的那一条", 1, result.copiedFiles)
+        assertArrayEquals("在位的新版语料不许被覆盖", newCsv, File(gameRoot, "CSV/a.csv").readBytes())
+        assertArrayEquals("缺的文件照常补拷", missing, File(gameRoot, "CSV/b.csv").readBytes())
+        val digest = GameAssetInstaller.readDataDigest(gameRoot)
+        assertTrue("补拷后摘要必须仍在", digest != null)
+        assertEquals(
+            "版本头不许从盘上 24 回拨到随包 22",
+            24L,
+            digest!!.version,
+        )
+        assertEquals("旧条目按并表继承", newCsv.size.toLong(), digest.entries["CSV/a.csv"]!!.bytes)
+        assertEquals("旧条目摘要按并表继承", sha256(newCsv), digest.entries["CSV/a.csv"]!!.sha256Hex)
+        assertEquals("补拷条目更新为实际落盘字节", missing.size.toLong(), digest.entries["CSV/b.csv"]!!.bytes)
+        assertEquals("补拷条目摘要为实际落盘字节", sha256(missing), digest.entries["CSV/b.csv"]!!.sha256Hex)
+    }
+
+    @Test
+    fun `非让位档的摘要版本头口径逐字不变`() {
+        // 对照面钉修复的边界：diskDataVersion 缺省 -1（老调用点 / 不参与让位）时，
+        // 版本头仍按随包版写 —— 本轮确实把语料换成了随包内容，版本头与盘上条目一致。
+        // 撤修复不得影响这一条，加宽修复也不得影响这一条。
+        val oldCsv = bytes(100, seed = 3)
+        val onDiskCsv = bytes(200, seed = 4)
+        asset("CSV/a.csv", oldCsv)
+        asset("CSV/b.csv", bytes(120, seed = 6))
+        onDisk("CSV/a.csv", onDiskCsv)
+        onDisk(
+            "update/data-digest.txt",
+            GameAssetInstaller
+                .encodeDataDigest(
+                    24L,
+                    mapOf(
+                        "CSV/a.csv" to DataDigestEntry(onDiskCsv.size.toLong(), sha256(onDiskCsv)),
+                        "CSV/b.csv" to DataDigestEntry(120L, sha256(bytes(120, seed = 99))),
+                    ),
+                ).toByteArray(),
+        )
+
+        val result = install()
+
+        assertTrue("非让位档按长度判据重拷", result.copiedFiles >= 1)
+        val digest = GameAssetInstaller.readDataDigest(gameRoot)
+        assertTrue(digest != null)
+        assertEquals(22L, digest!!.version)
+        assertEquals("本轮重拷的条目 = 实际落盘内容", oldCsv.size.toLong(), digest.entries["CSV/a.csv"]!!.bytes)
+        assertEquals(sha256(oldCsv), digest.entries["CSV/a.csv"]!!.sha256Hex)
+    }
+
     private fun install(
         diskDataVersion: Long = -1L,
         forceReplace: Boolean = false,

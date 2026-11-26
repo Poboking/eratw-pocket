@@ -21,9 +21,9 @@ fun interface InfiniteLoopPromptUi {
 /**
  * 把 core 的同步告警通道（`VmHost.askInfiniteLoop`）接到 Android UI 上。
  *
- * 原版在 `Process.cs:487-512` 于**语句边界**同步弹框：视图可用时
+ * 原版在官方 1.824 `Process.cs:493-512`（skia `:481-515`）于**语句边界**同步弹框：视图可用时
  * `Dialog.ShowPrompt`（Yes = 强制结束，No = 继续），不可用时什么都不做
- * （skia `Process.cs:478-488` 三条分支 ↦ [InfiniteLoopAnswer]）。
+ * （skia `Process.cs:497-513` 三条分支 ↦ [InfiniteLoopAnswer]）。
  * 本类只做「阻塞 VM 线程直到 UI 作答」这一件事，**不碰 Android API**：
  * UI 线程投递与 Activity 生命周期守卫都在宿主侧（`GameHost`）。
  *

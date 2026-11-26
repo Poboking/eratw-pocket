@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -39,13 +38,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
+import com.eratw.port.android.ui.design.ShellShape
+import com.eratw.port.android.ui.design.ShellType
 
 /**
  * 弹窗独立窗口的 edge-to-edge 装配（每次组合执行一次，[SideEffect] 幂等）。
@@ -191,9 +192,9 @@ internal fun EratwDialogCard(
                     .widthIn(max = maxWidth)
                     .heightIn(max = maxHeight)
                     .then(if (scrollable) Modifier.verticalScroll(rememberScrollState()) else Modifier)
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(ShellShape.Card)
                     .background(EratwInk.raised())
-                    .border(1.dp, EratwInk.hairline(), RoundedCornerShape(14.dp))
+                    .border(1.dp, EratwInk.hairline(), ShellShape.Card)
                     .padding(20.dp),
                 content = content,
             )
@@ -201,7 +202,14 @@ internal fun EratwDialogCard(
     }
 }
 
-/** 弹窗正文的四档语气：字号、行距、颜色、字重一起定，免得同一段话两处差 1sp。 */
+/**
+ * 弹窗正文的四档语气：这一档只回答「这段文字在卡里算第几层」，字号、行距、字重一律回到
+ * [ShellType] 的语义档 —— 语气与尺码不是两件事，各定一次就会在同屏里差出 1sp。
+ *
+ * 分层：`HEADLINE` = 卡标题（[ShellType.Title]）、`BODY`/`NOTE` = 正文（[ShellType.Body]，
+ * 后者只降字色）、`MUTED` = 注脚（[ShellType.Label]）。**降层级靠字色，不靠缩字号** ——
+ * 同一段话缩到 11sp 只是变小，不会变「次要」。
+ */
 internal enum class EratwTextTone {
     /** 卡内标题，或玩家必须先看到的那一行。 */
     HEADLINE,
@@ -209,25 +217,18 @@ internal enum class EratwTextTone {
     /** 正文。 */
     BODY,
 
-    /** 解释性次要句。 */
+    /** 解释性次要句（同字号，只降字色）。 */
     NOTE,
 
     /** 注脚、文件名、时间戳这类「在但不抢注意力」的行。 */
     MUTED,
     ;
 
-    val fontSize: Int
+    val style: TextStyle
         get() = when (this) {
-            HEADLINE -> 16
-            BODY, NOTE -> 13
-            MUTED -> 11
-        }
-
-    val lineHeight: Int
-        get() = when (this) {
-            HEADLINE -> 22
-            BODY, NOTE -> 20
-            MUTED -> 16
+            HEADLINE -> ShellType.Title
+            BODY, NOTE -> ShellType.Body
+            MUTED -> ShellType.Label
         }
 
     val color: Color
@@ -236,10 +237,6 @@ internal enum class EratwTextTone {
             NOTE -> EratwInk.textDim()
             MUTED -> EratwInk.textMuted()
         }
-
-    /** 只有标题档加粗：正文加粗等于满屏都是重点。 */
-    val weight: FontWeight
-        get() = if (this == HEADLINE) FontWeight.Medium else FontWeight.Normal
 }
 
 /** 四档语气之一；[colorOverride] 只给语义色（危险 / 警告）留口子，字号行距仍由 [tone] 定。 */
@@ -253,9 +250,7 @@ internal fun EratwText(
     Text(
         text = text,
         color = colorOverride ?: tone.color,
-        fontSize = tone.fontSize.sp,
-        lineHeight = tone.lineHeight.sp,
-        fontWeight = tone.weight,
+        style = tone.style,
         modifier = modifier,
     )
 }
@@ -266,9 +261,8 @@ internal fun EratwSubhead(text: String, modifier: Modifier = Modifier) {
     Text(
         text = text,
         color = EratwInk.textDim(),
-        fontSize = 12.sp,
-        lineHeight = 16.sp,
-        fontWeight = FontWeight.Medium,
+        // 说明句那一档只把字重抬到 Medium：小节名要压得住下面的正文，但不该长成标题。
+        style = ShellType.Caption.copy(fontWeight = FontWeight.Medium),
         modifier = modifier,
     )
 }
@@ -292,16 +286,19 @@ internal fun EratwFilledButton(
         onClick = onClick,
         enabled = enabled,
         modifier = modifier.height(40.dp),
-        shape = RoundedCornerShape(8.dp),
+        shape = ShellShape.Chip,
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
         colors = ButtonDefaults.buttonColors(
             containerColor = container,
             contentColor = EratwInk.text(),
         ),
     ) {
-        Text(text = text, fontSize = 14.sp)
+        Text(text = text, style = ShellType.Body)
     }
 }
+
+/** 次按钮的点色：危险动作要字与描边一起换，只换字色会让描边留在中性灰里。 */
+internal data class EratwGhostTone(val content: Color, val border: Color)
 
 /** 次按钮：描边不填底，与主按钮同宽同高，成对出现时读得出主次。 */
 @Composable
@@ -310,16 +307,18 @@ internal fun EratwGhostButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    tone: EratwGhostTone? = null,
 ) {
+    val border = tone?.border ?: EratwInk.border()
     OutlinedButton(
         onClick = onClick,
         enabled = enabled,
         modifier = modifier.height(40.dp),
-        shape = RoundedCornerShape(8.dp),
+        shape = ShellShape.Chip,
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
-        border = BorderStroke(1.dp, EratwInk.border()),
+        border = BorderStroke(1.dp, if (enabled) border else border.copy(alpha = 0.35f)),
     ) {
-        Text(text = text, color = EratwInk.text(), fontSize = 14.sp)
+        Text(text = text, color = tone?.content ?: EratwInk.text(), style = ShellType.Body)
     }
 }
 
@@ -335,7 +334,7 @@ internal fun EratwQuietButton(
         modifier = modifier.fillMaxWidth(),
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
     ) {
-        Text(text = text, color = EratwInk.textMuted(), fontSize = 13.sp)
+        Text(text = text, color = EratwInk.textMuted(), style = ShellType.Tab)
     }
 }
 
@@ -348,3 +347,4 @@ internal fun EratwButtonRow(content: @Composable RowScope.() -> Unit) {
         content = content,
     )
 }
+

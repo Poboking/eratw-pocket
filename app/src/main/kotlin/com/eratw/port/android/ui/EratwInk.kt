@@ -54,6 +54,15 @@ object EratwInk {
     /** 注脚与标签（11sp 那一档）。 */
     fun textMutedArgb(): Int = 0xFF8A8A8A.toInt()
 
+    // ---- 壳层图标（键盘 / 螺旋 / 方向锁三枚同源）----
+    // 与文字同值但职责不同：这三个值只在「描线图标」上出现，改字色不该顺带改图标。
+
+    /** 图标静息描线（与 [textMutedArgb] 同值，但语义是「功能没开」）。 */
+    fun iconIdleArgb(): Int = 0xFF8A8A8A.toInt()
+
+    /** 图标激活（功能展开/锁定）：与游戏黑底同调的浅绿。 */
+    fun iconActiveArgb(): Int = 0xFFB9D3B9.toInt()
+
     // ---- 语义色 ----
 
     /** 主操作绿（按钮底、关于档标题、开关轨道）。 */
@@ -124,6 +133,9 @@ object EratwInk {
     /** 高亮与主行动（关键词、当前章节、末页主按钮）：`C_YELLOW` #FFFF00。 */
     fun consoleHighlightArgb(): Int = 0xFFFFFF00.toInt()
 
+    /** 压在黄底上的字（章节页签反白、末页主按钮）：黄底上只能写黑字，写银灰会发糊。 */
+    fun consoleOnHighlightArgb(): Int = 0xFF000000.toInt()
+
     /** 标题与柔和高亮：`C_CREAM` #FFFFCC。 */
     fun consoleCreamArgb(): Int = 0xFFFFFFCC.toInt()
 
@@ -132,6 +144,110 @@ object EratwInk {
 
     /** CRT 扫描线（盖在像素面板最上层的极淡横线，alpha 约 7%）。 */
     fun consoleScanlineArgb(): Int = 0x12FFFFFF
+
+    // ---- 像素启动屏（boot splash 自有一档暖橄榄色板）----
+    // 首启/加载屏不是壳层的一页，而是一块「像素游戏开机画面」：暖灰标题、橄榄进度格、
+    // 纸色注脚。它允许有自己的色板（表达力：这是品牌第一眼），但**仍只在这一处定义** ——
+    // 以前这些值散在 ShellUi 的十个 `Color(0xFF…)` 里，改一次开机画面要翻半个文件。
+
+    /** 开机标题（暖灰纸色）。 */
+    fun bootTitleArgb(): Int = 0xFFD8D4BC.toInt()
+
+    /** 开机副标题（暗橄榄）。 */
+    fun bootSubtitleArgb(): Int = 0xFF8C8C6E.toInt()
+
+    /** 进度格外框。 */
+    fun bootFrameArgb(): Int = 0xFF3A3A2E.toInt()
+
+    /** 进度格已点亮。 */
+    fun bootCellOnArgb(): Int = 0xFFA8C88E.toInt()
+
+    /** 进度格未点亮。 */
+    fun bootCellOffArgb(): Int = 0xFF1E1E18.toInt()
+
+    /** 百分比读数。 */
+    fun bootPercentArgb(): Int = 0xFFB8C8A0.toInt()
+
+    /** 当前阶段名。 */
+    fun bootStageArgb(): Int = 0xFF7A7A62.toInt()
+
+    /** 底部注脚（免费声明这类最弱的一行）。 */
+    fun bootNoticeArgb(): Int = 0xFF6A6A55.toInt()
+
+    // ---- 现代风启动屏（与像素屏同职责、不同皮肤）----
+    // 两套开机画面并存是玩家可选项（`setting.json` 的加载风格）。这一组只描述「深色渐变 +
+    // 细进度条」那一套；值只在这里出现一次。
+
+    /** 现代屏底色（近黑偏绿的深色）。 */
+    fun modernBootBgArgb(): Int = 0xFF060807.toInt()
+
+    /** 现代屏标题。 */
+    fun modernBootTitleArgb(): Int = 0xFFE7E3D6.toInt()
+
+    /** 现代屏副标题。 */
+    fun modernBootSubtitleArgb(): Int = 0xFF7C887C.toInt()
+
+    /** 进度槽底。 */
+    fun modernBootTrackArgb(): Int = 0xFF1B201C.toInt()
+
+    /** 进度填充的起止色。 */
+    fun modernBootFillStartArgb(): Int = 0xFF6F9E70.toInt()
+
+    fun modernBootFillEndArgb(): Int = 0xFFB7D8A9.toInt()
+
+    /** 未知总量时来回扫的光带。 */
+    fun modernBootSweepArgb(): Int = 0xFF9CC79C.toInt()
+
+    /** 百分比读数。 */
+    fun modernBootPercentArgb(): Int = 0xFF9DB79D.toInt()
+
+    /** 阶段名与注脚（同一档最弱的暗绿灰）。 */
+    fun modernBootNoteArgb(): Int = 0xFF6A736A.toInt()
+
+    // ---- 失败屏（终局）----
+
+    /** 整屏遮罩：失败屏把下面的一切压到几乎看不见（比 [scrimArgb] 更实）。 */
+    fun scrimOpaqueArgb(): Int = 0xF2000000.toInt()
+
+    /** 「结束应用」的暖暗底：与危险同类，但**不做成警示红** —— 它是离开，不是又一次失败。 */
+    fun exitButtonArgb(): Int = 0xFF4A3535.toInt()
+
+    // ---- 压在游戏画面上的半透明条 ----
+    // 顶栏与输入条浮在控制台之上，必须透出下面的画面（否则一拉输入栏就把正文盖死），
+    // 所以底色带 ~70% alpha。这类「半透明面板 + 比它亮一档的分隔线」以前是散写值。
+
+    /** 压在画面上的半透明面板底（70% 不透明）。 */
+    fun panelOverlayArgb(): Int = 0xB31B1B1B.toInt()
+
+    /** 半透明面板上的分隔线（比 [borderArgb] 亮一档，才透得过下面的画面）。 */
+    fun overlayRuleArgb(): Int = 0xFF6E6E6E.toInt()
+
+    // ---- 右栏动作按钮 ----
+    // 右栏压在游戏画面上，按钮底必须半透明（下面还有立绘/正文）；底色是一档暗橄榄绿，
+    // 与主操作绿同族、但压暗到不会跟画面抢眼。
+
+    /** 右栏按钮底（不透明基准值）。 */
+    fun railButtonArgb(): Int = 0xFF2A3A2A.toInt()
+
+    /**
+     * 右栏按钮底的不透明度（禁用态）。
+     *
+     * 常态不透明度由 `ShellUi` 的 `RAIL_BASE_ALPHA = 0xE6` 定（那一档是**按钮底压在画面上**的
+     * 统一口径，色块按钮与普通按钮共用同一函数 `railContainerArgb`），这里只补禁用档，
+     * 免得「禁用 = 直接对半砍」在壳层再长出第二种写法。
+     */
+    const val RAIL_BUTTON_DISABLED_ALPHA: Float = 0.40f
+
+    /** 中亮绿：右栏里「已选中 / 主行动」的字色，比 [accentArgb] 略深（压在画面上不刺眼）。 */
+    fun accentMidArgb(): Int = 0xFF7FAF7F.toInt()
+
+    /** 计数的半透明底（右栏徽章这类「小片底 + 浅字」）。 */
+    fun badgeFillArgb(): Int = 0xB3B9D3B9.toInt()
+
+    /** 像素屏底色（比纯黑亮一档，好让像素网格看得出层次）。 */
+    fun bootBgArgb(): Int = 0xFF0A0A0A.toInt()
+
+
 
     // ---- 遮罩 ----
 
@@ -160,6 +276,10 @@ object EratwInk {
     fun textDim(): Color = Color(textDimArgb())
 
     fun textMuted(): Color = Color(textMutedArgb())
+
+    fun iconIdle(): Color = Color(iconIdleArgb())
+
+    fun iconActive(): Color = Color(iconActiveArgb())
 
     fun accent(): Color = Color(accentArgb())
 
@@ -199,11 +319,63 @@ object EratwInk {
 
     fun consoleHighlight(): Color = Color(consoleHighlightArgb())
 
+    fun consoleOnHighlight(): Color = Color(consoleOnHighlightArgb())
+
     fun consoleCream(): Color = Color(consoleCreamArgb())
 
     fun consoleLink(): Color = Color(consoleLinkArgb())
 
     fun consoleScanline(): Color = Color(consoleScanlineArgb())
+
+    fun bootTitle(): Color = Color(bootTitleArgb())
+
+    fun bootSubtitle(): Color = Color(bootSubtitleArgb())
+
+    fun bootFrame(): Color = Color(bootFrameArgb())
+
+    fun bootCellOn(): Color = Color(bootCellOnArgb())
+
+    fun bootCellOff(): Color = Color(bootCellOffArgb())
+
+    fun bootPercent(): Color = Color(bootPercentArgb())
+
+    fun bootStage(): Color = Color(bootStageArgb())
+
+    fun bootNotice(): Color = Color(bootNoticeArgb())
+
+    fun modernBootBg(): Color = Color(modernBootBgArgb())
+
+    fun modernBootTitle(): Color = Color(modernBootTitleArgb())
+
+    fun modernBootSubtitle(): Color = Color(modernBootSubtitleArgb())
+
+    fun modernBootTrack(): Color = Color(modernBootTrackArgb())
+
+    fun modernBootFillStart(): Color = Color(modernBootFillStartArgb())
+
+    fun modernBootFillEnd(): Color = Color(modernBootFillEndArgb())
+
+    fun modernBootSweep(): Color = Color(modernBootSweepArgb())
+
+    fun modernBootPercent(): Color = Color(modernBootPercentArgb())
+
+    fun modernBootNote(): Color = Color(modernBootNoteArgb())
+
+    fun scrimOpaque(): Color = Color(scrimOpaqueArgb())
+
+    fun exitButton(): Color = Color(exitButtonArgb())
+
+    fun panelOverlay(): Color = Color(panelOverlayArgb())
+
+    fun overlayRule(): Color = Color(overlayRuleArgb())
+
+    fun railButton(): Color = Color(railButtonArgb())
+
+    fun accentMid(): Color = Color(accentMidArgb())
+
+    fun badgeFill(): Color = Color(badgeFillArgb())
+
+    fun bootBg(): Color = Color(bootBgArgb())
 
     fun scrim(): Color = Color(scrimArgb())
 

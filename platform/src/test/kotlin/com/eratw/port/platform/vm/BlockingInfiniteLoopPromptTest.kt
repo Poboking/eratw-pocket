@@ -12,7 +12,7 @@ import org.junit.Test
 /**
  * ENGFIX-4：死循环告警同步桥的行为钉（与 [com.eratw.port.platform.save.BlockingSaveMigrationPromptTest] 同一套判据）。
  *
- * 判据来自原版 skia `Process.cs:478-488`：有 UI 时阻塞到作答；
+ * 判据来自原版 skia `Process.cs:497-513`：有 UI 时阻塞到作答；
  * 作答 Yes = [InfiniteLoopAnswer.Exit]（带同一语言档）、No = [InfiniteLoopAnswer.Continue]；
  * 投递失败 / 线程中断 / 无 UI 一律回落 [InfiniteLoopAnswer.NoUi]，
  * 且 VM 线程不得被永久挂住、重复作答只认第一次。

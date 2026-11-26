@@ -1,0 +1,82 @@
+# mod-api ABI 兼容表（ADR-013 D2 闸 2 的信息面）
+#
+# 用途：ModDexGate 判定「包编译期 surface 比当前引擎 API 新」而拒绝装载时，本表把拒绝文案补成
+# 「（compat 表登记该 surface 自引擎 vN 起提供）」（ModDexGate.kt:169-173 的 rejectReason；
+# 文案格式 COMPAT_HINT_FORMAT 在 ModDexGate.kt:44）。
+#
+# 本表**不是判据**：装载判据只有一条 —— compiledSurface <= engineApiVersion 放行、否则拒绝
+# （ModDexGate.kt:102-116）。表为空 / 缺行 / 有坏行都不改变判定结论，只少一句文案（ADR-013 D2：
+# 别让表变成第二真源）。
+#
+# 列格式：<surface><TAB><minEngineApi>，两句都是非负十进制整数；空行跳过；`#` 起始行是注释；
+# 其余不合格式的行由 ModDexGate.loadCompatTable 丢弃并计入 malformedLineCount（ModDexGate.kt:118-143）。
+#
+# 登记口径 —— 宁缺勿猜，只写有证据的行：
+# 证据真源 = ModApi.kt 的版本表 KDoc（mod-api/src/main/kotlin/com/eratw/port/modapi/ModApi.kt:35-153）。
+# 该表逐个版本写明「`N` = 在 v(N-1) 之上新增/变更的作者可见面」，即「surface N 这层作者面契约是
+# 引擎 API vN 引进的、从 vN 起可用」⇒ minEngineApi(surface N) = N（恒等映射）。每行上方注释给出
+# 该版本在 ModApi.kt 的 KDoc 行号，可逐行反查。版本号递增纪律见 ModApi.kt:27-33：只增不减，
+# 任何作者可见 API 面新增/变更才 +1，纯内部修复不 +1（所以不存在「surface N 已在更早引擎上可用」
+# 的已发布情形；恒等映射是本仓能证实的最小结论，不补更低值）。
+#
+# 刻意**不登记**的行（留白是判决，不是遗漏）：
+# - surface 0：ModApi.kt 没有 v0 的 KDoc 条目（无证据）；且 surface 0 对任何 engineApiVersion >= 0
+#   都不满足 compiled > engine，该行永远查不到，写了也是空话。pack-mod 允许 --surface 0 见
+#   tools/modgen/src/main/kotlin/com/eratw/port/modgen/PackModMeta.kt:104，那是「取值从 0 起」
+#   的取值域定义，不是兼容信息。
+# - surface > 21：当前引擎 API 最高 v21（ModApi.kt:157），没有更新的已发布版本可引；新 surface
+#   只能由未来引擎发布时出现，届时补行。
+#
+# 维护：bump ModApi.VERSION 时同一提交在本表补一行「<新版本号><TAB><新版本号>」并注明 KDoc 行号。
+# ModCompatTableTest 断言「表行恰为 1..MOD_ENGINE_API_VERSION 且逐行恒等」，漏补即红（这条测试
+# 就是防止表悄悄落后于引擎）。
+#
+# 读侧：app/src/main/kotlin/com/eratw/port/android/ModCompatTable.kt（缺资产 / 读失败 ⇒ 空表不抛），
+# 注入点：ModCodeCarrierProvider 构造参数 abi（ModAbiReadout.compat，main thread 取一次）
+#   → ModDexLoader.load(compat = ...)。逐包不再读资产（ModCodeCarrierProvider.kt:149-155）。
+#
+# surface	minEngineApi
+#
+# v1 = 首个冻结的作者面契约：全部 ModContext 属性 + EraMod 六个生命周期回调（ModApi.kt:42-44）
+1	1
+# v2 = per-mod 设置面 [ModContext.settings] + 跨 mod Kotlin 服务注册面（ModApi.kt:37-40）
+2	2
+# v3 = 作者面属性 ModContext.resources（按包只读资源字节存储面，ModApi.kt:46-48）
+3	3
+# v4 = EventApi.trigger「mod 主动触发事件」作者面（ModApi.kt:50-52）
+4	4
+# v5 = HookOptions.continueOnHandlerFailure「处理器失败后撤销该槽」作者面（ModApi.kt:54-56）
+5	5
+# v6 = EventApi.trigger 的调用位置语义放宽：run 进行中调用改为延迟 FIFO 派发（ModApi.kt:58-61）
+6	6
+# v7 = 浮层图片元素作者面 ModUiElement / modUiImage（ModApi.kt:63-65）
+7	7
+# v8 = EventApi.trigger 拒绝面再收窄：事件派发过程中调用并入同一条延迟队列（ModApi.kt:67-70）
+8	8
+# v9 = UiApi.registerImage 浮层图片元素声明面（ModApi.kt:71-74）
+9	9
+# v10 = StringsApi / ModContext.strings「mod 自带三语文案」作者面（ModApi.kt:76-79）
+10	10
+# v11 = AudioApi / ModContext.audio「mod 自带音频」作者面（ModApi.kt:81-84）
+11	11
+# v12 = EraMod.requires 依赖声明作者面（装载期稳定拓扑排序，ModApi.kt:86-90）
+12	12
+# v13 = TimingApi.record / measure 耗时归因读写面（与引擎测量点同一张表，ModApi.kt:92-96）
+13	13
+# v14 = EventApi.exists / knownEventKeys 事件名只读查询面（ModApi.kt:98-102）
+14	14
+# v15 = ModDX 创作体感三面：EraMod.onSettingsChanged、GameStateApi.hasIntVar/hasStrVar、
+#       UiApi.registerInteraction 的 visible 谓词（ModApi.kt:104-111）
+15	15
+# v16 = HookApi.registrations / HookRegistration 钩子只读查询面（ModApi.kt:113-118）
+16	16
+# v17 = EraMod.onPackageUpgrade 存档升级回调作者面（ModApi.kt:120-123）
+17	17
+# v18 = modDeclarations 新增 minApi 形参（声明最低引擎 API，ModApi.kt:125-128）
+18	18
+# v19 = ModManifest.declarationPositions 声明位置表作者面（ModApi.kt:130-135）
+19	19
+# v20 = GameStateApi.setIntVar / setStrVar 受控写面 + ModManifest.writeGrants（ModApi.kt:137-144）
+20	20
+# v21 = HookApi.knownFunctionKeys hook 可挂函数键只读查询面 + HookApi.register 拼错闸（ModApi.kt:146-153）
+21	21

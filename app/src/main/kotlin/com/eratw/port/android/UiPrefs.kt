@@ -114,6 +114,18 @@ object UiPrefs {
     const val DEFAULT_ECHO_INPUT: Boolean = false
 
     /**
+     * 「指令后等一次按键」缺省**开** = 原版口径：指令打出来的口上停在屏上，点一下才回指令菜单
+     * （`Process.cs:2413-2422` 无条件置位、`:2449-2455` 消费 `setWait()`；`RESULT == 0` 走
+     * `endCallComXX` 另一支，不经 `SOURCE_CHECK`，故不等待）。
+     *
+     * 2026-11-02 曾收窄成「只清掃被拒」（移动每走一步 `RETURN 1`，等待落在每次移动之后）；
+     * 2026-11-22 玩家反馈「口上根本看不见、还得往上翻阅」—— 那行提示被下个回合的整帧重绘
+     * 刷掉 —— 于是全量恢复原版，收窄降级成本开关的一档。移植侧策略开关，原版没有对应配置项，
+     * 故只放壳层偏好、不进 `emuera.config`。
+     */
+    const val DEFAULT_COMMAND_END_WAIT: Boolean = true
+
+    /**
      * 自动更新缺省**开**。真正的开关不在这里：出包没带 `-PeratwUpdateMirrors` 时包里
      * 一条源都没有，通道整体不跑（见 `UpdateManager.channelEnabled`），所以这一项缺省开
      * 不会让开发包、CI 包多出任何一次网络请求。
@@ -149,8 +161,37 @@ object UiPrefs {
      * `com.eratw.port.core.host.BusyIndicator.MIN_ELAPSED_MS` 与 `BusyIndicatorBand`。
      */
     const val DEFAULT_BUSY_INDICATOR: Boolean = true
-    /** RT2 Mod 运行时总闸缺省：关（装配链一次都不进，行为与无 mod 支持逐字节等价）。 */
-    const val DEFAULT_MOD_RUNTIME: Boolean = false
+
+    /**
+     * RT2 Mod 运行时总闸缺省：**开**（2026-11-17 主人裁定「让 Mod 真正可用」）。
+     *
+     * 开态装配链会读 `mods/rt2/` 的 manifest 与 `.erbm` 容器、装载随包内置 Mod，并在存档时
+     * 写同名 `.rt2` 侧车；对没有安装任何 Mod 的玩家，装配链在「无容器」旁路处原样返回，
+     * 游戏内容逐字节不变。关态是完整的旁路开关（`ModRuntimeHost` 构造次数 0、磁盘不碰），
+     * 设置页「操作与显示」卡里的 `modRuntime` 行可随时关回。
+     */
+    const val DEFAULT_MOD_RUNTIME: Boolean = true
+
+    /**
+     * 路 B dex 装载总闸缺省：**关**（ADR-013 D5 组长裁定；与 [DEFAULT_MOD_RUNTIME] 刻意不同）。
+     *
+     * 与 `.erbm` 容器不同，dex 是**可执行的第三方机器码**：开态才会扫 `mods/rt2/<pkg>/code/` 并
+     * 构造 DexClassLoader，一开就是直接执行任意代码的高风险面；缺省关 = 老玩家与没装 dex 包的
+     * 玩家完全不进这条链（`code/` 不扫、DexClassLoader 构造 0 次、磁盘不碰），游戏内容逐字节不变。
+     *
+     * 本片（S2）**不接 UI**：只提供判定函数与偏好键（无设置行、无文案表条目），设置行/文案由 S8 收口。
+     */
+    const val DEFAULT_MOD_DEX_LOADER: Boolean = false
+
+    /**
+     * 判词 9（PDIAG1）「玩家授权诊断通道」的缺省：**关**。
+     *
+     * 与 DEFAULT_MOD_DEX_LOADER 同族的高风险面口径：这条通道一旦被外部够到，等于把本机运行
+     * 现场的只读快照交给「能往 files/eratw/dev/cmd.txt 写一行字」的那只手。缺省关 = release 包
+     * 连轮询线程都不建；只有玩家在设置页「Mod 与素材」档显式二次确认之后才放开，且只放开
+     * 只读/观测命令，写侧与改档命令仍要 debug 包（判据在 DevToolsHost 的命令分类闸）。
+     */
+    const val DEFAULT_PLAYER_DIAGNOSTICS: Boolean = false
 
     /**
      * 画面左右留白居中缺省：**关**（0 = 满宽，全部读数与本功能加入前逐值相同）。
@@ -183,15 +224,45 @@ object UiPrefs {
     private const val KEY_DISABLE_BAD_APPLE = "disable_bad_apple"
     /** 长页忙碌提示开关：开 = 长页最下面一行画「少女祈祷中」，关 = 不画。 */
     private const val KEY_BUSY_INDICATOR = "busy_indicator"
-    /** RT2 Mod 运行时总闸（开发者面，缺省关）：开 = 会话装配走完整 mod 链。 */
+    /** RT2 Mod 运行时总闸（玩家面，缺省开）：开 = 会话装配走完整 mod 链；关 = 完全不进。 */
     private const val KEY_MOD_RUNTIME = "mod_runtime"
+    /**
+     * 路 B dex 装载总闸（玩家面，缺省 [DEFAULT_MOD_DEX_LOADER] = 关）：开 = 会话装配链允许扫
+     * `code/` 并装载 dex；关 = 完全不进。键名独立于 `mod_runtime`（两个闸分开拨）。
+     */
+    const val KEY_MOD_DEX_LOADER: String = "mod.dex.loader"
     /** 列数守护开关：开 = 屏宽铺不下选定列数时压小字号保地图；关 = 字号优先、地图可能折行。 */
     private const val KEY_SCREEN_FIT = "screen_fit"
     private const val KEY_LIVE_REFLOW = "live_reflow"
     /** 键入回显复刻（ECHO-INPUT）开关：玩家侧缺省 [DEFAULT_ECHO_INPUT]（关）。 */
     private const val KEY_ECHO_INPUT = "echo_input"
+    /** 指令收尾按键等待（COMEND-WAIT）开关：缺省 [DEFAULT_COMMAND_END_WAIT]（开 = 原版）。 */
+    private const val KEY_COMMAND_END_WAIT = "command_end_wait"
     private const val KEY_LOADING_STYLE = "loading_style"
     private const val KEY_INPUT_KNOB = "input_knob"
+
+    /**
+     * 逐帧诊断记录开关（玩家侧取证通道，缺省关）。
+     *
+     * 开 = 游戏画面每帧往环形缓冲记一条版面事实（`FrameTrace`），玩家点「分享诊断」
+     * 时整段进报告；关 = `onDraw` 只多一次 volatile 读，不建对象、不写盘。
+     * 与 DevTools 的 `frames on` 共用同一个环形缓冲与同一个开关。
+     */
+    private const val KEY_FRAME_TRACE = "frame_trace"
+
+    /**
+     * 玩家授权诊断通道开关（判词 9 PDIAG1）：开 = release 包也允许起 DevTools 轮询线程
+     * （只读命令档）。与 KEY_FRAME_TRACE 并列：两条都是玩家侧取证通道，缺省都关。
+     */
+    private const val KEY_PLAYER_DIAGNOSTICS = "player_diagnostics"
+
+    /**
+     * 拨动授权开关的时刻（System.currentTimeMillis）：判词 9 §2.4 的取证面，开与关都刷新。
+     *
+     * 只落这一枚整数 —— 不存身份、不在 SharedPreferences 之外再起常驻状态。日志与本机诊断
+     * 报告各出一行「谁在什么时候打开过」，读数永不自动上传。
+     */
+    private const val KEY_PLAYER_DIAG_AUTHORED_AT = "player_diag_authored_at"
 
     /**
      * 画面左右留白居中档位（每侧留白 = 物理内容宽 × 比例，0 = 关）。
@@ -615,6 +686,23 @@ object UiPrefs {
     }
 
     /**
+     * 逐帧诊断记录开关（缺省关）。玩家侧取证通道：开了之后「分享诊断」里多一段逐帧版面事实。
+     *
+     * 只影响诊断记录，不参与任何游戏语义 —— 关态与未加本功能时逐值相同。
+     */
+    fun frameTraceEnabled(context: Context): Boolean = readFrameTrace(prefs(context))
+
+    /** 写逐帧诊断开关（设置页随改随存；生效点见 `FrameTraceChannel` 的 attach/detach）。 */
+    fun setFrameTraceEnabled(context: Context, enabled: Boolean) =
+        writeFrameTrace(prefs(context), enabled)
+
+    internal fun readFrameTrace(sp: SharedPreferences): Boolean = sp.getBoolean(KEY_FRAME_TRACE, false)
+
+    internal fun writeFrameTrace(sp: SharedPreferences, enabled: Boolean) {
+        sp.edit().putBoolean(KEY_FRAME_TRACE, enabled).apply()
+    }
+
+    /**
      * 画面左右留白居中档位（每侧留白 = 物理内容宽 × 比例）：缺省 [DEFAULT_CONTENT_MARGIN_FRACTION]。
      *
      * 圆屏/圆角屏的壳层显示适配：两侧留黑边、内容居中，列数守护在去留白宽上继续保列数
@@ -663,6 +751,27 @@ object UiPrefs {
 
     internal fun writeEchoInput(sp: SharedPreferences, enabled: Boolean) {
         sp.edit().putBoolean(KEY_ECHO_INPUT, enabled).apply()
+    }
+
+    /**
+     * 「指令后等一次按键」（COMEND-WAIT）开关，缺省 [DEFAULT_COMMAND_END_WAIT]（开 = 原版）。
+     *
+     * true = 每条返回非 0 的指令回菜单前等一次回车（`Process.cs:2417` / `:2449-2455`）；
+     * false = 整条链都不等（2026-11-02 那版「只清掃被拒」的动机已由这一档整体表达）。
+     * 装配期读数：与 ECHO-INPUT 同口径，**下一次会话装配**才吃到（设置页随改随存）。
+     */
+    fun commandEndWait(context: Context): Boolean = readCommandEndWait(prefs(context))
+
+    /** 写 COMEND-WAIT 开关（下一次会话装配生效）。 */
+    fun setCommandEndWait(context: Context, enabled: Boolean) =
+        writeCommandEndWait(prefs(context), enabled)
+
+    // 与 ECHO-INPUT 同款的 internal read/write 层：纯 JVM 可注入测试桩，公开函数只做接线。
+    internal fun readCommandEndWait(sp: SharedPreferences): Boolean =
+        sp.getBoolean(KEY_COMMAND_END_WAIT, DEFAULT_COMMAND_END_WAIT)
+
+    internal fun writeCommandEndWait(sp: SharedPreferences, enabled: Boolean) {
+        sp.edit().putBoolean(KEY_COMMAND_END_WAIT, enabled).apply()
     }
 
     /**
@@ -729,16 +838,16 @@ object UiPrefs {
     }
 
     /**
-     * RT2 Mod 运行时装配总闸（`wave/mod-b1` 装配链的唯一开关）：缺省 [DEFAULT_MOD_RUNTIME]（关）。
+     * RT2 Mod 运行时装配总闸（`wave/mod-b1` 装配链的唯一开关）：缺省 [DEFAULT_MOD_RUNTIME]（开）。
      *
      * 与 [disableBadApple] 同一条线程纪律：读点只有一处（`MainActivity` 在 **UI 线程**
      * 取好，经 `GameHost(modRuntime = ...)` 构造参数传入；装配期在 VM 线程上，那里不许摸偏好表）。
      * 关态装配链一次都不进（`ModRuntimeHost` 构造次数 == 0），磁盘都不碰。
      *
-     * **写面归属**：开发者面闸，缺省关。「操作与显示」卡末尾已有玩家开关（2026-11-12
-     * 接线：`SettingsActivity` 的 `modRuntimeTitle/Hint` 行 → [setModRuntime]）；缺省值仍是
-     * 关 —— **打开它是发版决定**，不是随开关一起改的常量。走 [resetAll] 的 `clear()`
-     * 一并恢复缺省。
+     * **写面归属**：玩家面开关（2026-11-12 接线：`SettingsActivity` 的 `modRuntimeTitle/Hint`
+     * 行 → [setModRuntime]）。缺省值自 2026-11-17 起为开（主人裁定「让 Mod 真正可用」）：
+     * 新装/从未改过的玩家开箱即走完整装配链，关掉即回到与未接 Mod 运行时逐字节等价的旁路。
+     * 走 [resetAll] 的 `clear()` 一并恢复缺省。
      */
     fun modRuntime(context: Context): Boolean = readModRuntime(prefs(context))
 
@@ -752,6 +861,83 @@ object UiPrefs {
     internal fun writeModRuntime(sp: SharedPreferences, enabled: Boolean) {
         sp.edit().putBoolean(KEY_MOD_RUNTIME, enabled).apply()
     }
+
+    /**
+     * 路 B dex 装载总闸（ADR-013 D5）：缺省 [DEFAULT_MOD_DEX_LOADER]（**关**，与 [modRuntime] 相反）。
+     *
+     * 线程纪律照 [modRuntime]：读点只有 UI 线程一处，经构造参数单路传入；关态装载链一次都不进。
+     * 纯 JVM 可注入层是 [readModDexLoader]（与 [readModRuntime] 同款）：测试直测它，公开函数只做接线。
+     * 写面（设置页总闸开关 + 二次确认）与玩家可见文案见 S8（task-191）。
+     */
+    fun modDexLoaderEnabled(context: Context): Boolean = readModDexLoader(prefs(context))
+
+    /**
+     * 路 B dex 装载总闸的写面（S8 / task-191）：设置页二次确认后落盘，返回**读回校验**结果。
+     *
+     * 为什么不是 `Unit`：`SharedPreferences.apply()` 没有返回值，而全仓写盘点一律 apply
+     * （UI 线程不许 `commit()` 探盘，会撞 StrictMode 的 UI 线程磁盘写）。所以「有没有真写进盘」
+     * 只能靠写完立刻读回比对：false 时设置页给玩家红字，不静默当成功。既有
+     * [writeModDexLoader] 的 apply 语义不动，本函数只加一层读回。
+     */
+    fun setModDexLoader(context: Context, enabled: Boolean): Boolean =
+        persistModDexLoader(prefs(context), enabled)
+
+    // 与 [readModRuntime] 同款的 internal read/write 层，测试直测（写面 = S8 已接线）。
+    internal fun readModDexLoader(sp: SharedPreferences): Boolean =
+        sp.getBoolean(KEY_MOD_DEX_LOADER, DEFAULT_MOD_DEX_LOADER)
+
+    internal fun writeModDexLoader(sp: SharedPreferences, enabled: Boolean) {
+        sp.edit().putBoolean(KEY_MOD_DEX_LOADER, enabled).apply()
+    }
+
+    internal fun persistModDexLoader(sp: SharedPreferences, enabled: Boolean): Boolean {
+        writeModDexLoader(sp, enabled)
+        return readModDexLoader(sp) == enabled
+    }
+
+    /**
+     * 玩家授权诊断通道（判词 9 PDIAG1）：缺省 DEFAULT_PLAYER_DIAGNOSTICS = 关 ⇒ release 包
+     * 连 DevTools 轮询线程都不建（不是「起了不读」）。
+     *
+     * 读点纪律同 modRuntime：只在 **UI 线程** 读。唯一的装载期读点在 DevToolsHost.startOnce
+     * 里，而那条函数被 VM 线程的装载尾段调用（GameHost.kt:1050），所以非 debuggable 时它先 hop
+     * 回主线程再读这里，VM 线程本身不摸偏好表（BusyIndicatorWiringTest 钉的同一口径）。
+     * 纯 JVM 可注入层是 readPlayerDiagnostics，公开函数只做接线。
+     */
+    fun playerDiagnosticsEnabled(context: Context): Boolean = readPlayerDiagnostics(prefs(context))
+
+    /**
+     * 写授权开关（设置页二次确认后落盘），返回**读回校验**结果；理由与形状逐字照 setModDexLoader
+     * （apply() 没有返回值，UI 线程又不许 commit 探盘）。开与关都刷新 KEY_PLAYER_DIAG_AUTHORED_AT，
+     * 供日志与诊断报告写「谁在什么时候打开过」。
+     *
+     * @return false = 没真写进盘，调用方必须给玩家报错，不许静默当成功
+     */
+    fun setPlayerDiagnostics(context: Context, enabled: Boolean): Boolean =
+        persistPlayerDiagnostics(prefs(context), enabled)
+
+    internal fun readPlayerDiagnostics(sp: SharedPreferences): Boolean =
+        sp.getBoolean(KEY_PLAYER_DIAGNOSTICS, DEFAULT_PLAYER_DIAGNOSTICS)
+
+    /** 写开关 + 同一次编辑里刷新取证时刻：一次 apply，不留「开了却没记时刻」的半程状态。 */
+    internal fun writePlayerDiagnostics(sp: SharedPreferences, enabled: Boolean) {
+        sp.edit()
+            .putBoolean(KEY_PLAYER_DIAGNOSTICS, enabled)
+            .putLong(KEY_PLAYER_DIAG_AUTHORED_AT, System.currentTimeMillis())
+            .apply()
+    }
+
+    internal fun persistPlayerDiagnostics(sp: SharedPreferences, enabled: Boolean): Boolean {
+        writePlayerDiagnostics(sp, enabled)
+        return readPlayerDiagnostics(sp) == enabled
+    }
+
+    /** 最近一次拨动授权开关的时刻（毫秒）；从未拨过 = 0 ⇒ 取证行写「从未授权」。 */
+    fun playerDiagnosticsAuthoredAt(context: Context): Long =
+        readPlayerDiagnosticsAuthoredAt(prefs(context))
+
+    internal fun readPlayerDiagnosticsAuthoredAt(sp: SharedPreferences): Long =
+        sp.getLong(KEY_PLAYER_DIAG_AUTHORED_AT, 0L)
 
     // ---- RT2 玩家排序配置（L2，2026-11-14）：公开读点 / 纯转换 / 设置页读写 ----
     // 完整实现与归一化语义在文件顶层 `ModPackageOrderStore`：UiPrefs 类体已逼近 detekt
@@ -1415,10 +1601,28 @@ object UiPrefs {
         KEY_PLAYER_STATS_ID,
         KEY_PLAYER_STATS_LAST_DAY,
         KEY_TUTORIAL_SHOWN,
+        // ModDX-4 A+：mod 变更标记同样不是设置（mod 的启停 / 导入落盘在 mods/rt2/，resetAll
+        // 不碰盘面），「全部重置」抹掉它会让刚改过的 mod 面回到「静悄悄不生效」——正是本波
+        // 要清掉的摩擦。恢复默认也不改 mod 盘面，标记照旧有提示义务。
+        KEY_MOD_RESTART_PENDING,
     )
 
     /** 「全部重置」后「返回游戏时问一句」的一次性标记（由 MainActivity 消费）。 */
     private const val KEY_RESTORE_RESTART_PENDING = "restore_restart_pending"
+
+    /**
+     * 设置页改过 mod 面（per-mod 启停 / 导入成功）之后的一次性「重开生效」标记（ModDX-4 A+）。
+     *
+     * ## 存储形态裁定（判据 1）：UiPrefs 新布尔键，不走 EXTRA_RESTART_GAME 通道
+     *
+     * 既有「保存并重启」走的是 intent extra（SettingsActivity 的 `EXTRA_RESTART_GAME`，
+     * 随 setResult 当场带回）；mod 生命周期动作是**异步**的（启停随时点、导入在后台线程
+     * 跑完才落盘），没有「当场带回」的那一拍，所以走与 [setRestoreRestartPending] 同形的
+     * 落盘一次性标记（SettingsActivity「全部重置」置位 [setRestoreRestartPending] 的先例）：
+     * 置位方只管置，消费方（MainActivity `onActivityResult`）读一次即清。
+     * 生效口径 = ModEnablement.kt:13-14「装配在会话构造期一次性完成，改完要重开一局」。
+     */
+    private const val KEY_MOD_RESTART_PENDING = "mod_restart_pending"
 
     /**
      * 顶栏「全部重置」：清掉整份壳层偏好（[PREFS_NAME] 这一份 XML）。
@@ -1477,6 +1681,39 @@ object UiPrefs {
     internal fun consumeRestoreRestartPending(sp: SharedPreferences): Boolean {
         if (!sp.getBoolean(KEY_RESTORE_RESTART_PENDING, false)) return false
         sp.edit().remove(KEY_RESTORE_RESTART_PENDING).apply()
+        return true
+    }
+
+    /**
+     * mod 面变更（启停成功 / 导入成功）后置位；返回游戏时由 MainActivity 消费一次，
+     * 弹「mod 已变更，重开生效」询问（ModDX-4 A+）。置位即幂等：同一轮设置页里连续
+     * 启停多个 mod / 导入多个包都只置同一个布尔，返回时合并成一句提示。
+     */
+    internal fun setModRestartPending(context: Context) {
+        setModRestartPending(prefs(context))
+    }
+
+    /** [setModRestartPending] 的注入版：JVM 单测直测，不依赖 Android Context。 */
+    internal fun setModRestartPending(sp: SharedPreferences) {
+        sp.edit().putBoolean(KEY_MOD_RESTART_PENDING, true).apply()
+    }
+
+    /**
+     * 读并清一次性标记；没置位返回 false。
+     *
+     * **取消路径裁定（判据 2，二选一）**：消费发生在读这一拍（提示弹出与否不再回头改标记），
+     * 玩家点「下次启动生效」拒绝重开 = 标记已清、不再追问 —— 与 [consumeRestoreRestartPending]
+     * 同一口径。理由：变更已在盘上（`.off` / `.erbm`），下次冷启必生效；「保留至生效」要
+     * 跟踪「标记 ↔ 会话代际」的对应关系，是一台小状态机，本波不做。不追问的代价是玩家
+     * 拒绝后看不到第二次提醒，换来的是不骚扰（按钮文案「下次启动生效」本身已说明后果）。
+     */
+    internal fun consumeModRestartPending(context: Context): Boolean =
+        consumeModRestartPending(prefs(context))
+
+    /** [consumeModRestartPending] 的注入版：读一次即清，防止重复弹询问。 */
+    internal fun consumeModRestartPending(sp: SharedPreferences): Boolean {
+        if (!sp.getBoolean(KEY_MOD_RESTART_PENDING, false)) return false
+        sp.edit().remove(KEY_MOD_RESTART_PENDING).apply()
         return true
     }
 

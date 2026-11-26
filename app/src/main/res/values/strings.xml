@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">eraTW</string>
+    <!-- app_name 由 build.gradle.kts 的 resValue 注入（SHELL-PROFILE 配置驱动）；此处不再硬编码。 -->
 </resources>

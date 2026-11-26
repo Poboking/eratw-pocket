@@ -21,6 +21,7 @@ import com.eratw.port.core.stmt.SharpStmt
 import com.eratw.port.core.stmt.Statement
 import com.eratw.port.core.stmt.SymbolTable
 import com.eratw.port.platform.storage.ModStore
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -163,9 +164,14 @@ class ModImportControllerTest {
 
         ModPackageInventory.gcOrphans(rt2, mods)
 
-        for (name in ModPackageInventory.memberNames(packageId)) {
+        // 非代码包的真实导入产物五件俱全（见 importedArtifactNames）；`.codeid` 只属代码包。
+        for (name in importedArtifactNames(packageId)) {
             assertTrue("源仍在 mods/ ⇒ $name 不得被 GC", File(rt2, name).isFile)
         }
+        assertFalse(
+            "普通口上包不得产生代码身份侧车",
+            File(rt2, packageId + ModPackageInventory.CODE_ID_EXTENSION).exists(),
+        )
     }
 
     @Test
@@ -235,15 +241,22 @@ class ModImportControllerTest {
     }
 
     @Test
-    fun `I6 三——补丁定义 base 已有同名函数被拒绝并点名`() {
+    fun `KI-2 补丁定义 base 已有同名函数不再拒绝_按覆盖装载导入成功`() {
+        // 2026-11-23 KI 改判（BOARD KI-2）：撞 base 同名不再编译期拒绝（原 I6-② 反转），
+        // 端到端导入成功落盘；覆盖告警随导入结果 parseWarnings 呈现。
         val tmp = tempDir()
         val controller = controllerIn(tmp, contextOf())
-        val badSource = "@A_ONE\nRETURN 0\n"
-        val outcome = controller.import(listOf(PickedModFile("KOJO_DUP.ERB", badSource.toByteArray(Charsets.UTF_8))))
-        val failed = outcome as? ModImportOutcome.Failed
-            ?: throw AssertionError("base 同名函数必须被拒绝，实为 $outcome")
-        assertEquals(ModImportFailureKind.COMPILE, failed.kind)
-        assertTrue("要点名撞名函数：${failed.message}", failed.message.contains("A_ONE"))
+        val dupSource = "@A_ONE\nRETURN 0\n"
+        val outcome = controller.import(listOf(PickedModFile("KOJO_DUP.ERB", dupSource.toByteArray(Charsets.UTF_8))))
+        val imported = outcome as? ModImportOutcome.Imported
+            ?: throw AssertionError("撞名包必须导入成功，实为 $outcome")
+        // 步骤 5 覆盖告警受玩家配置门控（DUPLICATED FUNCTIONS WARNING 缺省上下文 = 关）；
+        // 降级清单告警（ABI 未校验）不受门控，禁静默 —— 两条断言分别钉住。
+        val warnings = imported.detail.parseWarnings
+        assertTrue(
+            "降级清单告警点名 ABI 未校验：${warnings}",
+            warnings.any { it.contains("A_ONE") && it.contains("ABI 未校验") },
+        )
     }
 
     @Test
@@ -934,7 +947,373 @@ class ModImportControllerTest {
         return compiler.build(groups.first().first)
     }
 
+    // ------------------------------------------------------------------
+    // BU（lane-upgrade）：导入时识别「新增 / 重装 / 版本变化」，并把「设置与数据保留」说清
+    // ------------------------------------------------------------------
+
+    /** 本次导入必须成功（失败把 outcome 打进断言消息，便于定位）。 */
+    private fun importedDetailOf(outcome: ModImportOutcome): ImportedPatchDetail =
+        (outcome as? ModImportOutcome.Imported)?.detail
+            ?: throw AssertionError("导入应成功，实为 $outcome")
+
+    /** 盘上同包旧 manifest（导入前读版本的那一件）。 */
+    private fun installedManifestOf(tmp: File, packageId: String): File =
+        File(
+            File(File(tmp, "mods"), ModRuntimeAssembly.RT2_MANIFEST_DIR_NAME),
+            packageId + ModPackageInventory.MANIFEST_EXTENSION,
+        )
+
+    /** 把盘上旧 manifest 的 version 改写成指定值（模拟旧版产物 / 作者发来的未来版本号）。 */
+    private fun rewriteInstalledVersion(tmp: File, packageId: String, version: String) {
+        val manifest = installedManifestOf(tmp, packageId)
+        val descriptor = ManifestCodec.decode(manifest.readBytes())
+        manifest.writeBytes(ManifestCodec.encode(descriptor.copy(version = version)))
+    }
+
+    /**
+     * [controller] 导入同源补丁（单一落盘名恒定 ⇒ 同 packageId，第二次起走「覆盖同包」）。
+     */
+    private fun importPatchSource(controller: ModImportController): ImportedPatchDetail =
+        importedDetailOf(
+            controller.import(
+                listOf(PickedModFile(PATCH_DISK_NAME, patchSource.toByteArray(Charsets.UTF_8))),
+            ),
+        )
+
+    /** rt2 下残留的临时 / 备份名（正常路径必须为空）。 */
+    private fun rt2ResidueOf(tmp: File): List<String> =
+        File(File(tmp, "mods"), ModRuntimeAssembly.RT2_MANIFEST_DIR_NAME)
+            .list()
+            ?.filter { it.contains(".tmp-") || it.contains(".bak-") }
+            ?: emptyList()
+
+    @Test
+    fun `版本读数——首次安装为新增且成功页整行不出`() {
+        val tmp = tempDir()
+        val detail = importPatchSource(controllerIn(tmp, contextOf()))
+
+        assertEquals(ImportVersionChange.FirstInstall, detail.versionChange)
+        assertNull(
+            "首次安装没有可比较的旧版本，成功页不应凭空多一行读数",
+            detail.versionChangeSummaryLine(ModImportCopy.ZH),
+        )
+    }
+
+    @Test
+    fun `版本读数——同版本重导判重装并明说设置与数据保留`() {
+        val tmp = tempDir()
+        importPatchSource(controllerIn(tmp, contextOf()))
+        val again = importPatchSource(controllerIn(tmp, contextOf()))
+
+        assertEquals(ImportVersionChange.Reinstall("1"), again.versionChange)
+        val zh = again.versionChangeSummaryLine(ModImportCopy.ZH)
+            ?: throw AssertionError("重装必须有读数行")
+        assertTrue("必须点名重装：$zh", zh.contains("重装"))
+        assertTrue("必须带版本号：$zh", zh.contains("v1"))
+        assertTrue("必须明说设置与数据保留：$zh", zh.contains("设置与数据保留"))
+        // 三语同挂：EN/JA 档都取得到同一语义的行（措辞不再抄中文）。
+        assertTrue(again.versionChangeSummaryLine(ModImportCopy.EN)!!.contains("Reinstalled"))
+        assertTrue(again.versionChangeSummaryLine(ModImportCopy.JA)!!.contains("再インストール"))
+    }
+
+    @Test
+    fun `版本读数——旧版本更小时原样显示 vOld 到 vNew`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        importPatchSource(controller)
+        val packageId = controller.packageIdFor(listOf(PATCH_DISK_NAME))
+        rewriteInstalledVersion(tmp, packageId, "0.9")
+
+        val upgraded = importPatchSource(controllerIn(tmp, contextOf()))
+
+        assertEquals(ImportVersionChange.Changed("0.9", "1"), upgraded.versionChange)
+        val zh = upgraded.versionChangeSummaryLine(ModImportCopy.ZH)
+            ?: throw AssertionError("版本变化必须有读数行")
+        assertTrue("旧版本原样：$zh", zh.contains("v0.9"))
+        assertTrue("新版本原样：$zh", zh.contains("v1"))
+        assertTrue("必须明说设置与数据保留：$zh", zh.contains("设置与数据保留"))
+    }
+
+    @Test
+    fun `版本读数——降级不拦且原样显示 v2 到 v1`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        importPatchSource(controller)
+        val packageId = controller.packageIdFor(listOf(PATCH_DISK_NAME))
+        rewriteInstalledVersion(tmp, packageId, "2.0")
+
+        // 不发明 semver 排序：旧 2.0 → 新 1.0 与升级同形，导入必须成功（不拦回滚）。
+        val downgraded = importPatchSource(controllerIn(tmp, contextOf()))
+
+        assertEquals(ImportVersionChange.Changed("2.0", "1"), downgraded.versionChange)
+        val zh = downgraded.versionChangeSummaryLine(ModImportCopy.ZH)
+            ?: throw AssertionError("降级同样出读数行")
+        assertTrue("降级也原样显示旧版本：$zh", zh.contains("v2.0"))
+        assertTrue("降级也原样显示新版本：$zh", zh.contains("v1"))
+    }
+
+    @Test
+    fun `版本读数——旧 manifest 缺失时按首次安装处理`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        importPatchSource(controller)
+        val packageId = controller.packageIdFor(listOf(PATCH_DISK_NAME))
+        assertTrue("删掉旧 manifest 造缺失", installedManifestOf(tmp, packageId).delete())
+
+        val detail = importPatchSource(controllerIn(tmp, contextOf()))
+
+        assertEquals(ImportVersionChange.FirstInstall, detail.versionChange)
+        assertNull(detail.versionChangeSummaryLine(ModImportCopy.ZH))
+    }
+
+    @Test
+    fun `版本读数——旧 manifest 坏掉时按首次安装处理且不拦导入`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        importPatchSource(controller)
+        val packageId = controller.packageIdFor(listOf(PATCH_DISK_NAME))
+        installedManifestOf(tmp, packageId).writeBytes(byteArrayOf(0, 1, 2, 3))
+
+        // 坏 manifest 不能让新包被拒收：⑤ 落盘本来就会把旧档原地替换掉。
+        val detail = importPatchSource(controllerIn(tmp, contextOf()))
+
+        assertEquals(ImportVersionChange.FirstInstall, detail.versionChange)
+        assertTrue("新 manifest 必须已落盘", installedManifestOf(tmp, packageId).isFile)
+    }
+
+    @Test
+    fun `版本读数——新版本号缺失当重装且走无版本格式`() {
+        assertEquals(ImportVersionChange.Reinstall(""), versionChangeOf("1", ""))
+        assertEquals(ImportVersionChange.Reinstall(""), versionChangeOf("", ""))
+        assertEquals(ImportVersionChange.Reinstall("1"), versionChangeOf("", "1"))
+        val detail = ImportedPatchDetail(
+            patchFileName = "kojo-00000000.erbm",
+            functionCount = 1,
+            instructionCount = 1,
+            entryFunction = "B_HELLO",
+            sourceFileNames = listOf(PATCH_DISK_NAME),
+            parseWarnings = emptyList(),
+            versionChange = ImportVersionChange.Reinstall(""),
+        )
+        assertEquals("重装：设置与数据保留", detail.versionChangeSummaryLine(ModImportCopy.ZH))
+    }
+
+    @Test
+    fun `设置保留——重装后 settings 文件仍在且逐字节不变`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        importPatchSource(controller)
+        val packageId = controller.packageIdFor(listOf(PATCH_DISK_NAME))
+        val rt2 = File(File(tmp, "mods"), ModRuntimeAssembly.RT2_MANIFEST_DIR_NAME)
+        val values = mapOf("volume" to "80", "theme" to "dark")
+        assertTrue("测试前置：设置应写入成功", ModSettingsStore.write(rt2, packageId, values))
+        val settings = ModSettingsStore.settingsFile(rt2, packageId)
+        val before = settings.readBytes()
+
+        val again = importPatchSource(controllerIn(tmp, contextOf()))
+
+        assertEquals(ImportVersionChange.Reinstall("1"), again.versionChange)
+        assertTrue("升级/重装不得删设置文件", settings.isFile)
+        assertArrayEquals("设置内容必须逐字节不变", before, settings.readBytes())
+        assertEquals(values, ModSettingsStore.read(rt2, packageId))
+    }
+
+    @Test
+    fun `设置保留——版本变化重导后旧资源备份不残留为新包成员`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        val packageId = controller.packageIdFor(listOf(PATCH_DISK_NAME))
+        val v1 = zipOf(
+            PATCH_DISK_NAME to patchSource.toByteArray(Charsets.UTF_8),
+            "$packageId.assets/old.png" to byteArrayOf(1, 2, 3),
+        )
+        importedDetailOf(controller.import(listOf(PickedModFile("kojo_mod_v1.ZIP", v1))))
+        rewriteInstalledVersion(tmp, packageId, "0.9")
+
+        val v2 = zipOf(
+            PATCH_DISK_NAME to patchSource.toByteArray(Charsets.UTF_8),
+            "$packageId.assets/new.png" to byteArrayOf(7, 7, 7),
+        )
+        val detail = importedDetailOf(controller.import(listOf(PickedModFile("kojo_mod_v2.ZIP", v2))))
+
+        assertEquals(ImportVersionChange.Changed("0.9", "1"), detail.versionChange)
+        val assets = File(
+            File(File(tmp, "mods"), ModRuntimeAssembly.RT2_MANIFEST_DIR_NAME),
+            packageId + ModPackageInventory.ASSET_DIR_SUFFIX,
+        )
+        assertTrue("新版资源应在", File(assets, "new.png").isFile)
+        assertFalse("旧版资源必须被整目录替换", File(assets, "old.png").exists())
+        assertTrue("资源备份/临时目录不得残留：${rt2ResidueOf(tmp)}", rt2ResidueOf(tmp).isEmpty())
+        // 四件套俱全即「包成员」；.bak- 残留不得混进成员名单。代码身份侧车不产生。
+        for (name in importedArtifactNames(packageId)) {
+            assertTrue("重导后成员应俱全：$name", File(File(tmp, "mods"), "rt2/$name").isFile)
+        }
+        assertFalse(
+            "普通口上包重导后也不得有代码身份侧车",
+            File(File(tmp, "mods"), "rt2/${packageId + ModPackageInventory.CODE_ID_EXTENSION}").exists(),
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // 判据 7：代码产物面（ADR-013 D1）接线——zip 根 code.mod → mods/rt2/code/<pkg>/<sha16>.mod
+    // ------------------------------------------------------------------
+
+    /** 构造一份合法 `.mod` 包字节（ADR-013 D1：classes.dex + manifest.json）。 */
+    private fun codeModZip(packageId: String): ByteArray =
+        zipOf(
+            "classes.dex" to byteArrayOf(0x64, 0x65, 0x78, 0x0a),
+            "manifest.json" to
+                """{"packageId":"$packageId","version":"1","apiVersion":1}""".toByteArray(Charsets.UTF_8),
+        )
+
+    /** `eratw-pack.json` 最小声明（schema + packageId + 可解析 version）。 */
+    private fun packMetaJson(packageId: String): ByteArray =
+        """{"schema":1,"packageId":"$packageId","version":"1.0"}""".toByteArray(Charsets.UTF_8)
+
+    /**
+     * 非代码包的真实导入产物五件（写序与导入链同源）：`.sources` / `.sources.sha256` /
+     * `.manifest` / `.erbm` / `.assetmap`。代码身份侧车 `.codeid` 只属带 `code.mod` 的包，
+     * 故这里显式列出，不走 [ModPackageInventory.memberNames]（「全部包成员」名单）。
+     */
+    private fun importedArtifactNames(packageId: String): List<String> = listOf(
+        packageId + ModPackageInventory.SOURCES_EXTENSION,
+        packageId + ModPackageInventory.FINGERPRINT_EXTENSION,
+        packageId + ModPackageInventory.MANIFEST_EXTENSION,
+        packageId + ModPackageInventory.MODULE_EXTENSION,
+        packageId + ModPackageInventory.ASSETMAP_EXTENSION,
+    )
+
+    @Test
+    fun `代码产物面——带合法 code 产物的 zip 导入成功后 code 目录有只读产物`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        val packageId = controller.packageIdFor(listOf(PATCH_DISK_NAME))
+        val codeBytes = codeModZip(packageId)
+        val zip = zipOf(
+            PATCH_DISK_NAME to patchSource.toByteArray(Charsets.UTF_8),
+            CODE_MOD_ENTRY to codeBytes,
+        )
+        importedDetailOf(controller.import(listOf(PickedModFile("kojo_code.ZIP", zip))))
+        val rt2 = File(File(tmp, "mods"), ModRuntimeAssembly.RT2_MANIFEST_DIR_NAME)
+        val artifacts = ModCodeStore(rt2).list(packageId)
+        assertEquals("code/ 下应有 1 份产物", 1, artifacts.size)
+        assertArrayEquals("产物字节 = 包内 code.mod 条目", codeBytes, artifacts.single().file.readBytes())
+        assertFalse("产物必须只读", artifacts.single().file.canWrite())
+        assertTrue("正常路径不得残留 tmp：${rt2ResidueOf(tmp)}", rt2ResidueOf(tmp).isEmpty())
+    }
+
+    @Test
+    fun `代码产物面——声明身份与内层 manifest 不符时整包 IDENTITY 失败且不落代码产物`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        // 新语义（身份一致化）：`eratw-pack.json` 的 packageId 是代码包的运行期身份，声明在场
+        // 时以它为准；内层 manifest 必须与它一致 —— 不一致 = IDENTITY，不再与内容派生的磁盘 id 比。
+        val zip = zipOf(
+            PATCH_DISK_NAME to patchSource.toByteArray(Charsets.UTF_8),
+            PACK_META_ENTRY_NAME to packMetaJson(DECLARED_CODE_ID),
+            CODE_MOD_ENTRY to codeModZip("kojo-deadbeef"),
+        )
+        val outcome = controller.import(listOf(PickedModFile("kojo_bad.ZIP", zip)))
+        val failure = outcome as? ModImportOutcome.Failed
+            ?: throw AssertionError("代码产物身份与声明不符应整包失败，实为 $outcome")
+        assertEquals(ModImportFailureKind.IDENTITY, failure.kind)
+        val rt2 = File(File(tmp, "mods"), ModRuntimeAssembly.RT2_MANIFEST_DIR_NAME)
+        assertFalse("失败不得落下任何代码产物文件", File(rt2, "code").walkTopDown().any { it.isFile })
+        assertTrue("失败不得残留 tmp：${rt2ResidueOf(tmp)}", rt2ResidueOf(tmp).isEmpty())
+    }
+
+    @Test
+    fun `代码产物面——无声明时回退内层 manifest 身份并通过`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        val packageId = controller.packageIdFor(listOf(PATCH_DISK_NAME))
+        // 新语义：`eratw-pack.json` 未声明 packageId ⇒ 运行期身份回退内层 manifest 的 packageId，
+        // 与内容派生的磁盘 id 无关 —— 故这里用与磁盘 id 不同的内层身份也应当通过并写进身份侧车。
+        val innerId = "kojo-deadbeef"
+        val zip = zipOf(
+            PATCH_DISK_NAME to patchSource.toByteArray(Charsets.UTF_8),
+            CODE_MOD_ENTRY to codeModZip(innerId),
+        )
+        importedDetailOf(controller.import(listOf(PickedModFile("kojo_fallback.ZIP", zip))))
+        val rt2 = File(File(tmp, "mods"), ModRuntimeAssembly.RT2_MANIFEST_DIR_NAME)
+        assertEquals(
+            "身份侧车应记回退后的内层身份（磁盘命名空间仍是 kojo-<8hex>）",
+            CodeIdSidecar.Bound(innerId),
+            ModCodeIdentity.read(rt2, packageId),
+        )
+        assertEquals("代码产物仍按磁盘命名空间落盘", 1, ModCodeStore(rt2).list(packageId).size)
+        assertTrue("正常路径不得残留 tmp：${rt2ResidueOf(tmp)}", rt2ResidueOf(tmp).isEmpty())
+    }
+
+    @Test
+    fun `代码产物面——普通口上包零副作用：不建 code 目录`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        importPatchSource(controller)
+        val rt2 = File(File(tmp, "mods"), ModRuntimeAssembly.RT2_MANIFEST_DIR_NAME)
+        assertFalse("没有 code.mod 的普通包不得新建 code/", File(rt2, "code").exists())
+    }
+
+    @Test
+    fun `代码产物面——只有 code 产物没有口上源的 zip 整包拒导（STORAGE）`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        val zip = zipOf(CODE_MOD_ENTRY to codeModZip("kojo-1a2b3c4d"))
+        val outcome = controller.import(listOf(PickedModFile("kojo_asset.ZIP", zip)))
+        val failure = outcome as? ModImportOutcome.Failed
+            ?: throw AssertionError("无口上源却声明代码产物应整包失败，实为 $outcome")
+        assertEquals(ModImportFailureKind.STORAGE, failure.kind)
+    }
+
+    // ------------------------------------------------------------------
+    // 判据 8：⑤‴ 角色模板落盘失败——旁挂媒体暂存面必须随失败整树回收（M1-001）
+    // ------------------------------------------------------------------
+
+    /** `eratw-pack.json` 带 `resources` 声明（媒体面随包投递）的最小元数据。 */
+    private val mediaPackMetaJson =
+        "{\"schema\":1,\"packageId\":\"eratw.demo\",\"version\":\"1.0\",\"resources\":\"demo\"}"
+
+    private val mediaPng = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3)
+
+    @Test
+    fun `角色模板落盘失败——媒体暂存目录随失败整树回收不留tmp`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        val zip = zipOf(
+            "KOJO_MEDIA_C.ERB" to "@B_HELLO_MC\nCALL A_ONE(3)\nRETURN 0\n".toByteArray(Charsets.UTF_8),
+            PACK_META_ENTRY_NAME to mediaPackMetaJson.toByteArray(Charsets.UTF_8),
+            "resources/mod/demo/a.png" to mediaPng,
+            "CSV/Chara/Chara999.csv" to "番号,999,\n".toByteArray(Charsets.UTF_8),
+        )
+        val packageId = controller.packageIdFor(listOf("KOJO_MEDIA_C.ERB"))
+        // 用一个普通文件占住 `<pkg>.chara` 落盘路径：⑤‴ 的 ensureArtifactDir 建不出目录必抛
+        // IOException——可控地走进 chara 落盘失败路径，不靠磁盘故障注入。
+        val rt2 = File(File(tmp, "mods"), ModRuntimeAssembly.RT2_MANIFEST_DIR_NAME)
+        val charaBlocker = File(rt2, packageId + ".chara")
+        assertTrue(charaBlocker.parentFile!!.mkdirs() || charaBlocker.parentFile!!.isDirectory)
+        charaBlocker.writeBytes(byteArrayOf(1))
+
+        val outcome = controller.import(listOf(PickedModFile("kojo_media_c.ZIP", zip)))
+
+        val failure = outcome as? ModImportOutcome.Failed
+            ?: throw AssertionError("chara 落盘路径被文件占住应整包 STORAGE 失败，实为 $outcome")
+        assertEquals(ModImportFailureKind.STORAGE, failure.kind)
+        assertTrue("失败消息不得为空：${failure.message}", failure.message.isNotEmpty())
+        assertEquals(
+            "失败必须把旁挂媒体暂存面一起回收（mods/rt2 不得留媒体 tmp 目录）：${rt2ResidueOf(tmp)}",
+            emptyList<String>(),
+            rt2ResidueOf(tmp),
+        )
+        assertFalse("回收不等于提交：媒体文件不得就位", File(tmp, "resources/mod/demo/a.png").exists())
+    }
+
     private companion object {
+        /** 补丁唯一落盘名：同一常量 ⇒ 同一 packageId，第二次起就是「覆盖同包」。 */
+        private const val PATCH_DISK_NAME = "KOJO_PATCH.ERB"
+
+        /** 代码包运行期身份的声明值（`eratw-pack.json.packageId`）。 */
+        private const val DECLARED_CODE_ID = "author.codemod"
+
         /** 合成 base sha（64 位小写十六进制；装载端到端用例里与补丁头逐字一致）。 */
         private val BASE_SHA = "a".repeat(64)
     }

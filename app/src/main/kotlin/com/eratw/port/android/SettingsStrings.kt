@@ -6,6 +6,7 @@ import com.eratw.port.core.config.ConfigPageLabels
 import com.eratw.port.core.config.ConfigSpecTable
 import com.eratw.port.core.config.SettingsEntry
 import com.eratw.port.core.config.SettingsRejectReason
+import com.eratw.port.core.mod.RegisteredFaces
 import com.eratw.port.platform.save.SaveImport
 
 /**
@@ -161,6 +162,38 @@ class SettingsStrings private constructor(
         zh = "只影响安卓壳层 · 随改随存",
         en = "Android shell only · saved immediately",
         ja = "Android シェルのみ · すぐ保存",
+    )
+
+    // ---- 应用偏好内的三个子分组（2026-11-26 信息架构收口：12 张卡一次列出要翻两三屏）----
+    val displayGroupTitle: String = tr(
+        zh = "字号与画面",
+        en = "Text and display",
+        ja = "文字と表示",
+    )
+    val displayGroupSubtitle: String = tr(
+        zh = "字号档、竖屏字号、留白与按钮几何 · 随改随存",
+        en = "Text size, portrait size, margins and button geometry · saved immediately",
+        ja = "文字サイズ・縦画面サイズ・余白・ボタン寸法 · すぐ保存",
+    )
+    val railGroupTitle: String = tr(
+        zh = "右栏与快捷",
+        en = "Rail and shortcuts",
+        ja = "右バーとショートカット",
+    )
+    val railGroupSubtitle: String = tr(
+        zh = "选项栏显示规则、常用置顶与快捷宏 · 随改随存",
+        en = "Rail display rules, pinned options and quick macros · saved immediately",
+        ja = "右バーの表示規則・よく使う項目の固定・クイックマクロ · すぐ保存",
+    )
+    val launchGroupTitle: String = tr(
+        zh = "启动与维护",
+        en = "Launch and upkeep",
+        ja = "起動とメンテナンス",
+    )
+    val launchGroupSubtitle: String = tr(
+        zh = "启动画面、自动更新与诊断导出 · 随改随存",
+        en = "Loading screen, auto update and diagnostics export · saved immediately",
+        ja = "起動画面・自動更新・診断出力 · すぐ保存",
     )
 
     // ---- 恢复默认设置（列表底部卡片，不进顶栏）----
@@ -457,6 +490,18 @@ class SettingsStrings private constructor(
     )
 
     /**
+     * 「实验性」小签（2026-11-26）：竖屏相关的功能卡（竖屏模式开关 / 竖屏字号）在标题旁挂这一枚。
+     *
+     * 语义是「能用但还没定型、随时可能改」，不是错误，所以挂警示橙而不是危险红；文案本身
+     * 进三语表，不在页面里内联（AGENTS §6.1）。
+     */
+    val experimentalTag: String = tr(
+        zh = "实验性",
+        en = "Experimental",
+        ja = "試験的",
+    )
+
+    /**
      * 竖屏字号档（竖屏三区壳设计稿 §5.2：50 特大 / 62 大·缺省 / 75 标准 / 90 小）。
      *
      * 档位值本身只在 [UiPrefs.FONT_COLUMN_OPTIONS_PORTRAIT]（唯一权威），这里只放**玩家可见**
@@ -497,6 +542,31 @@ class SettingsStrings private constructor(
     )
 
     /**
+     * 当前竖屏档的取舍说明（分段条只装得下档名，这一句跟在分段条下面）。
+     * 与档名同源：键取自 [UiPrefs.FONT_COLUMN_OPTIONS_PORTRAIT]，值顺序与四个档名一一对齐。
+     */
+    val portraitColExtraLargeHint: String = tr(
+        zh = "约 50 列：字最大、折行最早，单手大字阅读最稳",
+        en = "~50 columns: largest text and earliest wrapping; easiest one-handed reading",
+        ja = "約 50 列：文字最大・折り返しが早い。片手での大きな文字の読みに最適",
+    )
+    val portraitColLargeHint: String = tr(
+        zh = "约 62 列：竖屏默认档，字号与一屏信息量平衡",
+        en = "~62 columns: the portrait default, balancing text size and on-screen information",
+        ja = "約 62 列：縦画面の既定。文字サイズと 1 画面の情報量のバランスが良い",
+    )
+    val portraitColStandardHint: String = tr(
+        zh = "约 75 列：字略小，一屏能多看几行",
+        en = "~75 columns: slightly smaller text, a few more lines per screen",
+        ja = "約 75 列：文字はやや小さめで 1 画面に数行多く入る",
+    )
+    val portraitColSmallHint: String = tr(
+        zh = "约 90 列：字最小、单屏信息最多，适合小屏手机",
+        en = "~90 columns: smallest text and most information per screen; good for small phones",
+        ja = "約 90 列：文字最小・1 画面の情報量最大。小型端末向け",
+    )
+
+    /**
      * 竖屏档名映射：键**取自** [UiPrefs.FONT_COLUMN_OPTIONS_PORTRAIT]（不另抄一份 50/62/75/90），
      * 值顺序与上面四个档名属性一致。`SettingsStringsTest` 的竖屏族用例逐档点名这张对齐关系。
      */
@@ -508,6 +578,19 @@ class SettingsStrings private constructor(
                     portraitColLargeLabel,
                     portraitColStandardLabel,
                     portraitColSmallLabel,
+                ),
+            )
+            .toMap()
+
+    /** 竖屏档说明映射：与档名同一套键（[UiPrefs.FONT_COLUMN_OPTIONS_PORTRAIT] 的四个 columns）。 */
+    private val portraitFontColumnHints: Map<Int, String> =
+        UiPrefs.FONT_COLUMN_OPTIONS_PORTRAIT.map { it.columns }
+            .zip(
+                listOf(
+                    portraitColExtraLargeHint,
+                    portraitColLargeHint,
+                    portraitColStandardHint,
+                    portraitColSmallHint,
                 ),
             )
             .toMap()
@@ -671,6 +754,19 @@ class SettingsStrings private constructor(
         en = "Pack all saves and the global save into one zip",
         ja = "すべてのセーブとグローバルセーブを 1 つの zip にまとめる",
     )
+
+    /**
+     * 导出卡的 mod 例外提示（MODDX4-D3 诚实文案）：`.sav` 本体 PC Emuera 照常可读；装了补丁
+     * 的存档附带的 `.rt2` 扩展数据 PC 不识别，扩展部分 PC 不可玩——照实说，不许夸大成
+     * 「存档会坏」。规约锚 = specs 下的 save-format.md 第 11 节 + era-arch-v61u.md:223-231
+     * 兼容性矩阵（「100% 互通」表述已作废）。上屏落位由组长接线（导出卡说明行邻域）。
+     */
+    val saveModExportHint: String = tr(
+        zh = "没装补丁（Mod）时，导出的存档电脑版照常能读；装了补丁的存档会附带一份扩展数据文件，电脑版读不到扩展部分。",
+        en = "With no patches (Mods) installed, exported saves read normally on PC; patched saves " +
+            "carry a companion extension data file whose contents the PC version cannot read.",
+        ja = "パッチ（Mod）を入れていなければ、書き出したセーブはパソコン版でそのまま読めます。パッチを入れたセーブには拡張データファイルが付随し、パソコン版は拡張部分を読めません。",
+    )
     val exportBusy: String = tr(
         zh = "正在导出…",
         en = "Exporting…",
@@ -697,6 +793,22 @@ class SettingsStrings private constructor(
         ja = "セーブファイルを選択",
     )
 
+    /**
+     * 导入卡的 mod 例外提示（MODDX4-D3 诚实文案）：装了补丁后扩展部分随 `.rt2` 走，本体与
+     * 扩展数据成对导入；PC 玩过同一槽传回或扩展数据缺失/失配时上警告（扩展状态可能滞后或
+     * 丢失），不是静默应用。规约锚同 [saveModExportHint]。
+     * 上屏落位由组长接线（导入卡标题说明行邻域）。
+     */
+    val saveModImportHint: String = tr(
+        zh = "没装补丁（Mod）时，存档与电脑版完全互通；装了补丁后，扩展部分单独成文件，本体和扩展数据要成对导入，缺了扩展数据应用会提醒。",
+        en = "With no patches (Mods) installed, saves interop fully with PC; with patches, the extension " +
+            "part travels in a separate companion file — import the body and extension data as a pair, " +
+            "and the app will warn when the extension data is missing.",
+        ja = "パッチ（Mod）を入れていなければ、セーブはパソコン版と完全にやり取りできます。" +
+            "パッチを入れた場合は拡張部分が別ファイル側にあり、本体と拡張データをペアで読み込んでください。" +
+            "拡張データが足りないときはアプリが知らせます。",
+    )
+
     // ---- 补丁（MOD）导入卡（设置页入口卡与 ModImportChrome 覆盖层共用同一条说明；
     //      2026-11 起接三语：此前固定中文，与存档导入卡的键同机制）----
     val modImportIntro: String = tr(
@@ -717,9 +829,10 @@ class SettingsStrings private constructor(
         ja = "Mod と素材",
     )
     val modGroupSubtitle: String = tr(
-        zh = "自备素材补丁（背景图、BGM）与口上补丁的导入入口",
-        en = "Asset packs and script patches",
-        ja = "素材パッチと口上パッチの導入入口",
+        zh = "已装 Mod 的启停、卸载与诊断，以及素材包、口上补丁与 Mod 市场的入口",
+        en = "Enable, uninstall and diagnose installed mods, plus entries for asset packs, " +
+            "script patches and the mod market",
+        ja = "導入済み Mod の有効化・削除・診断と、素材パック・口上パッチ・Mod マーケットの入口",
     )
     val resourcePackTitle: String = tr(
         zh = "导入素材压缩包（可选）",
@@ -812,6 +925,85 @@ class SettingsStrings private constructor(
         zh = "复制诊断",
         en = "Copy diagnostics",
         ja = "診断をコピー",
+    )
+
+    /** 逐帧诊断记录开关的标题（诊断卡内，默认关）。 */
+    val frameTraceTitle: String = tr(
+        zh = "记录逐帧诊断（排查画面跳动用）",
+        en = "Record per-frame trace (for screen-jitter reports)",
+        ja = "フレーム単位の診断を記録（画面の揺れ調査用）",
+    )
+
+    /** 逐帧诊断记录开关的说明：讲清「复现 → 分享」这个动作序，别让玩家以为开着就会自动上报。 */
+    val frameTraceHint: String = tr(
+        zh = "开着玩到画面开始跳，再回到这里点「导出并分享诊断」；只在本机记录，不会自动发送",
+        en = "Play until the screen jumps, then come back and tap Share; recorded on this device only, " +
+            "never sent automatically",
+        ja = "画面が揺れ始めるまでプレイしてから、ここに戻って「書き出して共有」を押してください。記録は端末内のみで、自動送信はしません",
+    )
+
+    /**
+     * 玩家授权诊断通道开关的标题（判词 9 / PDIAG1，Mod 档，缺省关）。
+     *
+     * 与 [frameTraceTitle] 的分工要分清：那一格只开逐帧环，本格开的是整条 DevTools 的
+     * **只读**命令通道（正式包里锁等待读数只有这一条路）。
+     */
+    val playerDiagTitle: String = tr(
+        zh = "开启只读诊断通道（排查卡死用）",
+        en = "Enable read-only diagnostics (for freeze reports)",
+        ja = "読み取り専用診断を有効化（固まり調査用）",
+    )
+
+    /**
+     * 开关说明：三件事缺一不可 —— 只放读侧、只落本机不自动发送、开启要重开一局（关闭当场停）。
+     * 「重开一局生效」是装配面的真实代价（启动点在装载尾段 GameHost.kt:1050，本波不动它），不许写成即时。
+     */
+    val playerDiagHint: String = tr(
+        zh = "开启后只放读侧读数（锁等待、变量、调用栈这类）；改存档、注入按键这类写侧动作仍需要 debug 包装机。" +
+            "读数只写在应用自己的目录，不会自动发送。开启要重开一局才生效，关闭当场就停。",
+        en = "Unlocks read-side readouts only (lock waits, variables, call stacks); write-side actions such as " +
+            "editing saves or injecting key presses still need a debuggable build. Readouts stay inside the app " +
+            "folder and are never sent automatically. Enabling takes effect after a restart; disabling stops now.",
+        ja = "読み取り側だけの数値（ロック待ち・変数・コールスタック）。セーブ改変やキー注入など書き込み側は " +
+            "debug 版端末が必要です。数値はアプリ自身のフォルダに書き、自動送信しません。有効化は再起動後、無効化は即時停止。",
+    )
+
+    /** 开启前的二次确认标题（照 modCodeLoaderConfirmTitle 的形状）。 */
+    val playerDiagConfirmTitle: String = tr(
+        zh = "开启只读诊断通道？",
+        en = "Enable read-only diagnostics?",
+        ja = "読み取り専用診断を有効にしますか？",
+    )
+
+    /**
+     * 二次确认正文：三件事逐语都要在 —— 只放读侧（写侧继续拒）、只落本机不自动发送、
+     * 开启下次进入游戏才生效而关闭当场停。少说一件就是让玩家在不知情下打开一条通道。
+     */
+    val playerDiagConfirmBody: String = tr(
+        zh = "这一格只放开只读观测：锁等待、变量、调用栈等读数会写进应用自己的目录，不会自动发送给任何人。" +
+            "改存档、注入按键、改运行时行为这类写侧动作依旧拒绝，需要 debug 包装机。" +
+            "开启后要重开一局才生效，关闭时当场停通道。",
+        en = "This unlocks read-side observation only: lock waits, variables and call stacks are written inside " +
+            "the app folder and never sent to anyone. Write-side actions — editing saves, injecting key presses, " +
+            "changing runtime behaviour — stay refused and need a debuggable build. It takes effect the next time " +
+            "the game starts; switching it off stops the channel right away.",
+        ja = "この項目は読み取り専用の観測だけを解放します：ロック待ち・変数・コールスタックの数値はアプリ自身の" +
+            "フォルダに保存され、誰にも自動送信されません。セーブ改変・キー注入・実行時動作の変更など書き込み側は" +
+            "引き続き拒否され、debug 版端末が必要です。有効化は次回ゲーム起動時に反映され、無効化はその場で停止します。",
+    )
+
+    /** 确认按钮：明示「我知道我在开什么」，不用「确定」这种零信息词。 */
+    val playerDiagConfirmOk: String = tr(
+        zh = "了解，开启",
+        en = "I understand, enable",
+        ja = "わかった、有効にする",
+    )
+
+    /** 写盘失败红字（读回校验为假时给，不静默当成功）。 */
+    val playerDiagWriteFailed: String = tr(
+        zh = "写入失败：授权位没有落盘，请再试一次",
+        en = "Write failed: the grant was not stored, try again",
+        ja = "書き込み失敗：許可状態が保存されませんでした。もう一度お試しください",
     )
     val diagReadyFormat: String = tr(
         zh = "已生成 {0}",
@@ -1374,7 +1566,7 @@ class SettingsStrings private constructor(
         ja = "同じスロットの .sav 本体がありません",
     )
 
-    // ---- 分区标签页（移植版 / 原版引擎 / Mod 素材 / 关于） ----
+    // ---- 分区标签页（移植版 / 原版引擎 / Mod 与素材 / 关于） ----
     val zonePortTab: String = tr(
         zh = "移植版功能",
         en = "Port features",
@@ -1539,6 +1731,33 @@ class SettingsStrings private constructor(
     )
 
     // -----------------------------------------------------------------
+    // COMEND-WAIT 开关文案（2026-11-22）
+    // -----------------------------------------------------------------
+
+    /** 「指令后等一次按键」开关（默认开 = 原版）的标题。 */
+    val commandEndWaitTitle: String = tr(
+        zh = "指令后等一次按键",
+        en = "Wait for a tap after each command",
+        ja = "コマンド後に一度タップを待つ",
+    )
+
+    /** 开 = 原版：指令打出的文本留在屏上、点一下才继续；关 = 不等（旧版行为）。 */
+    val commandEndWaitHint: String = tr(
+        zh = "默认开（原版行为）：执行一个指令、把文本打完之后停下，你点一下才会回到指令菜单，" +
+            "打出来的内容不会被下一回合直接刷掉。关掉就不再等这一下，指令连着执行更快，" +
+            "但较长的口上容易被刷走、需要往上翻阅。改这一项后要重开一局才生效。",
+        en = "On by default (original behavior): after a command prints its text, it waits for " +
+            "one tap before returning to the command menu, so the printed text is not wiped by " +
+            "the next turn. Turn it off to skip that tap and run commands straight through; " +
+            "longer passages may scroll away and need scrolling back through. Takes effect " +
+            "after the game restarts.",
+        ja = "既定はオン（原本の動作）：コマンドの文章を表示した後で一度タップを待ち、" +
+            "それからコマンドメニューに戻ります。表示された内容が次のターンで流されません。" +
+            "オフにするとこの待ちがなくなり、コマンドを続けて実行できますが、" +
+            "長い口上は流れて読み返す必要があります。変更後はゲームの再起動が必要です。",
+    )
+
+    // -----------------------------------------------------------------
     // 长页忙碌提示（PRAY-BUSY，2026-11）
     // -----------------------------------------------------------------
 
@@ -1556,21 +1775,1623 @@ class SettingsStrings private constructor(
         ja = "既定はオン。1 ページの計算に 1 秒以上かかると、内容欄の最下行に「少女祈祷中…」が呼吸するように表示され、ページが出た時点で消えます。描画だけでゲーム内容は変わりません。オフにするとページの更新だけになり、この行は表示されません。",
     )
 
-    /** 「Mod 运行时」总闸（RT2，默认关；会话构造期参数，改完重开一局生效）。 */
+    /** 「Mod 运行时」总闸（RT2，默认开；会话构造期参数，改完重开一局生效）。 */
     val modRuntimeTitle: String = tr(
-        zh = "Mod 运行时（实验）",
-        en = "Mod runtime (experimental)",
-        ja = "Mod ランタイム（実験的）",
+        zh = "Mod 运行时",
+        en = "Mod runtime",
+        ja = "Mod ランタイム",
     )
 
     /**
      * 只说玩家能观察到的后果：开 = 随包内置 Mod 会被装载、活动 Mod 数据随存档写成同名
-     * `.rt2` 侧车；关 = 与未接 Mod 运行时的版本逐字节相同。当前没有可用的第三方 Mod。
+     * Mod 数据文件；没装 Mod 时游戏照常运行、游戏内容不变；关 = 与未接 Mod 运行时的
+     * 版本逐字节相同。
      */
     val modRuntimeHint: String = tr(
-        zh = "默认关。开：启用 RT2 Kotlin Mod 运行时，随包内置的 Mod 会被装载；启用中的 Mod 数据会与存档一起保存成同名的 .rt2 侧车文件。目前没有可用的第三方 Mod，普通游玩保持关闭即可。改这一项后要重开一局才生效。",
-        en = "Off by default. On: enables the RT2 Kotlin Mod runtime, so Mods bundled with the app get loaded; active Mod data is saved next to each save file as a .rt2 sidecar. No third-party Mods are available yet, so leave it off for normal play. Takes effect after the game restarts.",
-        ja = "既定はオフ。オン：RT2 Kotlin Mod ランタイムを有効にし、同梱の Mod を読み込みます。有効な Mod のデータはセーブと同名の .rt2 サイドカーファイルとして保存されます。現時点で利用できる外部 Mod はないため、通常プレイではオフのままで構いません。変更後はゲームの再起動が必要です。",
+        zh = "默认开。开启后，随包内置的 Mod 会在开局时装载；启用中的 Mod 数据会随存档保存成同名的 Mod 数据文件（和存档放在一起）。" +
+            "没有安装任何 Mod 时，游戏照常运行、内容不变。关掉后回到完全不用 Mod 运行时的状态。" +
+            "改这一项后要重开一局才生效。",
+        en = "On by default. When on, Mods shipped with the app are loaded at game start; data from active Mods " +
+            "is saved next to your saves as a same-name Mod data file. With no Mods installed the game runs as " +
+            "usual and game content stays unchanged. Turn it off to go back to a build with no Mod runtime at " +
+            "all. Takes effect after the game restarts.",
+        ja = "既定はオン。オンにすると、同梱の Mod は起動時に読み込まれ、有効な Mod のデータはセーブと同名の " +
+            "Mod データファイルとして保存されます（セーブの隣）。Mod が入っていない場合もゲームは通常どおり動作し、" +
+            "内容は変わりません。オフにすると Mod ランタイムを一切使わない状態に戻ります。" +
+            "変更後はゲームの再起動が必要です。",
+    )
+
+    // -----------------------------------------------------------------
+    // Mod 运行时诊断（RT2-GATE-OPEN，2026-11-17）：release 也能看的只读摘要
+    // 真源与 debug 通道 `DevToolsHost.modgate` 同口径（总闸 / 本局会话 / 装载数 / 侧车数）；
+    // 玩家可复制后贴进反馈。这里只读，没有任何写入面。
+    // -----------------------------------------------------------------
+
+    /** 诊断摘要卡标题。 */
+    val modDiagnosticsTitle: String = tr(
+        zh = "Mod 运行时诊断",
+        en = "Mod runtime diagnostics",
+        ja = "Mod ランタイム診断",
+    )
+
+    /** 诊断卡说明：只读、可复制、不改设置。 */
+    val modDiagnosticsHint: String = tr(
+        zh = "只读摘要，反馈问题时可以复制出来。这里不会改动任何设置。",
+        en = "A read-only summary you can copy when reporting a problem. Nothing here changes your settings.",
+        ja = "読み取り専用の要約です。不具合報告の際にコピーしてください。ここでは設定は変更されません。",
+    )
+
+    /** 诊断卡复制按钮。 */
+    val modDiagnosticsCopy: String = tr(
+        zh = "复制诊断信息",
+        en = "Copy diagnostics",
+        ja = "診断情報をコピー",
+    )
+
+    /** 复制成功提示。 */
+    val modDiagnosticsCopied: String = tr(
+        zh = "诊断信息已复制",
+        en = "Diagnostics copied",
+        ja = "診断情報をコピーしました",
+    )
+
+    /** 摘要行：总闸开。 */
+    val modDiagnosticsGateOn: String = tr(
+        zh = "总闸：开",
+        en = "Runtime: on",
+        ja = "ランタイム：オン",
+    )
+
+    /** 摘要行：总闸关。 */
+    val modDiagnosticsGateOff: String = tr(
+        zh = "总闸：关",
+        en = "Runtime: off",
+        ja = "ランタイム：オフ",
+    )
+
+    /** 摘要行：本局引擎实例里 Mod 运行时已生效（接缝槽命中）。 */
+    val modDiagnosticsSessionOn: String = tr(
+        zh = "本局 Mod 运行时：已生效",
+        en = "Mod runtime in this session: active",
+        ja = "今回の Mod ランタイム：有効",
+    )
+
+    /** 摘要行：本局未装配（总闸关，或设置刚改还没重开）。 */
+    val modDiagnosticsSessionOff: String = tr(
+        zh = "本局 Mod 运行时：未生效（重开一局后按总闸生效）",
+        en = "Mod runtime in this session: not active (restart the game to apply the switch)",
+        ja = "今回の Mod ランタイム：無効（ゲームを再起動すると反映されます）",
+    )
+
+    /** 摘要行：Mod 计数（安装 / 启用 / manifest 读不出）。 */
+    private val modDiagnosticsModsFormat: String = tr(
+        zh = "Mod：安装 {0} 个 · 启用 {1} 个 · 读不出 {2} 个",
+        en = "Mods: {0} installed · {1} enabled · {2} unreadable",
+        ja = "Mod：インストール {0} 件・有効 {1} 件・読み込み不可 {2} 件",
+    )
+
+    /** 摘要行：Mod 数据文件计数与总字节。 */
+    private val modDiagnosticsSidecarsFormat: String = tr(
+        zh = "Mod 数据文件：{0} 个 · {1} 字节",
+        en = "Mod data files: {0} files · {1} bytes",
+        ja = "Mod データファイル：{0} 件・{1} バイト",
+    )
+
+    fun modDiagnosticsMods(installed: Int, enabled: Int, unreadable: Int): String =
+        fill(modDiagnosticsModsFormat, installed, enabled, unreadable)
+
+    fun modDiagnosticsSidecars(count: Int, bytes: Long): String =
+        fill(modDiagnosticsSidecarsFormat, count, bytes)
+
+    // -----------------------------------------------------------------
+    // Mod 诊断快照导出（task-172）：把「装了啥 / 哪一步失败 / 两把总闸」拼成一段
+    // 只读纯文本带走。正文由 ModDiagnosticReport 的纯拼装器生成（取证面固定中文标签），
+    // 这里只放壳层文案（按钮 / 弹窗标题 / 说明 / 复制 / 关闭）。
+    // -----------------------------------------------------------------
+
+    /** 导出诊断按钮（Mod 管理小节）。 */
+    val modDiagnosticExport: String = tr(
+        zh = "导出诊断",
+        en = "Export diagnostics",
+        ja = "診断をエクスポート",
+    )
+
+    /** 导出卡说明：只读、离线、可整段贴给作者，且明说不含值本体。 */
+    val modDiagnosticExportHint: String = tr(
+        zh = "生成一份只读的本机 Mod 诊断快照（不联网、不改设置）。反馈问题时整段复制给作者：" +
+            "装了什么、哪一步失败、两把总闸是什么状态都在里面。快照不含设置值与存储值。",
+        en = "Builds a read-only, offline Mod diagnostic snapshot (no network, no setting changes). " +
+            "Copy the whole thing when reporting a problem: what is installed, where loading failed, " +
+            "and the state of both gates. It contains no setting or storage values.",
+        ja = "読み取り専用の Mod 診断スナップショットを生成します（オフライン・設定変更なし）。" +
+            "不具合報告の際に全文コピーしてください：何がインストールされ、どこで失敗したか、" +
+            "2 つのゲートの状態が分かります。設定値と保存値は含まれません。",
+    )
+
+    /** 快照弹窗标题。 */
+    val modDiagnosticDialogTitle: String = tr(
+        zh = "Mod 诊断快照",
+        en = "Mod diagnostic snapshot",
+        ja = "Mod 診断スナップショット",
+    )
+
+    /** 快照弹窗说明：等宽只读 + 复制口径，且明说不含值本体。 */
+    val modDiagnosticDialogHint: String = tr(
+        zh = "只读文本，可全选或点「复制全部」贴给作者。不含设置值与存储值。",
+        en = "Read-only text. Select it or tap \"Copy all\" to share with the author. " +
+            "No setting or storage values.",
+        ja = "読み取り専用のテキストです。全選択するか「すべてコピー」で作者に共有してください。" +
+            "設定値と保存値は含まれません。",
+    )
+
+    /** 快照弹窗「复制全部」按钮。 */
+    val modDiagnosticDialogCopy: String = tr(
+        zh = "复制全部",
+        en = "Copy all",
+        ja = "すべてコピー",
+    )
+
+    // -----------------------------------------------------------------
+    // Mod 运行时概览（Lane AW，2026-11-17）：只读诊断卡下面的「每 mod 一行」读数
+    // 真源 = 已装清单（同一次 ModManageScan）+ 装载失败表（ModManageDiagnostics）+
+    // 活会话的 timing 账本 / 慢处理器预算（ModRuntimeOverviewEntry）。没有任何写入面。
+    // -----------------------------------------------------------------
+
+    /** 运行时概览卡标题。 */
+    val modRuntimeOverviewTitle: String = tr(
+        zh = "Mod 运行时概览",
+        en = "Mod runtime overview",
+        ja = "Mod ランタイム概要",
+    )
+
+    /** 概览卡说明：只读、关态隐藏、不改设置。 */
+    val modRuntimeOverviewHint: String = tr(
+        zh = "只读：本局每个 Mod 的装载结果与耗时明细。Mod 运行时总闸关掉时这里不显示。",
+        en = "Read-only: load results and time breakdown for each mod. Hidden while the mod runtime is off.",
+        ja = "読み取り専用：今回の各 Mod の読み込み結果と所要時間の内訳です。Mod ランタイムがオフのときは表示されません。",
+    )
+
+    /** 单行状态：本次会话运行中。 */
+    val modRuntimeOverviewActive: String = tr(
+        zh = "运行中",
+        en = "Active",
+        ja = "稼働中",
+    )
+
+    /** 单行状态：本次会话未运行（停用或装载失败）。 */
+    val modRuntimeOverviewInactive: String = tr(
+        zh = "未运行",
+        en = "Not active",
+        ja = "停止中",
+    )
+
+    /** 空栏占位：失败原因 / 读数缺失时显示「无」，不留白。 */
+    val modRuntimeOverviewNone: String = tr(
+        zh = "无",
+        en = "None",
+        ja = "なし",
+    )
+
+    /** 空态：一个已装 Mod 都没有。 */
+    val modRuntimeOverviewEmpty: String = tr(
+        zh = "没有已安装的 Mod。",
+        en = "No mods installed.",
+        ja = "インストール済み Mod はありません。",
+    )
+
+    /** 失败栏格式：`装载失败：<原因>`。 */
+    private val modRuntimeOverviewFailureFormat: String = tr(
+        zh = "装载失败：{0}",
+        en = "Load failure: {0}",
+        ja = "読み込み失敗：{0}",
+    )
+
+    /** 累计耗时格式：调用次数 + 总毫秒。 */
+    private val modRuntimeOverviewTotalsFormat: String = tr(
+        zh = "累计 {0} 次 · {1} ms",
+        en = "{0} calls · {1} ms",
+        ja = "累計 {0} 回・{1} ms",
+    )
+
+    /** 单个作用域格式：作用域名 + 调用次数 + 累计毫秒。 */
+    private val modRuntimeOverviewScopeFormat: String = tr(
+        zh = "{0} · {1} 次 · {2} ms",
+        en = "{0} · {1} calls · {2} ms",
+        ja = "{0}・{1} 回・{2} ms",
+    )
+
+    /** 慢处理器格式：次数 + 判定阈值毫秒。 */
+    private val modRuntimeOverviewSlowFormat: String = tr(
+        zh = "慢处理器：{0} 次（单次超过 {1} ms）",
+        en = "Slow handlers: {0} (over {1} ms each)",
+        ja = "低速ハンドラ：{0} 件（1 回 {1} ms 超）",
+    )
+
+    fun modRuntimeOverviewFailure(reason: String): String = fill(modRuntimeOverviewFailureFormat, reason)
+
+    fun modRuntimeOverviewTotals(count: Long, millis: Long): String =
+        fill(modRuntimeOverviewTotalsFormat, count, millis)
+
+    fun modRuntimeOverviewScope(scope: String, count: Long, millis: Long): String =
+        fill(modRuntimeOverviewScopeFormat, scope, count, millis)
+
+    fun modRuntimeOverviewSlow(count: Long, thresholdMillis: Long): String =
+        fill(modRuntimeOverviewSlowFormat, count, thresholdMillis)
+
+    /**
+     * 注册面读数格式：hooks（含已退槽）+ 事件四桶 + 交互 / 服务 / 文案 / 设置 / 图片。
+     *
+     * 字段名保持 ASCII 便于作者对日志：`hooks=` / `events=PRI/NORMAL/LATER/ONLY=` / `interactions=` /
+     * `services=` / `strings=` / `settings=` / `images=`；只有前缀按语言翻译。
+     */
+    private val modRuntimeOverviewFacesFormat: String = tr(
+        zh = "注册 hooks={0} 退槽={1} events=PRI/NORMAL/LATER/ONLY={2}/{3}/{4}/{5} " +
+            "interactions={6} services={7} strings={8} settings={9} images={10}",
+        en = "Registered hooks={0} retired={1} events=PRI/NORMAL/LATER/ONLY={2}/{3}/{4}/{5} " +
+            "interactions={6} services={7} strings={8} settings={9} images={10}",
+        ja = "登録 hooks={0} 解除={1} events=PRI/NORMAL/LATER/ONLY={2}/{3}/{4}/{5} " +
+            "interactions={6} services={7} strings={8} settings={9} images={10}",
+    )
+
+    /**
+     * 一行注册面读数（**全零也照渲染**：0 本身就是「没注册上」这一最有用的信息，不留白/不隐藏）。
+     *
+     * 只读 [faces] 快照，不查任何注册表；缺桶键按 0 兜底（宿主侧降级快照也照常可渲染）。
+     */
+    fun modRuntimeOverviewFaces(faces: RegisteredFaces): String {
+        val pri = faces.events["PRI"] ?: 0
+        val normal = faces.events["NORMAL"] ?: 0
+        val later = faces.events["LATER"] ?: 0
+        val only = faces.events["ONLY"] ?: 0
+        return fill(
+            modRuntimeOverviewFacesFormat,
+            faces.hooks,
+            faces.retiredHooks,
+            pri,
+            normal,
+            later,
+            only,
+            faces.interactions,
+            faces.services,
+            faces.strings,
+            faces.settings,
+            faces.images,
+        )
+    }
+
+    /**
+     * 存储段读数格式：`存储 <大小文本> · <键数> 键`。
+     *
+     * `{0}` 是已经由壳层格式化好的大小文本（[formatStorageBytes]，B/KB/MB 与语言无关），
+     * 本表只管串词与占位符，不做数值换算 —— 换算规则留在可单测的纯函数里。
+     */
+    private val modRuntimeOverviewStorageFormat: String = tr(
+        zh = "存储 {0} · {1} 键",
+        en = "Storage {0} · {1} keys",
+        ja = "ストレージ {0}・{1} キー",
+    )
+
+    /** 该包没有存储段时的显式缺数据行：`—` 不是 `0`（0 键是真读到空段，语义不同）。 */
+    val modRuntimeOverviewStorageMissing: String = tr(
+        zh = "存储 —",
+        en = "Storage —",
+        ja = "ストレージ —",
+    )
+
+    /** 存储段读数（[bytesText] 为壳层格式化好的大小，[keys] 为段内条目数含墓碑位）。 */
+    fun modRuntimeOverviewStorage(bytesText: String, keys: Int): String =
+        fill(modRuntimeOverviewStorageFormat, bytesText, keys)
+
+    /**
+     * 存储数据量偏大时的中性提示行（[ModStorageReadout.overLimit] 为真才出现）。
+     *
+     * 故意**不写**具体阈值、键数、编码细节：core 的软阈值是可调诊断参数，写死数字会被玩家
+     * 读成「硬上限」或「引擎在报错」；这里只讲玩家能感知的后果（存档可能变大）+ 一条可行动建议。
+     * 也不出现包标识/存储格式等内部术语 —— 这是玩家可见文案。
+     */
+    val modRuntimeOverviewStorageOver: String = tr(
+        zh = "⚠ 存储数据量偏大，可能让存档变大；建议作者检查写入的数据量。",
+        en = "⚠ This mod stores a lot of data, which may make saves larger. " +
+            "Consider asking the author to check how much it writes.",
+        ja = "⚠ 保存データが多いため、セーブが大きくなる可能性があります。" +
+            "作者に書き込み量の確認をおすすめします。",
+    )
+
+    /** 设置项读数格式：`设置已改 <项数> 项`（相对作者声明的默认值）。 */
+    private val modRuntimeOverviewSettingsChangedFormat: String = tr(
+        zh = "设置已改 {0} 项",
+        en = "Settings changed: {0}",
+        ja = "設定変更 {0} 件",
+    )
+
+    /** 会话快照里没有该包设置面时的显式缺数据行：`—` 不是 `0`。 */
+    val modRuntimeOverviewSettingsChangedMissing: String = tr(
+        zh = "设置已改 —",
+        en = "Settings changed: —",
+        ja = "設定変更 —",
+    )
+
+    /** 设置项读数（[changed] = 相对声明默认已改的项数）。 */
+    fun modRuntimeOverviewSettingsChanged(changed: Int): String =
+        fill(modRuntimeOverviewSettingsChangedFormat, changed)
+
+    // -----------------------------------------------------------------
+    // 已安装的 Mod 列表（批2-3，2026-11-17）：逐个启停
+    // 真源 = `mods/rt2/<packageId>.off` 标记文件（ModEnablement）；装配在会话构造期
+    // 一次性完成，所以文案必须写清「改完重开一局」，与总闸 / 装载优先级同口径。
+    // -----------------------------------------------------------------
+
+    /** 「已安装的 Mod」列表卡标题。 */
+    val modManageTitle: String = tr(
+        zh = "已安装的 Mod",
+        en = "Installed mods",
+        ja = "インストール済み Mod",
+    )
+
+    /** 列表说明：逐个开关的语义 + 重开一局生效。 */
+    val modManageHint: String = tr(
+        zh = "逐个开关：停用 = 下次启动不装载这个 Mod，存档里的 Mod 数据保留，随时能再启用。" +
+            "点条目展开详情，导入包可以在这里卸载。改完要重开一局才生效。",
+        en = "Toggle each mod: off means it is not loaded on the next launch. Its Mod data " +
+            "stays in your saves, so you can turn it back on any time. Tap an entry for " +
+            "details; imported packs can be uninstalled here. Restart the game to apply.",
+        ja = "Mod ごとにオン・オフできます。オフにすると次回起動時に読み込まれません。" +
+            "セーブの Mod データは残るので、いつでも戻せます。" +
+            "項目をタップすると詳細が開き、インポートしたパックはここで削除できます。" +
+            "変更はゲーム再起動後に反映されます。",
+    )
+
+    /**
+     * 一次性生效时机说明（卡顶，**不逐行重复**）：三种操作三种时机一次说清。
+     *
+     * 口径与实现证据逐条对齐（改文案先核这三处，别写嘴顺的「立即生效」）：
+     * - 启停 / 卸载 = 下次进入游戏生效：装配期才读停用标记（`ModEnablement.enabledOnly`，
+     *   `ModRuntimeAssembly.kt:802`）与载体名单（`ModCarrierRegistry.providers`，:46），
+     *   本局已装配的会话不变；
+     * - 重编 = 编完后重开一局生效：重编只做磁盘原子替换（`ModRecompiler.recompile`，
+     *   `ModRecompile.kt:87`），本会话已 attach 的容器不重载；
+     * - Mod 设置 = 保存后本局内下一拍生效：写盘成功后入队 `ModSettingsNotifyChannel`，VM
+     *   线程页边界 drain 到 `ModRuntimeAssembly.notifySettingsChanged`（:1525）——是页边界
+     *   热通知，不是立即生效（Lane CS 用例 `ModSettingsHotTakeEffectEndToEndTest` 钉住）。
+     */
+    val modManageTakeEffectHint: String = tr(
+        zh = "生效时机（一次说清）：逐个开关、卸载 → 下次进入游戏时生效，本局不变；" +
+            "改过源文件后点「重新编译」→ 编完后重开一局生效；" +
+            "Mod 设置 → 保存后回到游戏、下一次回合推进时生效，不用重开。",
+        en = "When changes take effect: toggling a mod or uninstalling → next time you enter the " +
+            "game (this session keeps running as-is); tapping Recompile after editing sources → " +
+            "restart the game once it finishes; mod settings → apply at the next turn boundary " +
+            "after you return to the game, no restart needed.",
+        ja = "反映タイミング：Mod のオン・オフやアンインストール → 次回ゲームを開始したとき" +
+            "（今回のプレイ中は変わりません）。ソースを編集して「再コンパイル」→ 完了後に" +
+            "ゲームを再起動。Mod 設定 → 保存後にゲームへ戻り、次のターン進行時に反映" +
+            "（再起動不要）。",
+    )
+
+    /** 列表为空时的提示。 */
+    val modManageEmpty: String = tr(
+        zh = "还没有安装任何 Mod。",
+        en = "No mods installed yet.",
+        ja = "まだ Mod がインストールされていません。",
+    )
+
+    // -----------------------------------------------------------------
+    // 已装列表的搜索 + 来源筛选（Lane modsearch）：纯视图过滤，不改 marker、
+    // 不写盘、不影响启停/卸载/重试。空结果两态必须分开说（「一个都没装」vs
+    // 「筛选后没有匹配」），计数行与列表读同一次 [ModManageScanner.scan]。
+    // -----------------------------------------------------------------
+
+    /** 搜索框标签：按显示名 / 包名 / 作者做大小写不敏感包含匹配。 */
+    val modManageSearchLabel: String = tr(
+        zh = "搜索（名称 / 包名 / 作者）",
+        en = "Search (name / package / author)",
+        ja = "検索（名前 / パッケージ / 作者）",
+    )
+
+    /** 来源筛选的第一档：不筛（全部）。 */
+    val modManageFilterAll: String = tr(
+        zh = "全部",
+        en = "All",
+        ja = "すべて",
+    )
+
+    /** 筛选后没有任何匹配时的说明（与 [modManageEmpty] 的「一个都没装」分开）。 */
+    val modManageFilterEmpty: String = tr(
+        zh = "没有匹配的 Mod。换个关键词，或把来源筛选切回「全部」。",
+        en = "No matching mods. Try another keyword, or switch the source filter back to All.",
+        ja = "一致する Mod がありません。キーワードを変えるか、入手元フィルタを「すべて」に戻してください。",
+    )
+
+    /** 计数行模板：筛选结果 N / 共 M（N、M 都来自同一次扫描的已装清单）。 */
+    private val modManageFilterCountFormat: String = tr(
+        zh = "筛选结果 {0} / 共 {1}",
+        en = "Showing {0} of {1}",
+        ja = "表示 {0} / 全 {1}",
+    )
+
+    /** 计数行：当前可见条数 / 已装总条数。 */
+    fun modManageFilterCount(shown: Int, total: Int): String =
+        fill(modManageFilterCountFormat, shown, total)
+
+    /** 有包读不出来时的小字前缀（后面由界面拼文件名列表）。 */
+    val modManageBrokenPrefix: String = tr(
+        zh = "读不出来的包（可重新导入覆盖修复）：",
+        en = "Unreadable packs (re-import to fix): ",
+        ja = "読み込めないパック（再インポートで修復できます）：",
+    )
+
+    /** 来源标签：随包内置的 Kotlin 载体。 */
+    val modManageSourceBuiltin: String = tr(
+        zh = "内置",
+        en = "built-in",
+        ja = "内蔵",
+    )
+
+    /** 来源标签：编译好的数据包（.erbm + manifest）。 */
+    val modManageSourceData: String = tr(
+        zh = "数据包",
+        en = "data pack",
+        ja = "データパック",
+    )
+
+    /** 来源标签：玩家从口上导入的包。 */
+    val modManageSourceImported: String = tr(
+        zh = "导入",
+        en = "imported",
+        ja = "インポート",
+    )
+
+    /** 列表项被停用时的前缀（拼在详情行前面）。 */
+    val modManageDisabledTag: String = tr(
+        zh = "已停用",
+        en = "disabled",
+        ja = "無効",
+    )
+
+    /** 写启停状态失败（只读存储 / 目录不可写）时的提示。 */
+    val modManageToggleFailed: String = tr(
+        zh = "没法保存这个 Mod 的启停状态，请检查存储空间或应用存储权限。",
+        en = "Could not save this mod's on/off state. Check free space or app storage permission.",
+        ja = "この Mod の有効・無効を保存できません。空き容量か保存権限を確認してください。",
+    )
+
+    // -----------------------------------------------------------------
+    // 第三方代码包信任确认（ADR-013 D3 / task-153 S4b）：只信任 code 下有 .mod 产物的包；
+    // 二次确认必须如实说明同进程、无沙箱、等同自行安装的应用内代码，不许淡化风险。
+    // -----------------------------------------------------------------
+
+    /** 设置页小节标题。 */
+    val modTrustTitle: String = tr(
+        zh = "第三方代码包",
+        en = "Third-party code packs",
+        ja = "サードパーティ製コードパック",
+    )
+
+    /** 小节说明：列出什么、什么时候生效、撤销的边界（本局不中途卸载）。 */
+    val modTrustHint: String = tr(
+        zh = "列出带有已编译代码产物的包。信任后，游戏下次装载时才会运行它的代码；" +
+            "未信任的包不装载。撤销只删信任记录，本局已经跑起来的代码不会中途卸载。",
+        en = "Lists packs with compiled code artifacts (.mod under code/). A pack's code runs " +
+            "only after you trust it and the game loads it next time; untrusted packs are not " +
+            "loaded. Revoking trust only deletes the trust record — code already running in this " +
+            "session is not unloaded.",
+        ja = "コンパイル済みコード成果物（code/ 下の .mod）を持つパックの一覧です。信頼すると" +
+            "次回の読み込み時にコードが実行されます。未信頼のパックは読み込まれません。" +
+            "信頼を取り消しても信頼記録を削除するだけで、今回のプレイ中のコードは途中で破棄されません。",
+    )
+
+    /** 诚实风险说明：同一进程、没有沙箱、等同自行安装的应用内代码；只信任了解来源的包。 */
+    val modTrustHonestNote: String = tr(
+        zh = "请注意：这些代码与游戏在同一个进程里运行，没有沙箱隔离，会继承应用已有的全部权限" +
+            "（读写存储、网络等）；风险等同你自行安装的应用内代码，崩溃会带走整局游戏。" +
+            "只信任你了解来源的包。",
+        en = "Warning: this code runs in the same process as the game, with no sandbox. It " +
+            "inherits every permission the app already has (storage, network, and so on). The " +
+            "risk is the same as installing in-app code yourself, and a crash can take down the " +
+            "whole session. Trust only packs whose source you understand.",
+        ja = "注意：このコードはゲームと同じプロセスで動作し、サンドボックスはありません。" +
+            "アプリが持つ権限（ストレージやネットワークなど）をすべて継承します。" +
+            "リスクは自分でアプリ内コードを導入するのと同じで、クラッシュするとプレイ全体が落ちる" +
+            "可能性があります。出所を理解しているパックだけを信頼してください。",
+    )
+
+    /** 没有任何 code 产物包时的空态。 */
+    val modTrustEmpty: String = tr(
+        zh = "没有发现第三方代码包。",
+        en = "No third-party code packs found.",
+        ja = "サードパーティ製コードパックは見つかりませんでした。",
+    )
+
+    /** 信任态：已信任。 */
+    val modTrustStateTrusted: String = tr(
+        zh = "已信任",
+        en = "Trusted",
+        ja = "信頼済み",
+    )
+
+    /** 信任态：未信任（下次装载不运行）。 */
+    val modTrustStateUntrusted: String = tr(
+        zh = "未信任",
+        en = "Untrusted",
+        ja = "未信頼",
+    )
+
+    /** 行内按钮：请求信任（点了先弹诚实二次确认，不直接写标记）。 */
+    val modTrustGrantButton: String = tr(
+        zh = "信任此包…",
+        en = "Trust this pack…",
+        ja = "このパックを信頼…",
+    )
+
+    /** 行内按钮：撤销信任（即时删标记，下次装载重新要求确认）。 */
+    val modTrustRevokeButton: String = tr(
+        zh = "撤销信任",
+        en = "Revoke trust",
+        ja = "信頼を取り消す",
+    )
+
+    /** 二次确认弹窗标题。 */
+    val modTrustConfirmTitle: String = tr(
+        zh = "确认信任这个代码包？",
+        en = "Trust this code pack?",
+        ja = "このコードパックを信頼しますか？",
+    )
+
+    /** 二次确认弹窗确认按钮。 */
+    val modTrustConfirmOk: String = tr(
+        zh = "确认信任",
+        en = "Trust",
+        ja = "信頼する",
+    )
+
+    /** 信任标记写 / 删失败时的提示。 */
+    val modTrustWriteFailed: String = tr(
+        zh = "没能更新信任记录，请检查存储空间或应用存储权限。",
+        en = "Could not update the trust record. Check free space or app storage permission.",
+        ja = "信頼記録を更新できませんでした。空き容量か保存権限を確認してください。",
+    )
+
+    /** 行读数：包名 + 产物个数。 */
+    private val modTrustRowReadoutFormat: String = tr(
+        zh = "「{0}」· 代码产物 {1} 个",
+        en = "\"{0}\" · {1} code artifact(s)",
+        ja = "「{0}」・コード成果物 {1} 件",
+    )
+
+    /** 行读数（[packageId] 为包名，[artifactCount] 为合法 .mod 产物数）。 */
+    fun modTrustRowReadout(packageId: String, artifactCount: Int): String =
+        fill(modTrustRowReadoutFormat, packageId, artifactCount)
+
+    /** 二次确认正文：说明风险来源（同进程 / 无沙箱 / 等同自行安装 / 崩溃带走整局）。 */
+    private val modTrustConfirmBodyFormat: String = tr(
+        zh = "「{0}」是别人编译好的代码。信任后，它会在下次进入游戏时与游戏在同一个进程里运行：" +
+            "没有沙箱隔离、继承应用已有的权限，风险等同你自行安装的应用内代码，崩溃会带走整局。" +
+            "只在你了解它的来源时继续。",
+        en = "\"{0}\" is code compiled by someone else. Once trusted, it runs alongside the " +
+            "game on the next launch: same process, no sandbox, inheriting the app's permissions. " +
+            "The risk is the same as installing in-app code yourself, and a crash can take down " +
+            "the whole session. Continue only if you know where it came from.",
+        ja = "「{0}」は他人がコンパイルしたコードです。信頼すると次回の起動時にゲームと同じプロセスで" +
+            "実行されます。サンドボックスはなく、アプリの権限を継承します。" +
+            "リスクは自分でアプリ内コードを導入するのと同じで、クラッシュするとプレイ全体が落ちます。" +
+            "出所を理解している場合だけ続行してください。",
+    )
+
+    /** 二次确认正文（[packageId] 为待信任包名）。 */
+    fun modTrustConfirmBody(packageId: String): String = fill(modTrustConfirmBodyFormat, packageId)
+
+    /** 撤销信任的二次确认标题（撤销也是安全面动作，点一下按钮不能直接删标记）。 */
+    val modTrustRevokeConfirmTitle: String = tr(
+        zh = "撤销这个代码包的信任？",
+        en = "Revoke trust for this code pack?",
+        ja = "このコードパックの信頼を取り消しますか？",
+    )
+
+    /** 撤销信任的二次确认按钮。 */
+    val modTrustRevokeConfirmOk: String = tr(
+        zh = "确认撤销",
+        en = "Revoke",
+        ja = "取り消す",
+    )
+
+    /** 撤销确认正文：删标记 + 下次装载回待确认 + 本局已装载的代码不中途卸载。 */
+    private val modTrustRevokeConfirmBodyFormat: String = tr(
+        zh = "「{0}」的信任记录会被删除，下次进入游戏时它回到「未信任」，必须重新确认才会运行。" +
+            "本局已经装载的代码不会中途卸载。",
+        en = "\"{0}\" will lose its trust record. The next time you enter the game it goes back " +
+            "to untrusted and must be confirmed again before it runs. Code already loaded in " +
+            "this session is not unloaded.",
+        ja = "「{0}」の信頼記録を削除します。次回ゲーム開始時は「未信頼」に戻り、再確認するまで" +
+            "実行されません。今回のプレイで読み込み済みのコードは途中で破棄されません。",
+    )
+
+    /** 撤销确认正文（[packageId] 为待撤销包名）。 */
+    fun modTrustRevokeConfirmBody(packageId: String): String =
+        fill(modTrustRevokeConfirmBodyFormat, packageId)
+
+    /** 确认信任成功的 toast。 */
+    private val modTrustGrantedFormat: String = tr(
+        zh = "已信任「{0}」，下次进入游戏时生效。",
+        en = "Trusted \"{0}\". It will run the next time you enter the game.",
+        ja = "「{0}」を信頼しました。次回ゲーム開始時に反映されます。",
+    )
+
+    /** 确认信任成功提示（[packageId] 为包名）。 */
+    fun modTrustGranted(packageId: String): String = fill(modTrustGrantedFormat, packageId)
+
+    /** 撤销信任成功的 toast：标记已删，下次装载会重新要求确认。 */
+    private val modTrustRevokedFormat: String = tr(
+        zh = "已撤销「{0}」的信任，信任记录已删除，下次装载会重新要求确认。",
+        en = "Revoked trust for \"{0}\". The trust record is deleted; the next load will ask again.",
+        ja = "「{0}」の信頼を取り消しました。信頼記録を削除したので、次回読み込み時に再確認します。",
+    )
+
+    /** 撤销信任成功提示（[packageId] 为包名）。 */
+    fun modTrustRevoked(packageId: String): String = fill(modTrustRevokedFormat, packageId)
+
+    // -----------------------------------------------------------------
+    // 第三方代码包概览（ADR-013 路 B 玩家可见面 / task-162，task-191 补总闸开关）：
+    // 总闸开关 + 每包读数（版本数 / 体积 / 信任态）。本段除总闸开关的确认文案外不含动作；
+    // 开着总闸跑第三方机器码这件事必须在二次确认里讲清后果，不能只写「打开开关」。
+    // 总闸关必须整块明说「未开启」，否则空表会被误读成「本机没装」。
+    // -----------------------------------------------------------------
+
+    /** 「第三方代码包概览」小节标题。 */
+    val modCodeOverviewTitle: String = tr(
+        zh = "第三方代码包概览",
+        en = "Third-party code pack overview",
+        ja = "サードパーティ製コードパック概要",
+    )
+
+    /** 小节说明：本卡读数 + 本卡总闸开关；信任变更在下方「第三方代码包」卡操作。 */
+    val modCodeOverviewHint: String = tr(
+        zh = "读数：列出本机已落地的代码产物与信任状态；装载总开关就在本卡，信任变更在下方卡片操作。",
+        en = "Readout: lists the code artifacts already on this device and their trust state. " +
+            "The master switch is on this card; trust changes are handled in the card below.",
+        ja = "読み取り：端末に配置済みのコード成果物と信頼状態を一覧します。" +
+            "マスタースイッチはこのカードにあり、信頼の変更は下のカードで行います。",
+    )
+
+    /** 总闸开：已信任的包会在下次装载时运行其代码。 */
+    val modCodeOverviewGateOn: String = tr(
+        zh = "总开关：已开启 — 已信任的代码包会在下次装载时运行。",
+        en = "Master switch: on — trusted packs will run on the next load.",
+        ja = "マスタースイッチ：オン — 信頼済みのコードパックは次回の読み込み時に実行されます。",
+    )
+
+    /** 总闸关：必须明说不会装载任何第三方代码（防「空表 = 没装」误读）。 */
+    val modCodeOverviewGateOff: String = tr(
+        zh = "总开关：未开启 — 不会装载任何第三方代码，本机的代码包都不会被运行。",
+        en = "Master switch: off — no third-party code is loaded, so none of the packs on this " +
+            "device run.",
+        ja = "マスタースイッチ：オフ — サードパーティ製コードは一切読み込まれません。" +
+            "端末内のコードパックも実行されません。",
+    )
+
+    /** 总闸开但本机没有任何代码包时的显式空态。 */
+    val modCodeOverviewEmpty: String = tr(
+        zh = "本机还没有第三方代码包。",
+        en = "No third-party code packs on this device yet.",
+        ja = "この端末にはまだサードパーティ製コードパックがありません。",
+    )
+
+    /** 读盘失败：照「缺数据显式 —」口径，不静默显示成 0 个包。 */
+    val modCodeOverviewUnreadable: String = tr(
+        zh = "没能读取代码产物目录：体积与信任状态显示为「—」。请检查存储空间或应用存储权限。",
+        en = "Could not read the code artifact directory. Size and trust state are shown as " +
+            "\"—\". Check free space or app storage permission.",
+        ja = "コード成果物ディレクトリを読み取れませんでした。サイズと信頼状態は「—」と表示されます。" +
+            "空き容量か保存権限を確認してください。",
+    )
+
+    /** 行读数：包名 + 版本数 + 体积（体积口径 = 既有 formatStorageBytes）。 */
+    private val modCodeOverviewRowFormat: String = tr(
+        zh = "「{0}」· {1} 个版本 · {2}",
+        en = "\"{0}\" · {1} version(s) · {2}",
+        ja = "「{0}」・{1} バージョン・{2}",
+    )
+
+    /** 行读数（[packageId] 包名，[versions] 已落地版本数，[size] 已格式化体积如 "1.5 KB"）。 */
+    fun modCodeOverviewRow(packageId: String, versions: Int, size: String): String =
+        fill(modCodeOverviewRowFormat, packageId, versions, size)
+
+    // -----------------------------------------------------------------
+    // 第三方代码包装载总闸的开关与二次确认（task-191）：开启 = 允许本机第三方机器码入库执行。
+    // 确认正文必须三件事都说清：① 同进程同权限、无沙箱，出错崩溃会带走整局；② 只在了解来源时开启；
+    // ③ 下次进入游戏才生效（本局不受影响、已加载的代码包也不会被卸载）。
+    // -----------------------------------------------------------------
+
+    /** 总闸开关行标题（开关本体在「第三方代码包概览」卡内）。 */
+    val modCodeLoaderSwitchTitle: String = tr(
+        zh = "启用第三方代码包装载",
+        en = "Enable third-party code packs",
+        ja = "サードパーティ製コードパックの読み込みを有効にする",
+    )
+
+    /** 总闸开关行说明：要二次确认、下次进入游戏生效、关掉后本机一个包都不跑。 */
+    val modCodeLoaderSwitchHint: String = tr(
+        zh = "开启需要二次确认；下次进入游戏才生效，关闭后本机代码包都不会运行。",
+        en = "Turning it on needs a second confirmation. It takes effect the next time the game " +
+            "starts; when off, no code pack on this device runs.",
+        ja = "オンにするにはもう一度確認が必要です。次回ゲーム起動時から有効になり、" +
+            "オフにすると端末内のコードパックは実行されません。",
+    )
+
+    /** 总闸开启前的二次确认标题。 */
+    val modCodeLoaderConfirmTitle: String = tr(
+        zh = "确定开启第三方代码包装载吗？",
+        en = "Turn on third-party code pack loading?",
+        ja = "サードパーティ製コードパックの読み込みを有効にしますか？",
+    )
+
+    /** 二次确认正文：同进程同权限无沙箱 / 只在了解来源时开 / 下次进入游戏才生效。 */
+    val modCodeLoaderConfirmBody: String = tr(
+        zh = "第三方代码包会以与本应用相同的权限、在同一进程内运行，没有沙箱隔离；" +
+            "一旦它出错，崩溃会带走整局游戏。请只在了解代码来源时开启。" +
+            "开关要下次进入游戏时才生效，本局不受影响，已加载的代码包也不会被卸载。",
+        en = "Third-party code packs run in this app's own process with the same permissions and " +
+            "no sandbox. If one misbehaves, the crash can take down the whole game session. " +
+            "Only turn this on if you know where the code comes from. The switch takes effect the " +
+            "next time the game starts: the current session is unaffected, and code packs already " +
+            "loaded stay loaded.",
+        ja = "サードパーティ製コードパックは本アプリと同じ権限・同じプロセスで動作し、" +
+            "サンドボックスはありません。不具合があるとクラッシュしてゲーム全体が失われることがあります。" +
+            "コードの入手元が分かる場合にのみ有効にしてください。" +
+            "このスイッチは次回ゲーム起動時から有効で、現在のプレイには影響せず、" +
+            "読み込み済みのコードパックもアンロードされません。",
+    )
+
+    /** 二次确认的确认按钮（Warn 色，防手滑）。 */
+    val modCodeLoaderConfirmOk: String = tr(
+        zh = "开启",
+        en = "Turn on",
+        ja = "有効にする",
+    )
+
+    /** 总闸没写进盘时的红字：明说设置没生效，不静默当成功。 */
+    val modCodeLoaderWriteFailed: String = tr(
+        zh = "开关没能保存成功，设置没有生效。请稍后再试。",
+        en = "Could not save the switch, so the setting did not change. Please try again.",
+        ja = "スイッチを保存できず、設定は反映されませんでした。もう一度お試しください。",
+    )
+
+    // -----------------------------------------------------------------
+    // 第三方代码包的代码态提示（task-179，task-187 补多版本残留态）：「装了但没生效」要在
+    // **装了它的那一行**上明说。五态（多版本残留 > 身份损坏 > 总闸关 > 未信任 > 已启用）
+    // 与 ModCodeGateHint 的裁决同序（多版本与身份损坏同属「只能重导」，见该文件 KDoc 的理由）；
+    // 句式复用 modManageDetailLine，本段只加状态词、不加句式，本表不参与裁决。
+    // -----------------------------------------------------------------
+
+    /** Mod 管理行的读数标签：这个包的第三方代码现在是什么状态。 */
+    val modManageCodeLabel: String = tr(
+        zh = "代码",
+        en = "code",
+        ja = "コード",
+    )
+
+    /** 代码态：总闸开着、已信任、身份完好 ⇒ 下次装载就运行。 */
+    val modCodeStateEnabled: String = tr(
+        zh = "已启用（下次装载时运行）",
+        en = "enabled (runs on the next load)",
+        ja = "有効（次回の読み込み時に実行されます）",
+    )
+
+    /** 代码态：运行总闸关着 ⇒ 本机任何第三方代码都不会跑，不是这个包单独的问题。 */
+    val modCodeStateGateOff: String = tr(
+        zh = "未开启（运行总开关关着，不会运行）",
+        en = "off (the runtime master switch is off, so nothing runs)",
+        ja = "オフ（実行のマスタースイッチが切れているため実行されません）",
+    )
+
+    /** 代码态：盘上有代码产物但玩家还没信任 ⇒ 信任后下次装载才跑。 */
+    val modCodeStateUntrusted: String = tr(
+        zh = "待信任（信任后下次装载才运行）",
+        en = "waiting for trust (runs after you trust it, on the next load)",
+        ja = "信頼待ち（信頼すると次回の読み込み時に実行されます）",
+    )
+
+    /** 代码态：代码身份信息坏了 ⇒ 改总闸 / 补信任都救不回来，只能重新导入这个包。 */
+    val modCodeStateCorrupt: String = tr(
+        zh = "身份信息损坏（改开关或补信任都没用，需要重新导入这个包）",
+        en = "identity data damaged (toggling settings or trusting it will not help; import this pack again)",
+        ja = "身元情報が壊れています（スイッチや信頼では直りません。このパックを再インポートしてください）",
+    )
+
+    /** 代码态：盘上还留着多份代码版本 ⇒ 装载端拒绝猜版本，重新导入会自动清成只留最新的一份。 */
+    val modCodeStateMultipleVersions: String = tr(
+        zh = "多版本残留（装载时不会运行，重新导入这个包会自动只留最新的一份）",
+        en = "multiple versions left over (it will not run when loaded; import this pack again " +
+            "to keep only the newest)",
+        ja = "複数バージョンが残存（読み込み時は実行されません。このパックを再インポートすると" +
+            "最新の1つだけになります）",
+    )
+
+    /** 代码态：包要求的引擎比本机新 ⇒ 装载闸拒载，改开关 / 补信任都救不回来，只能更新应用。 */
+    val modCodeStateEngineTooOld: String = tr(
+        zh = "需要更新引擎（这个包要求的引擎比本机新，更新应用后再试）",
+        en = "engine update needed (this pack requires a newer engine; update the app and retry)",
+        ja = "エンジンの更新が必要（このパックは本機より新しいエンジンを要求しています。" +
+            "アプリを更新してから再試行してください）",
+    )
+
+    // -----------------------------------------------------------------
+    // 第三方代码包概览的「最近一次装载结论」（task-195）：每包行在体积 / 信任读数后追加一行
+    // 「装载结论：…」。结论只在本次进程内有效（装配期发布、设置页只读，不落盘），拿不到记录
+    // 就显式「—」，不许把「没记录」写成「已装载」或「失败」。
+    // -----------------------------------------------------------------
+
+    /** 装载结论行标签（与 [modCodeLoadLabel] 组合成「标签：值」句式）。 */
+    val modCodeLoadLabel: String = tr(zh = "装载结论", en = "load result", ja = "読み込み結果")
+
+    /** 缺数据：本次启动还没有任何装载结论（总闸关 / 设置页在装配前打开 / 本次没跑到该包）。 */
+    val modCodeLoadUnknown: String = tr(
+        zh = "—（本次启动还没有装载记录）",
+        en = "— (no load recorded this launch)",
+        ja = "—（今回の起動では読み込み記録がありません）",
+    )
+
+    /** 本次装载已生效（载体已进运行名单）。 */
+    val modCodeLoadLoaded: String = tr(zh = "已装载", en = "loaded", ja = "読み込み済み")
+
+    /** 本次装载未生效：本行只说结论，具体原因见诊断导出（不在这里猜原因）。 */
+    val modCodeLoadSkipped: String = tr(
+        zh = "本次未装载（原因见诊断导出）",
+        en = "not loaded this launch (see the diagnostics export for why)",
+        ja = "今回の読み込みは未反映（理由は診断エクスポートを参照）",
+    )
+
+    /** 引擎太旧结论的版本缺口句式：包要求的引擎版本 + 本机版本（版本号不算内部术语）。 */
+    private val modCodeLoadEngineTooOldFormat: String = tr(
+        zh = "该包要求引擎 v{0}，本机 v{1}，请更新应用后再试",
+        en = "this pack requires engine v{0}; this build is v{1} — update the app and retry",
+        ja = "このパックはエンジン v{0} が必要です（本機は v{1}）。アプリを更新してから再試行してください",
+    )
+
+    /** 引擎太旧结论（[required] 包要求的引擎版本，[current] 本机引擎版本）。 */
+    fun modCodeLoadEngineTooOld(required: Int, current: Int): String =
+        fill(modCodeLoadEngineTooOldFormat, required, current)
+
+    // -----------------------------------------------------------------
+    // 家督继任（task-160 / Lane HB）：mod-family 手动继任面的玩家入口。
+    // 数据面 = ModHeirRequests（设置页 → VM 线程页边界）+ ModHeirFeed（会话 → 设置页快照）；
+    // 本段只放文案。规则名 / 候选 / 已指定三行都是「真值显示」，读不到就显示破折号，不猜。
+    // -----------------------------------------------------------------
+
+    /** 「家督继任」小节标题（嵌在 Mod 管理卡尾，只在 family 载体启用时渲染）。 */
+    val modHeirSectionTitle: String = tr(zh = "家督继任", en = "Family succession", ja = "家督の後継")
+
+    /** 小节说明：点了不会立刻变——回到游戏的下一个回合边界才兑现（与设置热通知同拍）。 */
+    val modHeirHint: String = tr(
+        zh = "手动指定仅对本局有效：回到游戏后，下一个回合边界生效。",
+        en = "Manual picks apply to this session only; they take effect at the next turn " +
+            "boundary after you return to the game.",
+        ja = "手動指定はこのセッション内でのみ有効です。ゲームに戻って次のターン境界で反映されます。",
+    )
+
+    /** 规则行标签（与 [modHeirModeLine] 组合成一行）。 */
+    val modHeirModeLabel: String = tr(zh = "继承规则", en = "Rule", ja = "継承規則")
+
+    /** 规则行格式（标签：值）。 */
+    private val modHeirModeLineFormat: String = tr(zh = "{0}：{1}", en = "{0}: {1}", ja = "{0}：{1}")
+
+    /** 规则行（[label] 为标签、[mode] 为规则名标签）。 */
+    fun modHeirModeLine(label: String, mode: String): String = fill(modHeirModeLineFormat, label, mode)
+
+    /** 规则标签：手动指定（只有这一档允许玩家点选候选）。 */
+    val modHeirModeManual: String = tr(zh = "手动指定", en = "Manual", ja = "手動指定")
+
+    /** 规则标签：长嗣优先（自动，玩家只能看不能改）。 */
+    val modHeirModeEldest: String = tr(zh = "长嗣优先（自动）", en = "Eldest first (auto)", ja = "長子優先（自動）")
+
+    /** 规则标签：幼嗣优先（自动，玩家只能看不能改）。 */
+    val modHeirModeYoungest: String = tr(zh = "幼嗣优先（自动）", en = "Youngest first (auto)", ja = "末子優先（自動）")
+
+    /** 规则标签缺省（未知规则名 / 本局还没读到真值）：破折号，不猜。 */
+    val modHeirModeUnknown: String = tr(zh = "—", en = "—", ja = "—")
+
+    /** 候选区标签。 */
+    val modHeirCandidatesLabel: String = tr(zh = "候选继任者", en = "Candidates", ja = "後継候補")
+
+    /** 候选行格式（作者面暂不出显示名，用稳定身份原文）。 */
+    private val modHeirCandidateFormat: String = tr(zh = "#{0}", en = "#{0}", ja = "#{0}")
+
+    /** 候选行（[raw] 为 EntityId.raw）。 */
+    fun modHeirCandidate(raw: Long): String = fill(modHeirCandidateFormat, raw)
+
+    /**
+     * 带名字的候选行格式（task-171）：名字在前、稳定身份紧跟，玩家既认得出是谁也能对上日志里的 raw。
+     * 名字缺省时调用方仍走 [modHeirCandidate]（只显示 `#raw`），不出现「（#id）」空壳。
+     */
+    private val modHeirCandidateNamedFormat: String =
+        tr(zh = "{0}（#{1}）", en = "{0} (#{1})", ja = "{0}（#{1}）")
+
+    /** 带名字的候选行（[displayName] = 既有 `title` 的只读投影，[raw] 为 EntityId.raw）。 */
+    fun modHeirCandidateNamed(displayName: String, raw: Long): String =
+        fill(modHeirCandidateNamedFormat, displayName, raw)
+
+    /**
+     * 候选行文本（task-171）：「有名字 ⇒ 名字（#id），缺名 ⇒ 只显示 #id」的二选一口径只此一份。
+     * 设置页候选列表与「已指定」行共用；空串 / 纯空白名字视为缺名，不出现空壳「（#id）」。
+     */
+    fun modHeirCandidateLabel(displayName: String?, raw: Long): String {
+        val name = displayName?.takeIf { it.isNotBlank() } ?: return modHeirCandidate(raw)
+        return modHeirCandidateNamed(name, raw)
+    }
+
+    /** 「未指定」态（手动规则下还没有指定继任者）。 */
+    val modHeirPendingNone: String = tr(zh = "未指定", en = "Not chosen", ja = "未指定")
+
+    /** 已指定行格式。 */
+    private val modHeirPendingFormat: String = tr(zh = "已指定：{0}", en = "Chosen: {0}", ja = "指定済み：{0}")
+
+    /** 已指定行（[candidate] 为候选行文本）。 */
+    fun modHeirPending(candidate: String): String = fill(modHeirPendingFormat, candidate)
+
+    /** 无值占位（无候选 / 无快照 / 规则未知）：破折号，明确「没有数据」而不是留白。 */
+    val modHeirNoneValue: String = tr(zh = "—", en = "—", ja = "—")
+
+    /** 无候选说明（本局没有被作者面认可的候选）。 */
+    val modHeirNoCandidates: String = tr(
+        zh = "本局没有可选的继任者。",
+        en = "No selectable heirs in this session.",
+        ja = "このセッションに選べる後継者がいません。",
+    )
+
+    /** 指定按钮（点候选行即提交，不弹确认：非破坏性，下一拍快照回显真值）。 */
+    val modHeirChooseButton: String = tr(zh = "指定为继任者", en = "Choose as successor", ja = "後継者に指定")
+
+    /** 清除指定按钮（会把手动指定交回当前规则：破坏性，二次确认）。 */
+    val modHeirClearButton: String = tr(zh = "清除指定", en = "Clear choice", ja = "指定を解除")
+
+    /** 指定提交回执（本拍只入队，页边界才调作者面）。 */
+    val modHeirChooseQueued: String = tr(
+        zh = "已提交：回到游戏后下一个回合边界生效。",
+        en = "Submitted: takes effect at the next turn boundary after you return to the game.",
+        ja = "送信しました。ゲームに戻って次のターン境界で反映されます。",
+    )
+
+    /** 清除提交回执。 */
+    val modHeirClearQueued: String = tr(
+        zh = "已提交清除：回到游戏后下一个回合边界生效。",
+        en = "Clear submitted: takes effect at the next turn boundary after you return to the game.",
+        ja = "解除を送信しました。ゲームに戻って次のターン境界で反映されます。",
+    )
+
+    /** 清除二次确认标题。 */
+    val modHeirClearConfirmTitle: String = tr(
+        zh = "清除指定的继任者？",
+        en = "Clear the chosen successor?",
+        ja = "指定した後継者を解除しますか？",
+    )
+
+    /** 清除二次确认正文：说明清除 = 回到自动规则，而不是「这局没有继任者」。 */
+    val modHeirClearConfirmBody: String = tr(
+        zh = "清除后本局回到当前继承规则自动选择；回到游戏后下一个回合边界生效。",
+        en = "After clearing, this session falls back to the current rule. It takes effect at " +
+            "the next turn boundary after you return to the game.",
+        ja = "解除すると、このセッションは現在の継承規則による自動選択に戻ります。" +
+            "ゲームに戻って次のターン境界で反映されます。",
+    )
+
+    /** 清除确认按钮。 */
+    val modHeirClearConfirmOk: String = tr(zh = "确认清除", en = "Clear", ja = "解除する")
+
+    /** 规则非 manual 时的说明：不是「你没选」，而是当前规则不让选。 */
+    val modHeirManualOnlyHint: String = tr(
+        zh = "当前继承规则不是「手动指定」，先在本 Mod 的设置里改成手动才能指定。",
+        en = "The current rule is not \"Manual\". Switch it in this mod's settings before choosing.",
+        ja = "現在の継承規則は「手動指定」ではありません。この Mod の設定で手動に切り替えてから指定してください。",
+    )
+
+    /** 快照未就绪说明（本局还没有页边界回写过真值：刚进游戏 / 刚打开设置）。 */
+    val modHeirUnavailable: String = tr(
+        zh = "尚未就绪：回到游戏推进一回合后再看。",
+        en = "Not ready yet: advance one turn in the game and check again.",
+        ja = "まだ準備できていません。ゲームで1ターン進めてから確認してください。",
+    )
+
+    // -----------------------------------------------------------------
+    // Mod 版本读数（VS-1，2026-11-18）：作者面 API 版本 / 引擎版本 / 数据版本缺口。
+    // 引擎读数只在段落首行显示一次；每行只显示该包自己声明的那一档（读不到就不显示）。
+    // -----------------------------------------------------------------
+
+    /** 引擎读数（段落首行一次）：本体内核支持的 mod API 版本。 */
+    private val modVersionEngineFormat: String = tr(
+        zh = "引擎 mod API v{0}",
+        en = "Engine mod API v{0}",
+        ja = "エンジン mod API v{0}",
+    )
+
+    /** 引擎读数行（[engineApiVersion] 为本体内核的 `ModApi.VERSION`）。 */
+    fun modVersionEngine(engineApiVersion: Int): String = fill(modVersionEngineFormat, engineApiVersion)
+
+    /** 每行作者面声明：`API 版本 v13`。 */
+    private val modVersionApiFormat: String = tr(
+        zh = "API 版本 v{0}",
+        en = "Mod API version v{0}",
+        ja = "API バージョン v{0}",
+    )
+
+    /** 作者面 API 版本读数行（[apiVersion] 为 mod 声明的 `EraMod.apiVersion`）。 */
+    fun modVersionApi(apiVersion: Int): String = fill(modVersionApiFormat, apiVersion)
+
+    /** 不兼容警告：声明版本高于引擎，装配期会被版本门拒载。 */
+    private val modVersionIncompatibleFormat: String = tr(
+        zh = "不兼容（需要 API v{0}，引擎 v{1}）",
+        en = "Incompatible (needs API v{0}, engine v{1})",
+        ja = "非対応（API v{0} が必要、エンジンは v{1} まで）",
+    )
+
+    /** 不兼容警告行（[requiredApiVersion] 为 mod 声明，[engineApiVersion] 为引擎）。 */
+    fun modVersionIncompatible(requiredApiVersion: Int, engineApiVersion: Int): String =
+        fill(modVersionIncompatibleFormat, requiredApiVersion, engineApiVersion)
+
+    /** 数据版本缺口：`数据版本 v1→v2`（存档侧车记录 → mod 声明）。 */
+    private val modVersionDataFormat: String = tr(
+        zh = "数据版本 v{0}→v{1}",
+        en = "Data version v{0}→v{1}",
+        ja = "データ版 v{0}→v{1}",
+    )
+
+    /** 数据版本缺口行（[storedDataVersion] 侧车记录、[declaredDataVersion] mod 声明）。 */
+    fun modVersionData(storedDataVersion: Int, declaredDataVersion: Int): String =
+        fill(modVersionDataFormat, storedDataVersion, declaredDataVersion)
+
+    /** 启用被版本门挡住时的提示：不写 marker、直接说清要哪一版。 */
+    private val modVersionEnableBlockedFormat: String = tr(
+        zh = "无法启用：这个 Mod 需要 API v{0}，引擎只到 v{1}。",
+        en = "Can't enable: this mod needs API v{0}, but the engine only provides v{1}.",
+        ja = "有効にできません：この Mod は API v{0} を必要としますが、エンジンは v{1} までです。",
+    )
+
+    /** 启用被挡提示行（[requiredApiVersion] 为 mod 声明，[engineApiVersion] 为引擎）。 */
+    fun modVersionEnableBlocked(requiredApiVersion: Int, engineApiVersion: Int): String =
+        fill(modVersionEnableBlockedFormat, requiredApiVersion, engineApiVersion)
+
+    /**
+     * 装载失败小节标题（内容是本会话装配链上报的失败，不是盘面扫描结果）。
+     *
+     * 口径随诊断面按会话归零（`ModManageDiagnostics.reset()` 在 `GameHost.assembleSession`
+     * 顶部调用）：行只代表**本次会话**，上一局修好或禁用过的包不会再出现在这里；所以标题不能
+     * 写「上次启动」——那会让玩家以为这些行还反映当前盘面状态。
+     */
+    val modManageFailureHeading: String = tr(
+        zh = "本会话装载失败：",
+        en = "Failed to load in this session: ",
+        ja = "今回のセッションの読み込み失敗：",
+    )
+
+    /** 装载失败单行：显示名（或包名）+ 失败摘要；界面逐条 fill。 */
+    private val modManageFailureLineFormat: String = tr(
+        zh = "{0}：{1}",
+        en = "{0}: {1}",
+        ja = "{0}：{1}",
+    )
+
+    /** 装载失败单行（[modName] 为标题，[reason] 为异常摘要）。 */
+    fun modManageFailureLine(modName: String, reason: String): String =
+        fill(modManageFailureLineFormat, modName, reason)
+
+    /** 详情：包名标签。 */
+    val modManageDetailPackageId: String = tr(zh = "包名", en = "Package name", ja = "パッケージ名")
+
+    /** 详情：版本标签。 */
+    val modManageDetailVersion: String = tr(zh = "版本", en = "Version", ja = "バージョン")
+
+    /** 详情：作者标签。 */
+    val modManageDetailAuthor: String = tr(zh = "作者", en = "Author", ja = "製作者")
+
+    /** 详情：来源标签。 */
+    val modManageDetailSource: String = tr(zh = "来源", en = "Source", ja = "入手元")
+
+    /** 详情：说明标签。 */
+    val modManageDetailDescription: String = tr(zh = "说明", en = "Description", ja = "説明")
+
+    /** 详情单行：标签 + 值（界面逐条 fill，避免把分隔符内联进组合代码）。 */
+    private val modManageDetailLineFormat: String = tr(
+        zh = "{0}：{1}",
+        en = "{0}: {1}",
+        ja = "{0}：{1}",
+    )
+
+    /** 详情单行（[label] 标签、[value] 值）。 */
+    fun modManageDetailLine(label: String, value: String): String =
+        fill(modManageDetailLineFormat, label, value)
+
+    /** 详情：说明为空的占位。 */
+    val modManageDescriptionEmpty: String = tr(
+        zh = "（没有填写说明）",
+        en = "(no description)",
+        ja = "（説明なし）",
+    )
+
+    /**
+     * 详情：数据包已配对（扩展包文件在场）。
+     *
+     * 与「装载失败」是**两种不同读数**：这里只说盘面配对状态，不推断运行期能不能装载。
+     */
+    val modManageModulePaired: String = tr(
+        zh = "扩展包文件已就位（数据包已配对）",
+        en = "Pack file is in place (data pack paired)",
+        ja = "拡張パックファイルあり（データパックは揃っています）",
+    )
+
+    /**
+     * 详情：导入包缺扩展包文件（半成品，装配期不会被当作模块装载）。
+     *
+     * 与「装载失败」分开报：这是导入产物配对问题，重新导入即可修复，不是 mod 代码/声明出错。
+     */
+    val modManageModuleMissing: String = tr(
+        zh = "缺少扩展包文件（只有包信息，装载不会生效；重新导入可修复）",
+        en = "Pack file is missing (pack info only, so it will not load; re-import to fix)",
+        ja = "拡張パックファイルがありません（パック情報のみのため読み込まれません。再インポートで修復できます）",
+    )
+
+    /** 详情：内置载体没有独立扩展包文件的说明。 */
+    val modManageModuleBuiltin: String = tr(
+        zh = "随游戏本体提供，没有单独的扩展包文件",
+        en = "Ships with the game; has no standalone pack file",
+        ja = "本体に含まれるため、独立した拡張パックファイルはありません",
+    )
+
+    /**
+     * 条目状态：缺依赖体检（ModDX2-C，对标 LOOT/SMAPI 交互警告）——`requires` 声明的前置
+     * 包既不在其余已装 manifest 里、也不是随包内置载体。
+     *
+     * {0} = 缺失包名清单（扫描声明序，界面用 [listSeparator] 拼好再灌）；盘面静态事实，
+     * 不随启停变，也不含版本区间裁决（那是链接期的活）。
+     */
+    private val modMissingRequiresFormat: String = tr(
+        zh = "缺前置包：{0}（装上后重启生效）",
+        en = "Missing dependency: {0} (install it and restart)",
+        ja = "前置パッケージが未導入：{0}（インストール後に再起動で有効）",
+    )
+
+    /** 缺依赖行（[deps] 为缺失包名清单，扫描声明序、[listSeparator] 拼接）。 */
+    fun modMissingRequires(deps: String): String = fill(modMissingRequiresFormat, deps)
+
+    /** 条目展开/收起提示。 */
+    val modManageExpandHint: String = tr(
+        zh = "点条目展开详情",
+        en = "Tap an entry for details",
+        ja = "項目をタップすると詳細が開きます",
+    )
+
+    /** 卸载按钮文字。 */
+    val modManageUninstall: String = tr(zh = "卸载", en = "Uninstall", ja = "アンインストール")
+
+    /** 卸载二次确认标题（防误删导入包）。 */
+    val modManageUninstallConfirmTitle: String = tr(
+        zh = "确认卸载",
+        en = "Confirm uninstall",
+        ja = "アンインストールの確認",
+    )
+
+    /** 卸载二次确认正文（点名要删哪些文件、能否恢复、原始文件不动）。 */
+    private val modManageUninstallConfirmBodyFormat: String = tr(
+        zh = "要卸载「{0}」吗？会删除这个包的扩展包文件、包信息、源文件与停用状态，" +
+            "之后只能重新导入恢复；mods 目录里的原始文件不会删。",
+        en = "Uninstall \"{0}\"? This deletes its pack file, pack info, source files and the disabled state; " +
+            "the only way back is re-importing. The original files in the mods folder are kept.",
+        ja = "「{0}」をアンインストールしますか？拡張パックファイル、パック情報、ソースファイルと無効状態を削除します。" +
+            "元に戻すには再インポートが必要です。mods フォルダーの元ファイルは残ります。",
+    )
+
+    /** 卸载二次确认正文（[modName] 为标题）。 */
+    fun modManageUninstallConfirmBody(modName: String): String =
+        fill(modManageUninstallConfirmBodyFormat, modName)
+
+    /** 卸载失败提示（文件被占用 / 权限不足）。 */
+    private val modManageUninstallFailedFormat: String = tr(
+        zh = "卸载「{0}」失败，有文件删不掉，请检查存储权限。",
+        en = "Could not uninstall \"{0}\"; some files could not be deleted. Check storage permission.",
+        ja = "「{0}」の削除に失敗しました。削除できないファイルがあります。保存権限を確認してください。",
+    )
+
+    /** 卸载失败提示（[modName] 为标题）。 */
+    fun modManageUninstallFailed(modName: String): String =
+        fill(modManageUninstallFailedFormat, modName)
+
+    /** 卸载成功提示。 */
+    private val modManageUninstallDoneFormat: String = tr(
+        zh = "已卸载「{0}」。",
+        en = "Uninstalled \"{0}\".",
+        ja = "「{0}」を削除しました。",
+    )
+
+    /** 卸载成功提示（[modName] 为标题）。 */
+    fun modManageUninstallDone(modName: String): String = fill(modManageUninstallDoneFormat, modName)
+
+    /** 内置 Mod 不提供卸载入口的说明。 */
+    val modManageUninstallBuiltin: String = tr(
+        zh = "内置 Mod 随游戏本体提供，不能在设置页卸载。",
+        en = "Built-in mods ship with the game and cannot be uninstalled here.",
+        ja = "内蔵 Mod は本体に含まれるため、ここでは削除できません。",
+    )
+
+    /** 卸载确认对话框里的影响预览小标题。 */
+    val modUninstallImpactHeading: String = tr(
+        zh = "卸载会一并删除：",
+        en = "Uninstalling also deletes:",
+        ja = "アンインストールで以下も削除されます：",
+    )
+
+    /** 影响预览：代码行类别标签。 */
+    val modUninstallImpactCode: String = tr(zh = "代码", en = "Code", ja = "コード")
+
+    /** 影响预览：包设置行类别标签。 */
+    val modUninstallImpactSettings: String = tr(zh = "包设置", en = "Package settings", ja = "パッケージ設定")
+
+    /** 影响预览：存档侧车行类别标签。 */
+    val modUninstallImpactSave: String = tr(zh = "存档数据", en = "Save data", ja = "セーブデータ")
+
+    /** 影响预览：媒体清单行类别标签。 */
+    val modUninstallImpactMedia: String = tr(zh = "媒体文件", en = "Media files", ja = "メディアファイル")
+
+    /** 影响预览：资源目录行类别标签。 */
+    val modUninstallImpactAssets: String = tr(zh = "资源文件", en = "Asset files", ja = "素材ファイル")
+
+    /** 影响预览：角色模板目录行类别标签。 */
+    val modUninstallImpactChara: String = tr(
+        zh = "角色模板",
+        en = "Character templates",
+        ja = "キャラクターテンプレート",
+    )
+
+    /** 影响预览：包成员文件行类别标签。 */
+    val modUninstallImpactMembers: String = tr(zh = "包文件", en = "Package files", ja = "パッケージファイル")
+
+    /** 影响预览读数「确实没有」：数量为 0 时写这个，不写 0。 */
+    val modUninstallImpactNone: String = tr(zh = "无", en = "none", ja = "なし")
+
+    /** 影响预览读数「取不到」：与 0 分开，免得玩家以为卸载什么都不删。 */
+    val modUninstallImpactMissing: String = tr(
+        zh = "—（无读数）",
+        en = "— (no reading)",
+        ja = "—（読取なし）",
+    )
+
+    /** 影响预览：代码行 `版本数 / 体积`。 */
+    private val modUninstallImpactCodeLineFormat: String = tr(
+        zh = "{0} 个版本 / {1}",
+        en = "{0} version(s) / {1}",
+        ja = "{0} バージョン / {1}",
+    )
+
+    /** 影响预览：代码行（[versions] 版本数、[size] 屏显体积）。 */
+    fun modUninstallImpactCodeLine(versions: Int, size: String): String =
+        fill(modUninstallImpactCodeLineFormat, versions, size)
+
+    /** 影响预览：存档侧车行 `体积 / 条目数`。 */
+    private val modUninstallImpactSaveLineFormat: String = tr(
+        zh = "{0} / {1} 项",
+        en = "{0} / {1} item(s)",
+        ja = "{0} / {1} 件",
+    )
+
+    /** 影响预览：存档侧车行（[size] 屏显体积、[keys] 条目数）。 */
+    fun modUninstallImpactSaveLine(size: String, keys: Int): String =
+        fill(modUninstallImpactSaveLineFormat, size, keys)
+
+    /** 影响预览：资源目录行 `条目数 / 体积`。 */
+    private val modUninstallImpactAssetsLineFormat: String = tr(
+        zh = "{0} 个 / {1}",
+        en = "{0} file(s) / {1}",
+        ja = "{0} 個 / {1}",
+    )
+
+    /** 影响预览：资源目录行（[entries] 条目数、[size] 屏显体积）。 */
+    fun modUninstallImpactAssetsLine(entries: Int, size: String): String =
+        fill(modUninstallImpactAssetsLineFormat, entries, size)
+
+    /** 影响预览：纯计数行（包设置 / 媒体 / 角色模板 / 包成员）。 */
+    private val modUninstallImpactCountLineFormat: String = tr(
+        zh = "{0} 项",
+        en = "{0} item(s)",
+        ja = "{0} 件",
+    )
+
+    /** 影响预览：纯计数行（[count] 条目数）。 */
+    fun modUninstallImpactCountLine(count: Int): String = fill(modUninstallImpactCountLineFormat, count)
+
+    /**
+     * 装载失败条目旁的「重试装载」按钮（Lane DZ）。
+     *
+     * 只对**可重试形态**亮：内置载体 + 本会话曾因 onLoad/onEnable 失败回滚。点击不回显
+     * 同步结果（会话在游戏壳里、设置页拿不到引用），而由失败读数的既有轮询刷新。
+     */
+    val modManageRetryInstall: String = tr(
+        zh = "重试装载",
+        en = "Retry loading",
+        ja = "読み込みを再試行",
+    )
+
+    /** 点击「重试装载」后的等待提示（请求在下个回合边界由会话执行）。 */
+    val modManageRetryQueued: String = tr(
+        zh = "已请求重试装载，下一回合边界生效；结果会刷新在这一行。",
+        en = "Retry requested. It runs at the next turn boundary and the result updates on this line.",
+        ja = "再読み込みを要求しました。次のターン境界で実行され、結果はこの行に反映されます。",
+    )
+
+    // -----------------------------------------------------------------
+    // 口上包管理卡（KI-6，2026-11-23）：只列玩家导入的口上包（`kojo-` 前缀），
+    // 与「已安装的 Mod」列表（全来源）分立——主人指令「和 mod 导入功能区分开来，
+    // 单独设置一个口上导入功能」。覆盖关系展示 = manifest `override-functions` 段。
+    // -----------------------------------------------------------------
+
+    /** 口上包管理卡标题。 */
+    val kojoManageTitle: String = tr(
+        zh = "口上包管理",
+        en = "Installed kojo packs",
+        ja = "口上パック管理",
+    )
+
+    /** 卡顶说明：这卡只管导入的口上包，覆盖与启停的语义、生效时机一次说清。 */
+    val kojoManageHint: String = tr(
+        zh = "这里只列从「口上导入」或口上市场装进来的口上包（与 Mod 列表分立）。" +
+            "开关 = 停用/启用该口上；卸载后该口上对本体的覆盖恢复为原版。改完要重开一局才生效。",
+        en = "Only kojo packs imported from Kojo Import or the market are listed here (separate from " +
+            "the mod list). Toggle = disable/enable a pack; uninstalling restores the original lines " +
+            "it overrode. Restart the game to apply.",
+        ja = "ここには「口上インポート」やマーケットから入れた口上パックだけを表示します" +
+            "（Mod 一覧とは別）。スイッチ＝パックの無効/有効。アンインストールすると" +
+            "上書きしていた本体の口上は元に戻ります。反映にはゲーム再起動が必要です。",
+    )
+
+    /** 列表为空时的提示（导引到导入入口）。 */
+    val kojoManageEmpty: String = tr(
+        zh = "还没有导入任何口上包。用上方「口上导入」或口上市场添加。",
+        en = "No kojo packs imported yet. Use Kojo Import above or the kojo market.",
+        ja = "口上パックはまだありません。上の「口上インポート」か口上マーケットから追加できます。",
+    )
+
+    /** 计数行：{0} 已导入的口上包数。 */
+    val kojoManageCountFormat: String = tr(
+        zh = "已导入 {0} 个口上包",
+        en = "{0} kojo pack(s) imported",
+        ja = "口上パック {0} 件",
+    )
+
+    /** 导入时间行：{0} 已格式化的时间（ISO 形）。 */
+    val kojoManageImportedAtFormat: String = tr(
+        zh = "导入于 {0}",
+        en = "imported at {0}",
+        ja = "導入日時：{0}",
+    )
+
+    /** 覆盖计数行：{0} 声明覆盖的本体函数数。 */
+    val kojoManageOverrideCountFormat: String = tr(
+        zh = "覆盖本体函数 {0} 个",
+        en = "{0} original function(s) overridden",
+        ja = "本体関数 {0} 件を上書き",
+    )
+
+    /** 展开面标题：被覆盖函数清单（无覆盖声明则整块不出）。 */
+    val kojoManageOverrideListTitle: String = tr(
+        zh = "被覆盖的本体函数（装载时后装者生效）",
+        en = "Overridden original functions (later-installed packs win)",
+        ja = "上書きされた本体関数（後から入れたものが有効）",
+    )
+
+    /** 无覆盖声明的展开说明（整块替代覆盖清单）。 */
+    val kojoManageOverrideNone: String = tr(
+        zh = "本包没有声明覆盖本体函数。",
+        en = "This pack does not override any original functions.",
+        ja = "このパックは本体関数を上書きしていません。",
+    )
+
+    /** 卸载确认框标题。 */
+    val kojoManageUninstallConfirmTitle: String = tr(
+        zh = "卸载口上包",
+        en = "Uninstall kojo pack",
+        ja = "口上パックを削除",
+    )
+
+    /** 卸载确认正文：{0} 口上显示名。覆盖恢复原版 + 设置一并删除要说明。 */
+    val kojoManageUninstallConfirmFormat: String = tr(
+        zh = "卸载「{0}」？该口上对本体的覆盖将恢复为原版，本包设置与数据一并删除。",
+        en = "Uninstall \"{0}\"? The original lines it overrode will be restored, and this pack's " +
+            "settings and data will be removed.",
+        ja = "「{0}」を削除しますか？上書きしていた本体の口上は元に戻り、このパックの設定とデータも削除されます。",
+    )
+
+    /** 卸载确认框的确认按钮。 */
+    val kojoManageUninstallConfirmOk: String = tr(
+        zh = "卸载",
+        en = "Uninstall",
+        ja = "削除",
+    )
+
+    /** 卸载确认框的取消按钮。 */
+    val kojoManageUninstallConfirmCancel: String = tr(
+        zh = "取消",
+        en = "Cancel",
+        ja = "キャンセル",
+    )
+
+    /** 计数行包装（卡内只出词，不判语言）。 */
+    fun kojoManageCount(count: Int): String = fill(kojoManageCountFormat, count)
+
+    /** 导入时间行包装（时间戳格式化走 [formatImportTimestamp] 的 ISO 形）。 */
+    fun kojoManageImportedAt(millis: Long): String = fill(kojoManageImportedAtFormat, formatImportTimestamp(millis))
+
+    /** 覆盖计数行包装。 */
+    fun kojoManageOverrideCount(count: Int): String = fill(kojoManageOverrideCountFormat, count)
+
+    /** 卸载确认正文包装。 */
+    fun kojoManageUninstallConfirm(name: String): String = fill(kojoManageUninstallConfirmFormat, name)
+
+    // -----------------------------------------------------------------
+    // 重新编译（已导入 ERB 数据包的源变更后原位重编，2026-11-17 lane-hotrecompile）
+    // -----------------------------------------------------------------
+
+    /** 「重新编译」按钮文字。 */
+    val modManageRecompile: String = tr(zh = "重新编译", en = "Recompile", ja = "再コンパイル")
+
+    /** 重编按钮下的说明（何时用、源没变会跳过）。 */
+    val modManageRecompileHint: String = tr(
+        zh = "改过这个包的源文件后点这里重编；源没变会自动跳过。",
+        en = "Use this after editing this pack's source files; unchanged sources are skipped automatically.",
+        ja = "このパックのソースを変更したらここで再コンパイルします。変更がなければ自動でスキップされます。",
+    )
+
+    /** 重编进行中的按钮文字（后台编译期显示）。 */
+    val modManageRecompileBusy: String = tr(
+        zh = "正在重新编译…",
+        en = "Recompiling…",
+        ja = "再コンパイル中…",
+    )
+
+    /** 重编结果：源未变更，未动手。 */
+    val modManageRecompileUpToDate: String = tr(
+        zh = "源文件没有变化，无需重新编译。",
+        en = "Sources are unchanged; no recompile needed.",
+        ja = "ソースは変更されていないため、再コンパイルは不要です。",
+    )
+
+    /** 重编成功提示格式（{0} = Mod 标题；重开一局才生效）。 */
+    private val modManageRecompileDoneFormat: String = tr(
+        zh = "已重新编译「{0}」，重开一局生效。",
+        en = "Recompiled \"{0}\". Restart the game to apply.",
+        ja = "「{0}」を再コンパイルしました。ゲームを再起動すると反映されます。",
+    )
+
+    /** 重编成功提示（[modName] 为标题）。 */
+    fun modManageRecompileDone(modName: String): String = fill(modManageRecompileDoneFormat, modName)
+
+    /** 重编失败提示格式（{0} = Mod 标题，{1} = 失败原因；旧版本已保留）。 */
+    private val modManageRecompileFailedFormat: String = tr(
+        zh = "「{0}」重新编译失败（已保留旧版本）：{1}",
+        en = "Could not recompile \"{0}\" (the previous version is kept): {1}",
+        ja = "「{0}」の再コンパイルに失敗しました（以前の版は残っています）：{1}",
+    )
+
+    /** 重编失败提示（[modName] 为标题，[reason] 为取证面原因）。 */
+    fun modManageRecompileFailed(modName: String, reason: String): String =
+        fill(modManageRecompileFailedFormat, modName, reason)
+
+    // -----------------------------------------------------------------
+    // per-mod 设置项（RT2 per-mod 配置，2026-11-17）：作者声明一次 → 设置页自动出控件
+    // -----------------------------------------------------------------
+    // 口径：设置项标题 / 说明正文来自 manifest 的 settings 段（作者填），本表只收「壳层
+    // 自己的字」：小节标题、说明、单行格式、布尔开合、保存反馈、整数校验与 clamp 提示。
+
+    /** Mod 设置小节标题（展开某条 Mod 时出现在详情里）。 */
+    val modSettingSectionTitle: String = tr(
+        zh = "Mod 设置",
+        en = "Mod settings",
+        ja = "Mod 設定",
+    )
+
+    /**
+     * 说明：设置项来源（作者声明）、保存落点（按包保存在本机）与生效时机。
+     *
+     * 生效时机 = **本局内下一拍**（Lane CS 热通知）：写盘成功后经 `ModSettingsNotifyChannel`
+     * 入队，VM 线程页边界 drain 到 `ModRuntimeAssembly.notifySettingsChanged`。旧口径
+     * 「下次重开一局生效」在热通知落地后已失真，这里与 [modManageTakeEffectHint] 同口径。
+     */
+    val modSettingHint: String = tr(
+        zh = "这些设置项由 Mod 作者声明，按包保存在本机（不写进存档）。保存后回到游戏，" +
+            "下一次回合推进时生效，不用重开。",
+        en = "These settings are declared by the Mod author and saved per package on this device " +
+            "(not inside save files). They apply at the next turn boundary after you return to " +
+            "the game; no restart needed.",
+        ja = "これらの設定は Mod 作者が宣言したもので、パッケージごとに端末へ保存されます" +
+            "（セーブデータには入りません）。保存後にゲームへ戻ると、次のターン進行時に" +
+            "反映されます（再起動不要）。",
+    )
+
+    /** 单行展示格式：设置项标题：当前值。 */
+    private val modSettingLineFormat: String = tr(
+        zh = "{0}：{1}",
+        en = "{0}: {1}",
+        ja = "{0}：{1}",
+    )
+
+    /** 设置项单行（[label] 标题 / [value] 当前值文本）。 */
+    fun modSettingLine(label: String, value: String): String = fill(modSettingLineFormat, label, value)
+
+    /** 布尔设置项「开」的显示文本。 */
+    val modSettingBoolOn: String = tr(zh = "开", en = "On", ja = "オン")
+
+    /** 布尔设置项「关」的显示文本。 */
+    val modSettingBoolOff: String = tr(zh = "关", en = "Off", ja = "オフ")
+
+    /** 保存成功提示（写盘成功；生效时机同说明 = 回到游戏后的下一拍，不承诺重开）。 */
+    val modSettingSaved: String = tr(
+        zh = "设置已保存，回到游戏后下一回合生效。",
+        en = "Setting saved. It applies on the next turn after you return to the game.",
+        ja = "設定を保存しました。ゲームに戻ると次のターンで反映されます。",
+    )
+
+    /** 保存失败提示（写盘失败；盘上原值保持不变）。 */
+    val modSettingSaveFailed: String = tr(
+        zh = "设置保存失败，请检查存储空间后重试。",
+        en = "Failed to save the setting. Check storage space and try again.",
+        ja = "設定の保存に失敗しました。空き容量を確認して再試行してください。",
+    )
+
+    /** 整数输入非法提示（不是整数，取消不改盘）。 */
+    val modSettingInvalidInt: String = tr(
+        zh = "请输入整数。",
+        en = "Please enter a whole number.",
+        ja = "整数を入力してください。",
+    )
+
+    /** 超出声明范围被 clamp 的提示（[value] 为实际落盘值文本）。 */
+    private val modSettingClampedFormat: String = tr(
+        zh = "超出允许范围，已修正为 {0}。",
+        en = "Out of range; adjusted to {0}.",
+        ja = "許容範囲外のため {0} に修正しました。",
+    )
+
+    /** clamp 提示（[value] 为实际落盘值文本）。 */
+    fun modSettingClamped(value: String): String = fill(modSettingClampedFormat, value)
+
+    /** 「恢复默认」按钮（本小节底部；删除本机为该包保存的全部设置值）。 */
+    val modSettingResetButton: String = tr(
+        zh = "恢复默认",
+        en = "Restore defaults",
+        ja = "既定値に戻す",
+    )
+
+    /** 二次确认弹窗标题。 */
+    val modSettingResetConfirmTitle: String = tr(
+        zh = "恢复这个 Mod 的默认设置？",
+        en = "Restore this Mod's default settings?",
+        ja = "この Mod の既定の設定に戻しますか？",
+    )
+
+    /** 二次确认正文：删除范围（本机该包侧车）+ 不碰存档/Mod 数据 + 生效时机。 */
+    val modSettingResetConfirmBody: String = tr(
+        zh = "将删除本机为这个包保存的全部设置值，回到作者声明的默认值（不影响存档与 Mod 数据）。" +
+            "回到游戏后下一回合生效。",
+        en = "This deletes every saved value for this package on this device and falls back to the " +
+            "defaults declared by the author (save files and Mod data are untouched). It applies on " +
+            "the next turn after you return to the game.",
+        ja = "このパッケージの端末保存設定をすべて削除し、作者が宣言した既定値に戻します" +
+            "（セーブデータと Mod のデータには影響しません）。ゲームに戻ると次のターンで反映されます。",
+    )
+
+    /** 二次确认弹窗的确认按钮（与编辑弹窗的通用「确定」区分开）。 */
+    val modSettingResetConfirmOk: String = tr(
+        zh = "确认恢复",
+        en = "Restore",
+        ja = "戻す",
+    )
+
+    /** 恢复默认成功提示（删除成功；生效时机同保存 = 回到游戏后的下一拍）。 */
+    val modSettingResetDone: String = tr(
+        zh = "已恢复默认，回到游戏后下一回合生效。",
+        en = "Defaults restored. They apply on the next turn after you return to the game.",
+        ja = "既定値に戻しました。ゲームに戻ると次のターンで反映されます。",
+    )
+
+    /** 恢复默认失败提示（侧车删除失败；盘上原值保持不变）。 */
+    val modSettingResetFailed: String = tr(
+        zh = "恢复默认失败，请检查存储空间后重试。",
+        en = "Failed to restore defaults. Check storage space and try again.",
+        ja = "既定値への復元に失敗しました。空き容量を確認して再試行してください。",
     )
 
     // -----------------------------------------------------------------
@@ -1586,27 +3407,81 @@ class SettingsStrings private constructor(
         ja = "Mod 読み込み優先度",
     )
 
-    /** 说明：逗号分隔 packageId 列表是就绪模块优先级、不是完整顺序；依赖会改变实际装载序。 */
+    /** 说明：勾选 + 上下移即优先级；不是完整顺序；依赖会改变实际装载序。 */
     val modPackageOrderHint: String = tr(
-        zh = "用逗号分隔 Mod 包名（packageId），靠前的在「同时就绪」时优先装载。" +
+        zh = "勾选要优先的 Mod 并上下移调整顺序，靠前的在「同时就绪」时优先装载。" +
             "这是优先级，不是最终的完整顺序：依赖关系会改变实际装载序，" +
-            "没列出的 Mod 按包名排序，已卸载的旧 ID 会被忽略。" +
-            "留空 = 恢复缺省，改完要重开一局生效。",
-        en = "Separate Mod package IDs with commas; earlier ones load first when both are ready. " +
-            "This is a priority, not the final full order: dependencies can change the actual " +
-            "load order, unlisted Mods fall back to package ID order, and stale IDs are ignored. " +
-            "Leave empty for the default; restart the game to apply.",
-        ja = "Mod のパッケージ ID をカンマ区切りで入力します。同時に読み込み可能な場合は先に書いたものが優先されます。" +
-            "これは優先度であり最終的な完全な順序ではありません。依存関係により実際の読み込み順は変わり、" +
-            "書かれていない Mod はパッケージ ID 順、削除済みの ID は無視されます。" +
-            "空欄で既定値、変更はゲーム再起動後に反映されます。",
+            "没勾选的 Mod 按包名缺省序排，已卸载的旧包名会被忽略。" +
+            "全部取消勾选 = 恢复缺省，改完要重开一局生效。",
+        en = "Tick the Mods you want to load first and move them up or down; earlier ones load " +
+            "first when both are ready. This is a priority, not the final full order: dependencies " +
+            "can change the actual load order, unticked Mods fall back to package name order, and " +
+            "stale package names are ignored. Untick everything for the default; restart the game to apply.",
+        ja = "優先したい Mod にチェックを入れ、上下に移動して順序を決めます。同時に読み込み可能な場合は" +
+            "先のものが優先されます。これは優先度であり最終的な完全な順序ではありません。" +
+            "依存関係により実際の読み込み順は変わり、チェックしていない Mod はパッケージ名順、" +
+            "削除済みのパッケージ名は無視されます。すべて解除すると既定値に戻ります。変更はゲーム再起動後に反映されます。",
     )
 
-    /** 输入框空态提示：留空 = 缺省（按 packageId 规范序）。 */
+    /** 输入框空态提示：留空 = 缺省（按包名顺序）。 */
     val modPackageOrderEmpty: String = tr(
-        zh = "留空 = 缺省（按 packageId 规范序）",
-        en = "Empty = default (package ID canonical order)",
-        ja = "空欄 = 既定（パッケージ ID 順）",
+        zh = "留空 = 缺省（按包名顺序）",
+        en = "Empty = default (by package name)",
+        ja = "空欄 = 既定（パッケージ名順）",
+    )
+
+    /** 排序卡：已勾选数量行。 */
+    private val modPackageOrderChosenCountFormat: String = tr(
+        zh = "已勾选 {0} 个，按上面列表顺序优先装载；没勾的按缺省序。",
+        en = "Selected {0}; they load first in the order above. Unticked Mods use the default order.",
+        ja = "{0} 件を選択中。上のリスト順に優先して読み込まれます。未選択は既定順です。",
+    )
+
+    /** 排序卡：已勾选数量行（[count] 为勾选数）。 */
+    fun modPackageOrderChosenCount(count: Int): String =
+        fill(modPackageOrderChosenCountFormat, count)
+
+    /** 排序卡：勾选行上移按钮。 */
+    val modPackageOrderMoveUp: String = tr(zh = "上移", en = "Move up", ja = "上へ")
+
+    /** 排序卡：勾选行下移按钮。 */
+    val modPackageOrderMoveDown: String = tr(zh = "下移", en = "Move down", ja = "下へ")
+
+    /** 排序卡：一键恢复缺省顺序。 */
+    val modPackageOrderReset: String = tr(
+        zh = "恢复缺省",
+        en = "Reset to default",
+        ja = "既定に戻す",
+    )
+
+    /** 排序卡：手动编辑兜底输入框的标签。 */
+    val modPackageOrderManualLabel: String = tr(
+        zh = "手动编辑（兜底）",
+        en = "Manual edit (fallback)",
+        ja = "手動編集（代替手段）",
+    )
+
+    /** 排序卡：列表空态（没勾选任何包、也没有未知包残留）——点明此刻的装载行为。 */
+    val modPackageOrderListEmpty: String = tr(
+        zh = "还没有勾选任何 Mod：全部按包名缺省序装载。勾选后可用上移 / 下移排优先级。",
+        en = "No Mods ticked yet: everything loads in default package-name order. " +
+            "Tick some, then use Move up / Move down to set priority.",
+        ja = "チェックされた Mod はまだありません：すべて既定のパッケージ名順で読み込まれます。" +
+            "チェック後に上へ / 下へで優先度を設定できます。",
+    )
+
+    /** 排序卡：未知包残留行的标签（偏好串里有、已装列表里没有的旧 ID）。 */
+    val modPackageOrderUnknownTag: String = tr(
+        zh = "未知包（不在已装列表）",
+        en = "Unknown package (not installed)",
+        ja = "不明なパッケージ（未インストール）",
+    )
+
+    /** 排序卡：未知包残留行的移除按钮。 */
+    val modPackageOrderUnknownRemove: String = tr(
+        zh = "移除",
+        en = "Remove",
+        ja = "削除",
     )
 
     // -----------------------------------------------------------------
@@ -2328,6 +4203,12 @@ class SettingsStrings private constructor(
      */
     fun portraitFontColumnLabel(columns: Int): String =
         portraitFontColumnLabels[columns] ?: portraitColLargeLabel
+
+    /**
+     * 竖屏档说明：键与档名同源（[portraitFontColumnLabels] 那张表），坏值回落缺省 62 档的说明。
+     */
+    fun portraitFontColumnHint(columns: Int): String =
+        portraitFontColumnHints[columns] ?: portraitColLargeHint
 
     fun railLabel(size: UiPrefs.RailButtonSize): String = when (size) {
         UiPrefs.RailButtonSize.SMALL -> railSmallLabel

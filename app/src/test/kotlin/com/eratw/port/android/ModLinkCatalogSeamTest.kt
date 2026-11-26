@@ -64,24 +64,27 @@ private fun seamCall(ctx: BuiltinEvalContext, name: String, vararg args: Any?): 
 private fun seamIv(v: Value): Long = (v as Value.IntV).v
 
 /**
- * W2-SUPCAT：`EntityRuntime.catalog` 读缝（[MOD_LINK_CATALOG_SLOT]）与 HAS_SUPER 消费面
- * 全链（CONTRACT-RT2-SUPCAT 判据 1/2/3/4 的测试面；生产宿主纵向切片，装置形态照
- * EntityRuntimeBackfillWireTest 的 OpenFixture + ModChainAssemblyChainTest 的真链夹具）。
+ * W2-SUPCAT：`EntityRuntime.catalog` 读缝与 HAS_SUPER 消费面全链（CONTRACT-RT2-SUPCAT
+ * 判据 1/2/3/4 的测试面；生产宿主纵向切片，装置形态照 EntityRuntimeBackfillWireTest 的
+ * OpenFixture + ModChainAssemblyChainTest 的真链夹具）。
  *
- * 诚实边界（本测试的「写侧」是仿真）：生产写侧（把链接产物快照挂 [MOD_LINK_CATALOG_SLOT]）
- * 归组长接线——ModChainAssembly.assembleChain 与 store 构造（GameSession 内）时序错位且
- * GameHost/GameSession 本波禁触（卡点取证见 assembleChain 注释与交付报告「需组长接线」）。
- * 本测试在 attach 前把**真五步链**（ModChainAssembler.assemble：配对 → 校验 → 链接 →
- * LinkedProgram.catalog）的产物快照写进槽，证明读缝与消费面贯通；生产现状（槽缺席）
- * 旁路 0 的零变化由第二个用例单独钉住。
+ * 供给形态（SUPCAT-W 判据 3 起 = **生产供给**）：W2-SUPCAT 时期本测试手工把链接产物
+ * 快照写进 [MOD_LINK_CATALOG_SLOT]（当时「写侧」是仿真，类头明写诚实边界）；SUPCAT-W
+ * 乙形裁定后 entityRuntime 的读缝源改走 attach inputs 供给（`attach(catalog = …)`，
+ * 生产 = GameHost 传 `plan.catalog`），本测试随之改为经同一条生产供给缝注入——
+ * 手工写槽形态退役（槽现只服务事件名存在性闸，其生产路径仍由
+ * ModLinkCatalogProductionWriteTest 端到端钉住）。
+ * 本测试把**真五步链**（ModChainAssembler.assemble：配对 → 校验 → 链接 →
+ * LinkedProgram.catalog）的产物快照经 attach inputs 供给，证明读缝与消费面贯通；
+ * 会话外直调 attach 时供给缺席的旁路 0 由第二个用例单独钉住。
  *
  * 判据映射：
  * - 判据 1 / 4（开态真值 + e2e 三态）：真链 catalog 注入后，覆写链函数（胜者有前实现）
  *   HAS_SUPER=1、纯 base 函数=0、无帧=0；
  * - 判据 3（catalog 单源）：EntityRuntime.catalog 必须是链接产物**同一实例**（只读引用，
  *   不复制、不二次装配）；
- * - 判据 2 / 5（关态与未装配旁路）：槽缺席 ⇒ catalog null ⇒ HAS_SUPER=0；关态总闸短路
- *   ⇒ 槽在场也不消费。
+ * - 判据 2 / 5（关态与未装配旁路）：供给缺席 ⇒ catalog null ⇒ HAS_SUPER=0；关态总闸短路
+ *   ⇒ catalog 在场也不消费。
  */
 class ModLinkCatalogSeamTest {
 
@@ -113,9 +116,11 @@ class ModLinkCatalogSeamTest {
     }
 
     /**
-     * 真五步链的链接产物 catalog（判据 3 单源 = 这一份实例原样进槽、原样进 EntityRuntime）。
-     * 直接调核心装配器而非 ModChainAssembly.assemble：后者返回的 ModChainRuntimePlan 不
-     * 保留 catalog（生产写侧卡点本身），测试要拿链接产物只能在此取 AssembledChain.linked。
+     * 真五步链的链接产物 catalog（判据 3 单源 = 这一份实例原样进 attach inputs、
+     * 原样进 EntityRuntime）。直接调核心装配器而非生产装配入口：本测试锁读缝与消费面，
+     * 走最短真链（ModChainAssembler.assemble → AssembledChain.linked.catalog）；
+     * 「磁盘夹具 → 生产装配入口 → plan.catalog → attach 供给」的生产路版本见
+     * ModLinkCatalogSupplyE2ETest。
      */
     private fun realChainCatalog(): SymbolCatalog {
         val fingerprint = BaseSignatureCatalog.fingerprint(SEAM_CANONICAL)
@@ -143,7 +148,7 @@ class ModLinkCatalogSeamTest {
     // 开态 attach 装置（EntityRuntimeBackfillWireTest 的 OpenFixture 同形）
     // ------------------------------------------------------------------
 
-    /** 开态装置：真 manifest → 真 freeze → 真 attach → 真宿主；[linkCatalog] 非空时先写槽。 */
+    /** 开态装置：真 manifest → 真 freeze → 真 attach → 真宿主；[linkCatalog] 非空时经 attach inputs 供给。 */
     private class OpenFixture(linkCatalog: SymbolCatalog?) {
         val logs = mutableListOf<String>()
         val root: Path = Files.createTempDirectory("rt2-supcat-seam").also {
@@ -157,10 +162,8 @@ class ModLinkCatalogSeamTest {
         val session: ModRuntimeSession
 
         init {
-            // 写侧仿真：把链接产物快照挂进读缝槽（生产写侧 = 组长接线面，见类 KDoc）。
-            if (linkCatalog != null) {
-                store.aux.slot(MOD_LINK_CATALOG_SLOT) { linkCatalog }
-            }
+            // SUPCAT-W 生产供给：链接产物快照经 attach inputs 供给（生产 = GameHost 传
+            // plan.catalog；W2-SUPCAT 的手工写槽形态已退役，见类 KDoc「供给形态」节）。
             Files.write(
                 root.resolve("mods").resolve("rt2").resolve("supcat_seam.manifest"),
                 ManifestCodec.encode(ModuleDescriptor(packageId = SEAM_PACKAGE_ID)),
@@ -174,6 +177,7 @@ class ModLinkCatalogSeamTest {
                     enabled = true,
                     logSink = { line -> logs += line },
                     modProviders = listOf(SEAM_PACKAGE_ID to probe),
+                    catalog = linkCatalog,
                 ),
             ) { "开态生产缝必须产出运行时；logs=$logs" }
             assertNotNull(
@@ -243,15 +247,15 @@ class ModLinkCatalogSeamTest {
     }
 
     // ------------------------------------------------------------------
-    // 判据 2 / 5：生产现状（槽缺席）旁路 0 —— 零变化锁
+    // 判据 2 / 5：会话外直调 attach（供给缺席）旁路 0 —— 零变化锁
     // ------------------------------------------------------------------
 
     @Test
-    fun `开态缺槽_catalog保持null_HAS_SUPER旁路0`() {
+    fun `开态未供给_catalog保持null_HAS_SUPER旁路0`() {
         val f = OpenFixture(null)
         val rt = checkNotNull(entityRuntimeOf(f.store.aux)) { "开态槽必须已回填" }
         assertNull(
-            "生产现状（写侧未接线）：catalog 必须 null（EntityRuntimeBackfillWireTest 既有锁同口径）",
+            "会话外直调 attach（未供给）：catalog 必须 null（EntityRuntimeBackfillWireTest 既有锁同口径）",
             rt.catalog,
         )
         assertEquals("槽缺席 ⇒ HAS_SUPER 旁路 0（判据 2）", 0L, seamIv(seamCall(f.ctx(), "HAS_SUPER")))
@@ -262,11 +266,11 @@ class ModLinkCatalogSeamTest {
     }
 
     // ------------------------------------------------------------------
-    // 判据 2 / 5：关态总闸短路，槽在场也不消费
+    // 判据 2 / 5：关态总闸短路，catalog 在场也不消费
     // ------------------------------------------------------------------
 
     @Test
-    fun `关态零接触_槽在场也不消费`() {
+    fun `关态零接触_catalog在场也不消费`() {
         val catalog = realChainCatalog()
         val logs = mutableListOf<String>()
         val root: Path = Files.createTempDirectory("rt2-supcat-off")
@@ -280,9 +284,10 @@ class ModLinkCatalogSeamTest {
             onVmThread = { true },
             enabled = false,
             logSink = { line -> logs += line },
+            catalog = catalog,
         )
         assertNull("关态总闸短路，会话必须为 null", session)
-        assertNull("关态槽缺席，宿主读数必须保持 null", consoleHost.entityRuntime)
+        assertNull("关态宿主读数必须保持 null", consoleHost.entityRuntime)
         assertNull("关态 entity 槽不回填", entityRuntimeOf(store.aux))
         assertTrue("关态零日志（总闸第一查短路）", logs.none { it.startsWith("mod.attach") })
 

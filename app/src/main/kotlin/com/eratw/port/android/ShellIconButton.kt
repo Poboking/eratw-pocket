@@ -3,7 +3,9 @@ package com.eratw.port.android
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.size
@@ -13,10 +15,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.eratw.port.android.ui.EratwInk
+import com.eratw.port.android.ui.design.ShellMotion
+import com.eratw.port.android.ui.design.ShellPress
+import com.eratw.port.android.ui.design.ShellShape
+import com.eratw.port.android.ui.design.ShellSpace
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -24,15 +32,16 @@ import kotlinx.coroutines.launch
  * 右上角壳层图标按钮的共用配色（键盘、螺旋、方向锁三枚同源）。
  *
  * 抽出来之前这三处各写一份硬编码色值（2026-10-25 高亮那次只改了键盘、
- * 漏了螺旋的先例），现在一处定义、改色一处生效。
+ * 漏了螺旋的先例），现在一处定义、改色一处生效；色值本身在 2026-11-26 归进
+ * [EratwInk] 的图标档（`iconIdle` / `iconActive`），这里只剩语义别名。
  * 状态只落在图标线条颜色上（2026-11-03 负责人定调：按钮空白处不画任何底色）。
  */
 internal object ShellIconTone {
     /** 静息描边/图标色。 */
-    val idle = Color(0xFF8A8A8A)
+    val idle = EratwInk.iconIdle()
 
     /** 激活（对应功能展开/锁定）时的浅绿，与游戏黑底同调的高亮。 */
-    val active = Color(0xFFB9D3B9)
+    val active = EratwInk.iconActive()
 }
 
 /**
@@ -53,10 +62,10 @@ internal class ClickShakeState(
     /** 播放一轮抖动并原样转发 [onClick]（先启动动画再回调，回调即时生效）。 */
     fun click(onClick: () -> Unit) {
         scope.launch {
-            shake.animateTo(-10f, tween(60))
-            shake.animateTo(10f, tween(80))
-            shake.animateTo(-6f, tween(60))
-            shake.animateTo(0f, tween(60))
+            // 四段振幅与时长都取自 ShellMotion：三枚图标钮的「咔哒」是同一副手感。
+            ShellMotion.TAP_SHAKE_DEGREES.zip(ShellMotion.TAP_SHAKE_MILLIS).forEach { (degrees, millis) ->
+                shake.animateTo(degrees, tween(millis))
+            }
         }
         onClick()
     }
@@ -71,12 +80,15 @@ internal fun rememberClickShake(): ClickShakeState {
 }
 
 /**
- * 右上角壳层图标按钮的共用容器：40dp 命中区、读屏标签、点击回调。
+ * 右上角壳层图标按钮的共用容器：48dp 命中区、读屏标签、点击回调。
  *
  * 抽出来之前键盘与螺旋各写一个几乎一样的 Box，方向锁是第三份 —— 收口到这一处，
  * 图标本体（Canvas 手绘）仍由调用方提供。容器只管命中区与无障碍，**不画任何底色**
  * （2026-11-03 负责人定调：空白处透明、激活反馈只靠图标线条变绿）；命中区本身
- * 依旧整块可点，点击手感与 40dp 目标尺寸不受去底色影响。
+ * 依旧整块可点，点击手感与 48dp 目标尺寸不受去底色影响。
+ *
+ * 按压反馈走 [ShellPress] 的极淡叠色而不是系统涟漪：图标是线条画，圆水波会盖住笔画；
+ * 叠色只有几个百分点，刚好够「按到了」。
  */
 @Composable
 internal fun ShellIconButton(
@@ -84,11 +96,18 @@ internal fun ShellIconButton(
     onClick: () -> Unit,
     content: @Composable BoxScope.() -> Unit,
 ) {
+    val pressSource = remember { MutableInteractionSource() }
     Box(
         modifier = Modifier
-            .size(40.dp)
+            .size(ShellSpace.TouchMin)
+            .clip(ShellShape.Chip)
+            .background(ShellPress.tint(pressSource, EratwInk.iconActive()))
             .semantics { contentDescription = label }
-            .clickable(onClick = onClick),
+            .clickable(
+                interactionSource = pressSource,
+                indication = null,
+                onClick = onClick,
+            ),
         contentAlignment = Alignment.Center,
         content = content,
     )

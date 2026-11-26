@@ -43,10 +43,19 @@ class BootUnpackWireTest {
             lines.any { it.startsWith(deferCall) },
         )
         assertTrue("逐文件唯一裁决口掉了", lines.any { it.startsWith("private fun stepNeeded(") })
-        assertTrue(
-            "stepNeeded 必须把判据交给 core 那张表",
-            lines.any { it.startsWith("return UpdatePolicy.bundledAssetNeedsCopy(") },
-        )
+        // 裁决口的形状：每一条 return 要么是「配对产物整对让位」的早退（return false），
+        // 要么把判据交给 core 那张表。只钉某一行字面量会在 `healContent ||` 这类似是而非的
+        // 前导（名字表自愈要越过让位档，见 stepNeeded 的 KDoc）上假红，也会被
+        // `return true` / `return forceReplace || ...` 这类绕过悄悄判绿——按 return 语句收口。
+        val body = functionBody(lines, "private fun stepNeeded(")
+        val returns = body.filter { it.startsWith("return ") || it == "return" }
+        assertTrue("stepNeeded 里找不到 return——裁决口形状变了", returns.isNotEmpty())
+        for (ret in returns) {
+            assertTrue(
+                "stepNeeded 的 return 必须经 core 判据表（实际「$ret」）",
+                ret.contains(UpdatePolicyCall) || ret == "return false",
+            )
+        }
         assertTrue(
             "plan 里不许再散着写 forceReplace || needsCopy（配置那条「只拷一次」除外）",
             lines.none { it.startsWith("needed = forceReplace ||") },
@@ -97,15 +106,46 @@ class BootUnpackWireTest {
             .filter { !it.startsWith("//") && !it.startsWith("*") && !it.startsWith("/*") }
             .toList()
 
-    /** 兼容「从 app 模块跑」与「从仓库根跑」两种工作目录；core-vm 在公开分仓的同级引擎仓。 */
+    /**
+     * 取某条声明之后的那段花括号体：从签名行往下找到第一个以 `{` 收尾的行，按 `{`/`}` 深度
+     * 收齐到配平为止。入参已是 [effectiveLines] 的生效行（注释/KDoc 已滤掉），字符串里带
+     * 花括号的本类不会命中。签名行找不到时返回空表，由调用方判红（不许判跳过）。
+     */
+    private fun functionBody(lines: List<String>, signaturePrefix: String): List<String> {
+        val start = lines.indexOfFirst { it.startsWith(signaturePrefix) }
+        if (start < 0) return emptyList()
+        val body = mutableListOf<String>()
+        var depth = 0
+        var opened = false
+        for (line in lines.drop(start)) {
+            // 未入体时只认「以 { 收尾」的签名行/多行签名末行；入体后逐行吃到花括号配平。
+            // 收成「单跳转」形状（detekt LoopWithTooManyJumpStatements）：判据与原先的
+            // 「不满足就 continue」逐字等价，只是把跳过条件写进 if。
+            if (opened || line.endsWith("{")) {
+                opened = true
+                body.add(line)
+                depth += line.count { it == '{' } - line.count { it == '}' }
+                if (depth <= 0) break
+            }
+        }
+        return body
+    }
+
+    /** 兼容「从 app 模块跑」与「从仓库根跑」两种工作目录；都找不到就判红。 */
     private fun sourceOf(rel: String): String {
         val candidates = listOf(
             File("../$rel"),
             File(rel),
+            // 引擎在姆妹仓（composite build 的 ../Kotera），不在本仓的工程根下。
             File("../../Kotera/$rel"),
         )
         val found = candidates.firstOrNull { it.isFile }
             ?: error("找不到源码 $rel（工作目录 = ${File(".").absolutePath}）")
         return found.readText()
+    }
+
+    private companion object {
+        /** core 判据表的唯一入口名（stepNeeded 的每条 return 都必须经它）。 */
+        const val UpdatePolicyCall = "UpdatePolicy.bundledAssetNeedsCopy("
     }
 }

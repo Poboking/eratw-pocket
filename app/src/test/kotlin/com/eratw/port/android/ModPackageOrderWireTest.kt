@@ -106,8 +106,8 @@ class ModPackageOrderWireTest {
         assertTrue("缺设置页读原始串入口", prefs.contains("fun preferredPackageIdsRaw(context: Context): String"))
         assertTrue("缺设置页写入口", prefs.contains("fun setPreferredPackageIds(context: Context, raw: String)"))
         assertTrue("缺配置键", prefs.contains("KEY_MOD_PACKAGE_ORDER = \"mod_package_order\""))
-        // 关态零变化：总闸缺省仍 false（新增键不参与任何关态装配路径）。
-        assertTrue("DEFAULT_MOD_RUNTIME 必须仍是 false", prefs.contains("const val DEFAULT_MOD_RUNTIME: Boolean = false"))
+        // 总闸缺省已按主人裁定翻开（RT2-GATE-OPEN）；新增键参与开态装配，读写入口本身不变。
+        assertTrue("DEFAULT_MOD_RUNTIME 缺省应为 true", prefs.contains("const val DEFAULT_MOD_RUNTIME: Boolean = true"))
     }
 
     @Test
@@ -165,6 +165,15 @@ class ModPackageOrderWireTest {
         assertFalse("输入卡内联了玩家可见字面量：$offenders", offenders.isNotEmpty())
         val strings = sourceOf("SettingsStrings.kt")
         assertTrue("三语表缺中文标题", strings.contains("zh = \"Mod 装载优先级\""))
-        assertTrue("三语表缺中文说明", strings.contains("用逗号分隔"))
+        // 排序卡已从「逗号分隔的手填串」改成勾选 + 上下移，说明文案随之改写；哨兵钉
+        // 「说明在三语表里且有中文正文」这一不变量，不钉会被产品文案正常迭代改掉的原话。
+        val hintBlock = strings.substringAfter("val modPackageOrderHint: String = tr(")
+            .substringBefore("\n    )")
+        assertTrue(
+            "三语表缺中文说明",
+            Regex("zh\\s*=\\s*\"[^\"]*[\\u4e00-\\u9fff]").containsMatchIn(hintBlock),
+        )
+        assertTrue("三语表缺英文说明", hintBlock.contains("en = \""))
+        assertTrue("三语表缺日文说明", hintBlock.contains("ja = \""))
     }
 }

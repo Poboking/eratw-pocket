@@ -2,6 +2,7 @@ package com.eratw.port.android
 
 import kotlin.reflect.KProperty1
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -80,6 +81,8 @@ class ShellFailureCopyTest {
         "orientationDialogBodyFormat" to ShellFailureCopy::orientationDialogBodyFormat,
         "restoreDefaultsDialogTitle" to ShellFailureCopy::restoreDefaultsDialogTitle,
         "restoreDefaultsDialogBody" to ShellFailureCopy::restoreDefaultsDialogBody,
+        "modChangedDialogTitle" to ShellFailureCopy::modChangedDialogTitle,
+        "modChangedDialogBody" to ShellFailureCopy::modChangedDialogBody,
         "dialogRestartNow" to ShellFailureCopy::dialogRestartNow,
         "dialogApplyNextLaunch" to ShellFailureCopy::dialogApplyNextLaunch,
         "toastNoReportFile" to ShellFailureCopy::toastNoReportFile,
@@ -93,6 +96,7 @@ class ShellFailureCopyTest {
         "bootstrapReassure" to ShellFailureCopy::bootstrapReassure,
         "bootstrapInstruction" to ShellFailureCopy::bootstrapInstruction,
         "bootstrapRestartButton" to ShellFailureCopy::bootstrapRestartButton,
+        "versionLineFormat" to ShellFailureCopy::versionLineFormat,
     )
 
     /** 中文与日文共用同一写法是正字法事实、不是漏翻的键（全角冒号分隔符、全角括号包装）。 */
@@ -100,8 +104,8 @@ class ShellFailureCopyTest {
 
     @Test
     fun `三档条目数相等且与显式键清单对账`() {
-        assertEquals(73, keys.size)
-        CopyShapeGate.assertKeyCount("ShellFailureCopy", copies, keys, expectedPerCopy = 74)
+        assertEquals(76, keys.size)
+        CopyShapeGate.assertKeyCount("ShellFailureCopy", copies, keys, expectedPerCopy = 77)
     }
 
     @Test
@@ -208,5 +212,30 @@ class ShellFailureCopyTest {
             "重启失败：RuntimeException：坏了 {0}。存档在盘上，不会丢失；可先重试，若仍然失败请结束应用后重开。",
             copy.fill(copy.restartFailedFormat, "RuntimeException", copy.detailSeparator + "坏了 {0}"),
         )
+    }
+
+    @Test
+    fun `报错页版本号行三语各按本族写法填版本名与构建号`() {
+        assertEquals("版本 0.2.47（build 23）", ShellFailureCopy.ZH.versionLine("0.2.47", 23))
+        assertEquals("Version 0.2.47 (build 23)", ShellFailureCopy.EN.versionLine("0.2.47", 23))
+        assertEquals("バージョン 0.2.47（ビルド 23）", ShellFailureCopy.JA.versionLine("0.2.47", 23))
+    }
+
+    @Test
+    fun `mod 变更确认框三语齐备且正文说清生效条件与进度代价`() {
+        // ModDX-4 A+ 新增的第四枚确认框：标题逐字 + 正文必须说清「重开一局才生效」与
+        // 「未存档进度会丢」两件事（与其余三枚确认框同口径，淡化任何一件在这里红）。
+        assertEquals("Mod 已变更", ShellFailureCopy.ZH.modChangedDialogTitle)
+        assertEquals("Mods changed", ShellFailureCopy.EN.modChangedDialogTitle)
+        assertEquals("Mod が変更されました", ShellFailureCopy.JA.modChangedDialogTitle)
+        listOf(
+            ShellFailureCopy.ZH.modChangedDialogBody to listOf("重开一局", "未存档"),
+            ShellFailureCopy.EN.modChangedDialogBody to listOf("Restart now", "Unsaved progress"),
+            ShellFailureCopy.JA.modChangedDialogBody to listOf("再起動", "未保存"),
+        ).forEach { (body, needles) ->
+            needles.forEach { needle ->
+                assertTrue("正文缺「$needle」：$body", body.contains(needle))
+            }
+        }
     }
 }

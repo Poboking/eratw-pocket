@@ -2,7 +2,6 @@ package com.eratw.port.android
 
 import com.eratw.port.core.code.CodeBuilder
 import com.eratw.port.core.code.Opcode
-import com.eratw.port.core.code.OverrideSignatureException
 import com.eratw.port.core.code.Program
 import com.eratw.port.core.code.SlotAddr
 import com.eratw.port.core.mod.CompiledModule
@@ -214,35 +213,34 @@ class ModChainAssemblyChainTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `签名段缺失_MODERN显式覆盖被既有签名闸fail_closed拒绝`() {
+    fun `KI-2 签名段缺失_MODERN显式覆盖改告警放行装配成功`() {
+        // 2026-11-23 KI 改判（BOARD KI-2）：缺签名段时 base 指纹为空，覆盖不再被
+        // OverrideSignatureException 拒（原 fail-closed 反转）——装配成功 + 留痕告警。
         val root = tmp.newFolder("game")
         writeManifest(root)
         writeContainer(root)
         writeMeta(root, withSection = false)
-        try {
-            ModChainAssembly.assemble(ChainAssemblyInputs(root, true, base(), baseMetas))
-            fail("缺签名段时 base 指纹为空，MODERN 显式覆盖必须被 OverrideSignatureException 拒绝")
-        } catch (e: OverrideSignatureException) {
-            assertTrue(
-                "异常须点名签名不可验证，实得：${e.message}",
-                e.message!!.contains("签名"),
-            )
-        }
+        val warnings = mutableListOf<String>()
+        val value = ModChainAssembly.assemble(
+            ChainAssemblyInputs(root, true, base(), baseMetas, logSink = { warnings += it }),
+        )
+        assertNotNull(value)
+        assertTrue(
+            "缺指纹告警进装配留痕: $warnings",
+            warnings.any { it.contains("签名指纹缺失") || it.contains("ABI 未校验") },
+        )
     }
 
     @Test
-    fun `侧车文件缺失_目录恒空串_同样拒绝覆盖`() {
+    fun `KI-2 侧车文件缺失_目录恒空串_覆盖同样放行`() {
         val root = tmp.newFolder("game")
         writeManifest(root)
         writeContainer(root)
         val dir = ModChainAssembly.signatureDirectoryOfFile(File(root, "erbc.v1/program.meta"))
         assertEquals("", dir("TARGET"))
-        try {
-            ModChainAssembly.assemble(ChainAssemblyInputs(root, true, base(), baseMetas))
-            fail("侧车缺失 = 真目录恒空 = 覆盖必须被拒")
-        } catch (e: OverrideSignatureException) {
-            assertNotNull(e.message)
-        }
+        // 2026-11-23 KI 改判：侧车缺失 = 真目录恒空 = 告警放行（原拒反转）。
+        val value = ModChainAssembly.assemble(ChainAssemblyInputs(root, true, base(), baseMetas))
+        assertNotNull(value)
     }
 
     // ------------------------------------------------------------------

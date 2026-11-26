@@ -47,5 +47,8 @@ includeBuild("../Kotera") {
         substitute(module("com.eratw.port:mod-family")).using(project(":mod-family"))
         substitute(module("com.eratw.port:mod-memory")).using(project(":mod-memory"))
         substitute(module("com.eratw.port:mod-livingworld")).using(project(":mod-livingworld"))
+        // 载体注册表：构建期扫各 mod-* 的 @ModCarrier 生成 ModRegistry（宿主不再逐个点名载体模块）。
+        // 与 app 侧 implementation("com.eratw.port:mod-registry") 配套。
+        substitute(module("com.eratw.port:mod-registry")).using(project(":mod-registry"))
     }
 }

@@ -45,6 +45,22 @@ class EratwApplication : Application() {
             runCatching { Log.i(CRASH_PROCESS_TAG, "崩溃屏进程：跳过内存档位与 StrictMode 装配") }
             return
         }
+        // C1（RECON-STAB-C）：崩溃兑底（缺省未捕获异常处理器 → 取证四步 + 崩溃屏）前移到
+        // 进程入口的**最早一步**。此前它只装在 MainActivity.onCreateCore：本函数其余装配、
+        // 壳层 onCreateCore 装处理器之前的任何一步崩，都是零取证的裸系统闪退框；进程后台被杀
+        // 后系统按栈顶 Activity 直接恢复进 SettingsActivity 的会话更是整程不经过 MainActivity，
+        // 设置页里任何未捕获异常同样零取证。处理器是进程级单例，挂进程入口才与它的生命周期
+        // 同级；MainActivity 的调用点保留 —— 每次换代刷新宿主读数口 + 幂等补装
+        // （见 [CrashForensics.install] 与 [CrashForensics.installHandler] 的双重判定）。
+        // runCatching 同本文件其余装配步的纪律：这里抛一次就是「装了兜底反而开不了机」。
+        runCatching { CrashForensics.install(this) }
+            .onFailure { Log.w(CRASH_FORENSICS_TAG, "崩溃取证装配失败（本次会话可能零取证）", it) }
+        // 存档失败可上报化（2026-11-20）：存档失败不抛异常、不触发任何报告采集，过去只有
+        // logcat 留痕，release 包玩家报「存档失败」时端点零现场。观察者装在进程入口而不是
+        // 某个界面：存档发生在游戏会话里，但「装一次、直到进程死」才与失败面同级。
+        // 安装失败只退化成旧行为（System.err 留痕），不许影响开机。
+        runCatching { SaveFailureReporter.install(this) }
+            .onFailure { Log.w(SAVE_ALERT_TAG, "存档失败观察者装配失败（存档失败只剩 logcat 留痕）", it) }
         // R3 结构化事件（常开，release 也开）：绑定落盘目录并记本进程开局。两件事都包在
         // 同一个 runCatching 里 —— 事件装不上是「少一条因果链」，不许升级成「开不了机」。
         runCatching {
@@ -90,6 +106,12 @@ class EratwApplication : Application() {
     private companion object {
         /** 内存档位那行的 logcat tag（同 [StrictModeGuard.LOG_TAG] 的命名口径）。 */
         const val MEMORY_TIER_TAG: String = "EratwMemTier"
+
+        /** 崩溃取证装配失败那行的 logcat tag（同前缀命名口径）。 */
+        const val CRASH_FORENSICS_TAG: String = "EratwCrashForensics"
+
+        /** 存档失败观察者装配失败那行的 logcat tag（与 [SaveFailureReporter] 内部 TAG 同前缀）。 */
+        const val SAVE_ALERT_TAG: String = "EratwSaveAlert"
 
         /** 崩溃屏进程那行 logcat tag（与 [CrashScreenActivity.LOG_TAG] 同一前缀）。 */
         const val CRASH_PROCESS_TAG: String = "EratwCrashScreen"

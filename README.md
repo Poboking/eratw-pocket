@@ -135,8 +135,9 @@ Canvas 上；命中区、滚动、输入预填都来自引擎侧纯 JVM 的 `ren
 
 **composite build 接线 + 构建期版本对账。** Kotera 以 `includeBuild` 接入，
 依赖替换之后，APK 里的引擎永远是同级检出的那份源码编出来的；引擎侧的
-sqlite-adapter（SQLite 真实引擎的平台接线）与 RT2 官方 Mod（mod-family /
-mod-memory / mod-livingworld）也走同一依赖替换进入 APK。erbcc 版本与编译器
+sqlite-adapter（SQLite 真实引擎的平台接线）与 RT2 官方 Mod 也走同一依赖替换进入
+APK——宿主只依赖 `mod-registry`（载体注册表，构建期扫各 `mod-*` 的 `@ModCarrier`
+生成唯一清单），不再逐个点名载体模块。erbcc 版本与编译器
 源码指纹在 app 构建时校验，发现漂移即构建失败——「引擎升了、字节码没重编」的
 错配窗口不存在。
 

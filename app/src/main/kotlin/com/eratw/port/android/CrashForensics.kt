@@ -2,11 +2,12 @@ package com.eratw.port.android
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color
 import android.util.Log
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.eratw.port.android.ui.EratwInk
+import com.eratw.port.android.ui.design.ShellType
 import com.eratw.port.core.host.LineBufferConsoleSink
 import com.eratw.port.core.proc.GameSession
 import com.eratw.port.core.snapshot.RuntimeSnapshot
@@ -24,9 +25,10 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * 崩溃取证族（wave/eng-p13-crashmove · A-1 第一刀）：整段从 [MainActivity] **原样搬入** ——
  * 崩溃处理器安装、取证四步、最小现场落盘、建壳失败最后一屏，与那组进程级状态槽。
- * 行为、文案、线程模型逐字未改（FEEL-15 在册挂账）。唯一的结构变化：豁免窗口的**开口**
- * 留在 MainActivity.kt（StrictModeGuardTest 的豁免口扫描按文件点名），经 [install] 的
- * `forensics` 形参注入 —— 执行线程仍是崩溃线程，语义与搬前逐字相同。
+ * 行为、文案、线程模型逐字未改（FEEL-15 在册挂账）。结构变化有二：豁免窗口的**开口**
+ * 收进本文件的处理器闭包（StrictModeGuardTest 的豁免口扫描按文件点名，执行线程仍是
+ * 崩溃线程）；C1（RECON-STAB-C）起安装点前移 —— [install] 的 Context 重载是进程级入口
+ * （EratwApplication.onCreate 最早一步），壳层的收 Activity 重载退为刷新读数口 + 幂等补装。
  *
  * C6（wave/eng-crash）起多一步：取证四步之后、交回旧处理器之前，把崩溃摘要递给
  * [CrashScreenActivity]（独立进程）并落一份「上次崩溃摘要」标记给下次冷启动兜底
@@ -65,28 +67,32 @@ internal object CrashForensics {
     private var crashProviderOwner: MainActivity? = null
 
     /**
-     * 崩溃兑底（方案①）：包一层缺省未捕获异常处理器 —— 先尽力落一行「最小现场」与一份
-     * 「应用崩溃」报告到 `filesDir/eratw-reports/`，再原样交回旧处理器（保持系统崩溃口径不变）。
+     * 进程级安装（RECON-STAB-C C1）：[EratwApplication.onCreate] 的最早一步 —— 缺省
+     * 未捕获异常处理器的安装点从「最深的一个 Activity 生命周期」前移到进程入口。
      *
-     * 顺序是有讲究的：**最小现场先行**（[writeCrashPrefix]）。OOM / native 崩溃时后面的
-     * 报告采集与同步补发都可能半途失败，而时间戳 + 线程名 + 异常类 + 截断消息这行是
-     * 代价最小、最可能活下来的读数。报告在崩溃线程同步写（私有 filesDir，几十 KB，可接受）；
-     * 宿主可能还没建（崩在装载前）或已 close，采集自会降级成纯异常报告。
+     * 此前安装点唯一在 MainActivity.onCreateCore，两条会话整程零取证：
+     * ① 进程冷启早段（Application 的其余装配、壳层 onCreateCore 的 intent 读数与
+     *    `super.onCreate` 等装处理器之前的任何一步）崩；
+     * ② 进程在后台被杀后玩家点回应用，系统按**栈顶 Activity** 直接恢复进 SettingsActivity
+     *    —— 整个会话不经过 MainActivity，设置页里任何线程未捕获异常都是裸系统崩溃框。
+     * 处理器是进程级单例，挂进程入口才与它的生命周期同级；宿主读数口（[crashHostProvider]）
+     * 仍由壳层每次 onCreate 刷新（见下面收 Activity 的重载），宿主没建的会话里
+     * [collectCrashForensics] 自会降级成纯异常报告（早就支持 crashHost == null），
+     * 前移不新增任何依赖。
      *
-     * 这四步整段收在 [collectCrashForensics] 里：崩溃线程就是 UI 线程时，把它**整段**套进
-     * UI 线程磁盘 IO 豁免窗口（表见 `StrictModeGuard.uiDiskIoExemptions` 的
-     * 「崩溃现场取证落盘」，裁定的完整理由在 MainActivity 侧开口那段的行注释里），
-     * 不在窗口内外各留半截。窗口开口钉在 MainActivity.kt（豁免口扫描按文件点名），
-     * 由调用方经 [forensics] 形参注入。
+     * @param context 应用级 Context（Application 本体）；处理器闭包只捕获它，不捕获任何 Activity。
+     */
+    internal fun install(context: Context) {
+        installHandler(context.applicationContext)
+    }
+
+    /**
+     * 壳层入口（MainActivity.onCreateCore）：刷新宿主读数口 + 幂等补装。
      *
-     * 只包一层：[crashHandlerWrapped] 与 [installedCrashHandler] 双重判定 —— Activity 重建
-     * 会再次进 onCreate，若当前默认处理器已经是我们自己包的那一层，直接复用；否则每重建
-     * 一次就在崩溃路径上多套一轮采集 + 补发，真崩时进程死得更慢、报告还会重写。
-     *
-     * C6（wave/eng-crash）在取证之后、交回旧处理器之前**追加**一步 [surfaceCrashScreen]：
-     * 玩家当场读得到摘要（[CrashScreenActivity] 在 `:crash` 独立进程里），同时把同一份摘要
-     * 落成「上次崩溃摘要」标记给下一次冷启动兜底。取证四步的顺序、`reported != null` 判据、
-     * 补发时序一个字都没动 —— 崩溃屏只是取证之后的一步追加，且整段 runCatching。
+     * C1 起处理器的**安装**发生在 [install]（Application），这里通常只是刷新两口后从
+     * [installHandler] 早退。保留调用点：宿主读数口随 Activity 换代必须刷新，且
+     * 「Application 先于一切 Activity 跑过」虽由框架保证，处理器的存活不该依赖这条
+     * 隐含装配顺序 —— 直启 Activity 的路径进这里也能装上。
      *
      * @param hostProvider 崩溃处理器读宿主的口子。调用方传 `{ host }`：闭包读的是实例字段，
      *   **照样捕获本壳** ——「provider」不是一种免捕获写法，真正让死壳不被这条静态边钉住的是
@@ -100,9 +106,37 @@ internal object CrashForensics {
         // 每次进入都刷新宿主读数口：处理器是进程级的（只装一次），宿主却随 Activity 换代。
         crashProviderOwner = activity
         crashHostProvider = hostProvider
-        val context = activity.applicationContext
+        installHandler(activity.applicationContext)
+    }
+
+    /**
+     * 崩溃兑底（方案①）的安装正体：包一层缺省未捕获异常处理器 —— 先尽力落一行「最小现场」
+     * 与一份「应用崩溃」报告到 `filesDir/eratw-reports/`，再原样交回旧处理器（保持系统崩溃
+     * 口径不变）。
+     *
+     * 顺序是有讲究的：**最小现场先行**（[writeCrashPrefix]）。OOM / native 崩溃时后面的
+     * 报告采集与同步补发都可能半途失败，而时间戳 + 线程名 + 异常类 + 截断消息这行是
+     * 代价最小、最可能活下来的读数。报告在崩溃线程同步写（私有 filesDir，几十 KB，可接受）；
+     * 宿主可能还没建（崩在装载前）或已 close，采集自会降级成纯异常报告。
+     *
+     * 这四步整段收在 [collectCrashForensics] 里：崩溃线程就是 UI 线程时，把它**整段**套进
+     * UI 线程磁盘 IO 豁免窗口（表见 `StrictModeGuard.uiDiskIoExemptions` 的
+     * 「崩溃现场取证落盘」，豁免口的开口与调用点都钉在本文件，扫描按文件点名），
+     * 不在窗口内外各留半截。
+     *
+     * 只包一层：[crashHandlerWrapped] 与 [installedCrashHandler] 双重判定 —— Application
+     * 先装一次、壳层每次 onCreate 再进一次，若当前默认处理器已经是我们自己包的那一层，
+     * 直接复用；否则每装一次就在崩溃路径上多套一轮采集 + 补发，真崩时进程死得更慢、
+     * 报告还会重写。
+     *
+     * C6（wave/eng-crash）在取证之后、交回旧处理器之前**追加**一步 [surfaceCrashScreen]：
+     * 玩家当场读得到摘要（[CrashScreenActivity] 在 `:crash` 独立进程里），同时把同一份摘要
+     * 落成「上次崩溃摘要」标记给下一次冷启动兜底。取证四步的顺序、`reported != null` 判据、
+     * 补发时序一个字都没动 —— 崩溃屏只是取证之后的一步追加，且整段 runCatching。
+     */
+    private fun installHandler(context: Context) {
         val current = Thread.getDefaultUncaughtExceptionHandler()
-        // 当前默认处理器已经是我们自己包的那一层（上一次 onCreate 装的）⇒ 直接复用。
+        // 当前默认处理器已经是我们自己包的那一层（Application 或上一次 onCreate 装的）⇒ 直接复用。
         if (current != null && current === installedCrashHandler) return
         // 兜住「别人把默认处理器换掉了、但我们的那层还记在字段里」的畸形态：不重复套娃。
         if (!crashHandlerWrapped.compareAndSet(false, true)) return
@@ -376,8 +410,8 @@ internal object CrashForensics {
         }
         val restored = runCatching {
             val message = TextView(activity).apply {
-                setTextColor(Color.WHITE)
-                textSize = 15f
+                setTextColor(EratwInk.textArgb())
+                textSize = ShellType.Body.fontSize.value
                 setPadding(56, 140, 56, 24)
                 // 允许长按复制：玩家发反馈时不必依赖截图。
                 setTextIsSelectable(true)
@@ -412,7 +446,7 @@ internal object CrashForensics {
             }
             val column = LinearLayout(activity).apply {
                 orientation = LinearLayout.VERTICAL
-                setBackgroundColor(Color.BLACK)
+                setBackgroundColor(EratwInk.consoleBgArgb())
                 addView(
                     message,
                     LinearLayout.LayoutParams(

@@ -253,8 +253,8 @@ internal class RuntimeDiagnostics(
 
     internal fun datingForensicsReportLine(): String? {
         val store = runCatching { currentSession()?.store }.getOrNull() ?: return null
-        val forensics = runCatching { datingForensics(store) }.getOrNull() ?: return null
-        return if (forensics.isEmpty) null else forensics.render()
+        val forensics = runCatching { datingForensics(store, EratwForensicsLayout.ERATW) }.getOrNull() ?: return null
+        return if (forensics.isEmpty) null else forensics.render(EratwForensicsLayout.ERATW_LABELS)
     }
 
     private fun launchSingleFlightIo(

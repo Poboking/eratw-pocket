@@ -17,8 +17,10 @@ import org.junit.Test
  * 2. **`off` → 挂载点回到零行为**：摘除后再跑同一遍，样本总数一条都不涨
  *    （守卫是 [LockWatch.handleOrNull]，关时一次 volatile 布尔读，不取时钟、不进监视器）；
  * 3. **命令面绝不抛**：空参、乱参、大小写与空白都必须回一行文本，不许抛异常；
- * 4. **缺省关 + release 不可达**这两格不许被后来人偷偷改掉：源码面钉子
- *    （全 app 装配面只有这一处能 attach；`startOnce` 的 debuggable 闸必须还在）。
+ * 4. **缺省关 + 授权只放开读侧**这两格不许被后来人偷偷改掉：源码面钉子（全 app 装配面只有
+ *    这一处能 attach；`startOnce` 必须仍走唯一判定入口 [DevToolsHost.diagnosticsAllowed]，
+ *    未授权时在建线程之前就返回）。判词 9 之后 release 包由玩家在设置页显式授权也能起通道 ——
+ *    「分区表 / 写侧必拒」的逐条行为用例在 [DevToolsPlayerDiagnosticsGateTest]，这里只钉装配面与闸本身。
  *
  * 本类只调 [LockWatchCommand]（纯 JVM 逻辑），不碰 Android API —— `DevToolsHost` 的构造要
  * `GameHost` + `CanvasConsoleView`，JVM 单测里造不出来（同 `PageTrailWireTest` 的分工口径）；
@@ -133,20 +135,50 @@ class DevToolsLockWatchCommandTest {
     }
 
     /**
-     * release 包里这条命令**打不到**的判据钉子（契约 §2 L2 第 5 项的答卷本体）。
+     * 通道启动闸的钉子（判词 9 / PDIAG1 重写口径；原来钉的是「非 debuggable 直接 return」）。
      *
-     * 通道的启动闸在 `startOnce` 的第一行：非 debuggable 直接 return ⇒ 轮询线程不起、
-     * `cmd.txt` 没人读 ⇒ `lockwatch` 对玩家/正式作者不可达。这一行有人删了就是
-     * 「把调试通道放进正式包」，必须在这里红。
+     * 答案变了：release 包里玩家显式授权也能起通道，所以这里钉的不再是那行硬闸，而是两件没变的事：
+     * 1. **缺省关**：判定必须排在起通道之前 —— 未授权那一格不许先把线程建起来（不是起了不读 cmd.txt）；
+     *    且全文件 `slot.start(` 只许一处，否则等于凭空多一个不受判定约束的建线程入口。
+     * 2. **授权只放开读侧**：`lockwatch` 属只读放开名单，写侧/改档/输入注入十命令在授权档一律拒
+     *    （逐条行为用例在 [DevToolsPlayerDiagnosticsGateTest]，这里钉可达性口径本身）。
+     * 本路单测没有 Robolectric，造不出 CanvasConsoleView ⇒ 仍走源码面 + 纯函数裁决，
+     * 与 `PageTrailWireTest` 的分工口径一致，不是偷懒。
      */
     @Test
-    fun `调试通道的 debuggable 闸还在（release 打不到这一格的前提）`() {
+    fun `调试通道的启动闸还在（缺省关 + 授权只放开读侧）`() {
         val devtools = appSource("DevToolsHost.kt")
         assertTrue(
-            "applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) return" in devtools,
-            "startOnce 的 debuggable 闸不见了 —— 要么通道被放开进 release（不许），" +
-                "要么这条命令的可达性口径要重写（回 LockWatch 类 KDoc「谁能把它打开」改）",
+            "flags and ApplicationInfo.FLAG_DEBUGGABLE != 0 || prefsEnabled" in devtools,
+            "判定入口 diagnosticsAllowed 不见了 —— 要么通道被改成无条件起（release 缺省关这条纪律破了），" +
+                "要么可达性口径要重写（回 DevToolsHost 类 KDoc 与波次契约 §2 一起改）",
         )
+        assertFalse(
+            "FLAG_DEBUGGABLE == 0) return" in devtools,
+            "旧的「非 debuggable 直接 return」硬闸不许回来 —— 它会把玩家授权那一格一起挡掉（判词 9 的正题）",
+        )
+        val from = devtools.indexOf("fun startOnce(host: GameHost, view: CanvasConsoleView) {")
+        val to = devtools.indexOf("private fun startChannel")
+        assertTrue(from >= 0 && to > from, "startOnce 与 startChannel 必须都还在（锚失效说明装配面被重写）")
+        val startOnce = devtools.substring(from, to)
+        assertTrue("diagnosticsAllowed(" in startOnce, "startOnce 必须走唯一判定入口")
+        assertTrue(
+            startOnce.indexOf("diagnosticsAllowed(") < startOnce.indexOf("startChannel("),
+            "判定必须排在起通道之前：未授权那一格不许先把轮询线程建起来",
+        )
+        assertEquals(
+            1,
+            devtools.split("slot.start(").size - 1,
+            "轮询线程只许一条建线程路径（slot.start 全文件一处；第二条就是不受判定约束的入口）",
+        )
+        assertTrue(
+            "lockwatch" in READONLY_COMMANDS,
+            "lockwatch 必须在只读放开名单 —— 判词 9 给玩家打开的就是这一格",
+        )
+        assertFalse("lockwatch" in WRITE_COMMANDS, "lockwatch 不许同时出现在写侧必拒名单")
+        for (cmd in listOf("feed", "submit", "tap", "set", "cheat", "snapshot", "restore", "log", "trace", "break")) {
+            assertTrue(playerDiagRefusal(cmd) != null, "$cmd 属写侧，玩家授权档必须仍拒它（只放开读侧）")
+        }
     }
 
     private fun appSource(name: String): String {

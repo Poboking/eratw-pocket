@@ -97,7 +97,13 @@ class ResourcePackCleanupWireTest {
         val src = sourceOf("SettingsActivity.kt")
         assertTrue(
             "确认框必须先清 clearTarget 再动手（防连点两次跑两遍清理）",
-            src.contains("                                onClick = {\n                                    clearTarget = null\n                                    clearImportedMaterials(pendingClear)\n                                },"),
+            // 第四批把确认框统一到 ShellDialogActions 之后动作参数名是 onConfirm（原为 onClick），
+            // 锚点跟着改；钉的仍是「先置空、再动盘」这个顺序。
+            src.contains(
+                "                            onConfirm = {\n" +
+                    "                                clearTarget = null\n" +
+                    "                                clearImportedMaterials(pendingClear)",
+            ),
         )
         assertEquals(
             "清理只许从确认框那一处发起：除函数定义外不得有第二个调用点（卡片按钮只置 clearTarget）",
@@ -138,7 +144,9 @@ class ResourcePackCleanupWireTest {
             "结果区必须只在删了文件或被覆盖的随包文件被还原时给重启按钮与提示：" +
                 "「没找到需要清理的东西」不该顺手让人重开一局",
             src.contains("    if (summary.deletedFiles > 0 || summary.restoredBaseFiles > 0) {") &&
-                src.contains("        Text(text = copy.clearRestartHint, color = UiColors.TextMuted, fontSize = 11.sp)"),
+                src.contains(
+                    "        Text(text = copy.clearRestartHint, color = UiColors.TextMuted, style = ShellType.Label)",
+                ),
         )
         assertTrue(
             "清理进行态要有一句进行中文案，不能一片空白",

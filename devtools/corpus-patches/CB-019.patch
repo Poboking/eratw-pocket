@@ -1,0 +1,22 @@
+--- a/魔改内容/QOL_IMAGE.ERH
++++ b/魔改内容/QOL_IMAGE.ERH
+@@ -4,4 +4,19 @@
+ #DIM    CONST   GRAPH_SYSTEM_STATIC = 0
+ #DIM    CONST   GRAPH_SYSTEM_COMPOSE_SPRITE = 1
+ #DIM    CONST   GRAPH_SYSTEM_SPIRIT = 2
++;-------------------------------------------------
++; [CB-019] 配套 CB-018（QOL_IMAGE.ERB 悬停替代）：安卓触屏无鼠标悬停，
++; 立绘页停留超过 3 秒时随机挑一个角色启用悬停帧（单角色页 50% 掷币，
++; 多角色页按好感度秩加权随机）。判定按页粘滞，随机取 GETMILLISECOND
++; 与 LINECOUNT 混合种子、不触碰游戏 RNG 流。
++; 全局用户变量只从 ERH 装载（原版 Process.cs:309/:313），故声明在此。
++; QOL_DYN_PAGE_KEY      = 当前页键（LINECOUNT）
++; QOL_DYN_PAGE_START_MS = 本页首绘毫秒（GETMILLISECOND，0=从未绘制）
++; QOL_DYN_PAGE_DEC      = -1 未定 / 0 本页无角色换帧 / >0 = 选中角色 CID
++;-------------------------------------------------
++#DIM QOL_DYN_PAGE_KEY
++#DIM QOL_DYN_PAGE_START_MS
++#DIM QOL_DYN_PAGE_DEC
++
++
+ #DIM LAST_BGI_GID

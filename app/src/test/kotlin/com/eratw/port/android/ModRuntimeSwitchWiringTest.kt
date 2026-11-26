@@ -1,7 +1,6 @@
 package com.eratw.port.android
 
 import java.io.File
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -13,7 +12,8 @@ import org.junit.Test
  * 「开关真的接到玩家面上」这一件事，删掉任一条（开关行 / 读点 / 写点 / 传值）当场红。
  *
  * 不测行为（`SettingsActivity` 挂在 Android 运行时上，JVM 单测实例化不了），只钉源码形状；
- * 缺省值仍须是 **关**（发版决定归主人，默认值变动必须先改这里，属于有意红）。
+ * 缺省值自 2026-11-17（RT2-GATE-OPEN，主人裁定）起是 **开**（开箱可用）。默认值再变动
+ * 必须先改这里的断言，属于有意红。
  */
 class ModRuntimeSwitchWiringTest {
 
@@ -28,8 +28,8 @@ class ModRuntimeSwitchWiringTest {
     }
 
     @Test
-    fun `缺省仍是关`() {
-        assertFalse("总闸缺省必须为关（发版决定前不许改）", UiPrefs.DEFAULT_MOD_RUNTIME)
+    fun `缺省是开`() {
+        assertTrue("总闸缺省必须为开（2026-11-17 主人裁定：开箱可用）", UiPrefs.DEFAULT_MOD_RUNTIME)
     }
 
     @Test
@@ -67,8 +67,8 @@ class ModRuntimeSwitchWiringTest {
             host.contains("private val modRuntime: Boolean = false,"),
         )
         assertTrue(
-            "总闸必须原样透传给装配入口",
-            host.contains("enabled = modRuntime,"),
+            "总闸必须原样透传给装配入口（COMPAT-3P-MOD：经会话有效值 modActive，第三方档旁路）",
+            host.contains("enabled = modActive,"),
         )
     }
 

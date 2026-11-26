@@ -98,7 +98,7 @@ class ReportFileProvider : ContentProvider() {
 
     companion object {
 
-        /** authorities（与 AndroidManifest.xml 的 provider 声明一致）。 */
-        const val AUTHORITY = "com.eratw.port.android.reportfiles"
+        /** authorities（与 AndroidManifest.xml 的 `${applicationId}.reportfiles` 一致）。 */
+        val AUTHORITY: String = BuildConfig.APPLICATION_ID + ".reportfiles"
     }
 }

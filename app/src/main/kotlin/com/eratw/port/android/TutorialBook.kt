@@ -1,15 +1,9 @@
 package com.eratw.port.android
 
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -26,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -49,12 +44,16 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.eratw.port.android.ui.EratwInk
+import com.eratw.port.android.ui.design.ReaderType
+import com.eratw.port.android.ui.design.ShellMotion
+import com.eratw.port.android.ui.design.ShellPress
+import com.eratw.port.android.ui.design.ShellSpace
 
 /**
  * 首启教程的**排版本体**：一块「eraTW 文字游戏」质感的复古像素面板。
@@ -106,7 +105,12 @@ internal fun TutorialBook(
         modifier = Modifier
             .fillMaxSize()
             .background(EratwInk.scrim())
-            .clickable(onClick = onDismiss),
+            .clickable(
+                // 遮罩只负责「点外面关掉」：整屏的水波纹会误看成一整块按钮，关掉涟漪且不叠色。
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onDismiss,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         // 横屏换成「左章节导轨 + 右正文」：竖屏那套单栏在 390dp 高的横屏里，
@@ -299,8 +303,7 @@ private fun ChapterRail(
                 text = copy.bookTitle,
                 color = EratwInk.consoleTextDim(),
                 fontFamily = fontFamily,
-                fontSize = 10.sp,
-                letterSpacing = 1.sp,
+                style = ReaderType.Overline,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
@@ -339,9 +342,14 @@ private fun ChapterRailItem(
     fontFamily: FontFamily,
     onClick: () -> Unit,
 ) {
+    // 按下叠色与 clickable 共用一个 interactionSource：像素面没有涟漪，但「点中了」要有回音。
+    val pressSource = remember { MutableInteractionSource() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            // 导轨行按 44dp 下限撑开：横屏右栏的章节是拇指要反复点的目标，
+            // 22dp 的编号方块只是视觉，热区不能跟着缩。
+            .heightIn(min = ShellSpace.RowMinHeight)
             .then(
                 if (active) {
                     Modifier.background(EratwInk.consoleBox().copy(alpha = 0.45f))
@@ -349,8 +357,9 @@ private fun ChapterRailItem(
                     Modifier
                 },
             )
+            .background(ShellPress.tint(pressSource, EratwInk.consoleHighlight()))
             .clickable(
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = pressSource,
                 indication = null,
                 onClick = onClick,
             )
@@ -371,9 +380,9 @@ private fun ChapterRailItem(
         ) {
             Text(
                 text = (index + 1).toString().padStart(2, '0'),
-                color = if (active) Color.Black else EratwInk.consoleTextDim(),
+                color = if (active) EratwInk.consoleOnHighlight() else EratwInk.consoleTextDim(),
                 fontFamily = fontFamily,
-                fontSize = 12.sp,
+                style = ReaderType.Meta,
             )
         }
         Spacer(Modifier.width(8.dp))
@@ -381,7 +390,7 @@ private fun ChapterRailItem(
             text = title,
             color = if (active) EratwInk.consoleCream() else EratwInk.consoleTextDim(),
             fontFamily = fontFamily,
-            fontSize = 12.sp,
+            style = ReaderType.Meta,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
@@ -403,15 +412,14 @@ private fun LandscapeHeader(
             text = (page + 1).toString().padStart(2, '0'),
             color = EratwInk.consoleHighlight(),
             fontFamily = fontFamily,
-            fontSize = 14.sp,
-            letterSpacing = 1.sp,
+            style = ReaderType.RailIndex,
         )
         Spacer(Modifier.width(10.dp))
         Text(
             text = title,
             color = EratwInk.consoleCream(),
             fontFamily = fontFamily,
-            fontSize = 17.sp,
+            style = ReaderType.RailTitle,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
@@ -436,10 +444,7 @@ private fun TutorialPageFlow(
 ) {
     AnimatedContent(
         targetState = page,
-        transitionSpec = {
-            (fadeIn(tween(220)) + slideInHorizontally(tween(220)) { it / 12 }) togetherWith
-                (fadeOut(tween(140)) + slideOutHorizontally(tween(140)) { -it / 12 })
-        },
+        transitionSpec = { ShellMotion.PageEnter togetherWith ShellMotion.PageExit },
         modifier = modifier,
         label = "tutorial-page",
     ) { idx ->
@@ -479,8 +484,7 @@ private fun BookHeader(copy: TutorialCopy, fontFamily: FontFamily, onDismiss: ()
             text = copy.bookTitle,
             color = EratwInk.consoleTextDim(),
             fontFamily = fontFamily,
-            fontSize = 10.sp,
-            letterSpacing = 1.sp,
+            style = ReaderType.Overline,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
@@ -490,14 +494,15 @@ private fun BookHeader(copy: TutorialCopy, fontFamily: FontFamily, onDismiss: ()
     }
 }
 
-/** 关闭钮：视觉上是 28dp 的小方钮，命中区放到 40dp —— 手指点得中，版面又不被撑大。 */
+/** 关闭钮：视觉上是 28dp 的小方钮，命中区放到 48dp —— 手指点得中，版面又不被撑大。 */
 @Composable
 private fun CloseSquare(copy: TutorialCopy, fontFamily: FontFamily, onDismiss: () -> Unit) {
+    val pressSource = remember { MutableInteractionSource() }
     Box(
         modifier = Modifier
-            .size(40.dp)
+            .size(ShellSpace.TouchMin)
             .clickable(
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = pressSource,
                 indication = null,
                 onClick = onDismiss,
             )
@@ -505,20 +510,28 @@ private fun CloseSquare(copy: TutorialCopy, fontFamily: FontFamily, onDismiss: (
         contentAlignment = Alignment.Center,
     ) {
         Box(
-            modifier = Modifier.size(28.dp).border(1.dp, EratwInk.consoleRule()),
+            modifier = Modifier
+                .size(28.dp)
+                .background(ShellPress.tint(pressSource, EratwInk.consoleRule()))
+                .border(1.dp, EratwInk.consoleRule()),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 text = "×",
                 color = EratwInk.consoleText(),
                 fontFamily = fontFamily,
-                fontSize = 16.sp,
+                style = ReaderType.Glyph,
             )
         }
     }
 }
 
-/** 章节页签：`01`–`07` 方块，当前页反白（黄底黑字），可直接点跳到任意章。 */
+/**
+ * 章节页签：`01`–`07` 方块，当前页反白（黄底黑字），可直接点跳到任意章。
+ *
+ * 视觉上方块只有 26dp 高（像素菜单的方块语法），但热区按 Material 的 44dp 下限撑满 ——
+ * 手指点在方块上下边缘也算命中，版面密度不被热区撑松。
+ */
 @Composable
 private fun ChapterStrip(
     pages: Int,
@@ -532,34 +545,43 @@ private fun ChapterStrip(
     ) {
         repeat(pages) { index ->
             val active = index == current
+            val pressSource = remember { MutableInteractionSource() }
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .height(26.dp)
-                    .then(
-                        if (active) {
-                            Modifier.background(EratwInk.consoleHighlight())
-                        } else {
-                            Modifier.border(1.dp, EratwInk.consoleRule())
-                        },
-                    )
+                    .heightIn(min = ShellSpace.RowMinHeight)
                     .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
+                        interactionSource = pressSource,
                         indication = null,
                         onClick = { onSelect(index) },
                     ),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    text = (index + 1).toString().padStart(2, '0'),
-                    color = when {
-                        active -> Color.Black
-                        index < current -> EratwInk.consoleText()
-                        else -> EratwInk.consoleTextDim()
-                    },
-                    fontFamily = fontFamily,
-                    fontSize = 12.sp,
-                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(26.dp)
+                        .background(ShellPress.tint(pressSource, EratwInk.consoleHighlight()))
+                        .then(
+                            if (active) {
+                                Modifier.background(EratwInk.consoleHighlight())
+                            } else {
+                                Modifier.border(1.dp, EratwInk.consoleRule())
+                            },
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = (index + 1).toString().padStart(2, '0'),
+                        color = when {
+                            active -> EratwInk.consoleOnHighlight()
+                            index < current -> EratwInk.consoleText()
+                            else -> EratwInk.consoleTextDim()
+                        },
+                        fontFamily = fontFamily,
+                        style = ReaderType.Meta,
+                    )
+                }
             }
         }
     }
@@ -572,15 +594,14 @@ private fun ChapterHeading(title: String, fontFamily: FontFamily, modifier: Modi
             text = ">",
             color = EratwInk.consoleHighlight(),
             fontFamily = fontFamily,
-            fontSize = 15.sp,
+            style = ReaderType.Glyph,
         )
         Spacer(Modifier.width(8.dp))
         Text(
             text = title,
             color = EratwInk.consoleCream(),
             fontFamily = fontFamily,
-            fontSize = 18.sp,
-            lineHeight = 22.sp,
+            style = ReaderType.Chapter,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
@@ -657,8 +678,7 @@ private fun SubHeading(text: String, fontFamily: FontFamily) {
             raw = text,
             fontFamily = fontFamily,
             color = EratwInk.consoleCream(),
-            fontSize = 16,
-            lineHeight = 22,
+            style = ReaderType.ReadingTight,
             modifier = Modifier.weight(1f),
         )
     }
@@ -672,8 +692,7 @@ private fun BulletItem(text: String, fontFamily: FontFamily) {
             text = "・",
             color = EratwInk.consoleHighlight(),
             fontFamily = fontFamily,
-            fontSize = 16.sp,
-            lineHeight = 27.sp,
+            style = ReaderType.Reading,
             modifier = Modifier.width(16.dp),
         )
         Spacer(Modifier.width(4.dp))
@@ -689,8 +708,7 @@ private fun NumberedItem(line: TutorialLine, fontFamily: FontFamily) {
             text = "${line.number}.",
             color = EratwInk.consoleHighlight(),
             fontFamily = fontFamily,
-            fontSize = 16.sp,
-            lineHeight = 27.sp,
+            style = ReaderType.Reading,
             modifier = Modifier.width(20.dp),
         )
         Spacer(Modifier.width(4.dp))
@@ -716,8 +734,7 @@ private fun MarkupText(
     fontFamily: FontFamily,
     modifier: Modifier = Modifier,
     color: Color = EratwInk.consoleText(),
-    fontSize: Int = 16,
-    lineHeight: Int = 27,
+    style: TextStyle = ReaderType.Reading,
 ) {
     val line = remember(raw) { parsePixelMarkup(raw) }
     val styled = remember(line) {
@@ -740,8 +757,7 @@ private fun MarkupText(
         text = styled,
         color = color,
         fontFamily = fontFamily,
-        fontSize = fontSize.sp,
-        lineHeight = lineHeight.sp,
+        style = style,
         modifier = modifier,
     )
 }
@@ -752,7 +768,7 @@ private fun BlinkingScrollHint(fontFamily: FontFamily, modifier: Modifier = Modi
     val alpha by transition.animateFloat(
         initialValue = 0.5f,
         targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(700, easing = LinearEasing)),
+        animationSpec = infiniteRepeatable(ShellMotion.Pulse),
         label = "hint-alpha",
     )
     // 自带底板：提示会压在正文右下角，没有底会跟文字糊在一起。底板保持不透明，
@@ -767,7 +783,7 @@ private fun BlinkingScrollHint(fontFamily: FontFamily, modifier: Modifier = Modi
             text = "▼",
             color = EratwInk.consoleText(),
             fontFamily = fontFamily,
-            fontSize = 11.sp,
+            style = ReaderType.Hint,
             modifier = Modifier.alpha(alpha),
         )
     }
@@ -798,8 +814,7 @@ private fun PageFooter(
             text = "${(page + 1).toString().padStart(2, '0')} / ${(lastIndex + 1).toString().padStart(2, '0')}",
             color = EratwInk.consoleTextDim(),
             fontFamily = fontFamily,
-            fontSize = 12.sp,
-            letterSpacing = 1.sp,
+            style = ReaderType.Counter,
         )
         Spacer(Modifier.weight(1f))
         if (page < lastIndex) {
@@ -823,46 +838,64 @@ private fun PixelGhostButton(
     fontFamily: FontFamily,
     onClick: () -> Unit,
 ) {
+    // 热区 44dp、可视框仍是原来那块小方块：上下各留出的空白也吃点击。
+    val pressSource = remember { MutableInteractionSource() }
     Box(
         modifier = Modifier
-            .border(1.dp, EratwInk.consoleRule())
+            .heightIn(min = ShellSpace.RowMinHeight)
             .clickable(
                 enabled = enabled,
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = pressSource,
                 indication = null,
                 onClick = onClick,
             )
-            .alpha(if (enabled) 1f else 0.3f)
-            .padding(horizontal = 14.dp, vertical = 9.dp),
+            .alpha(if (enabled) 1f else 0.3f),
+        contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = text,
-            color = EratwInk.consoleText(),
-            fontFamily = fontFamily,
-            fontSize = 12.sp,
-        )
+        Box(
+            modifier = Modifier
+                .background(ShellPress.tint(pressSource, EratwInk.consoleText()))
+                .border(1.dp, EratwInk.consoleRule())
+                .padding(horizontal = 14.dp, vertical = 9.dp),
+        ) {
+            Text(
+                text = text,
+                color = EratwInk.consoleText(),
+                fontFamily = fontFamily,
+                style = ReaderType.Meta,
+            )
+        }
     }
 }
 
 /** 末页主行动：实心高亮黄底 + 黑字，整屏最重的一块，一眼知道收场在哪。 */
 @Composable
 private fun PixelPrimaryButton(text: String, fontFamily: FontFamily, onClick: () -> Unit) {
+    val pressSource = remember { MutableInteractionSource() }
     Box(
         modifier = Modifier
-            .background(EratwInk.consoleHighlight())
+            .heightIn(min = ShellSpace.RowMinHeight)
             .clickable(
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = pressSource,
                 indication = null,
                 onClick = onClick,
-            )
-            .padding(horizontal = 16.dp, vertical = 9.dp),
+            ),
+        contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = text,
-            color = Color.Black,
-            fontFamily = fontFamily,
-            fontSize = 12.sp,
-        )
+        Box(
+            modifier = Modifier
+                .background(EratwInk.consoleHighlight())
+                // 黄底上按下去压一层暗色，才看得出「这张是按钮」；叠色取自同一张墨色表的字色。
+                .background(ShellPress.tint(pressSource, EratwInk.consoleText()))
+                .padding(horizontal = 16.dp, vertical = 9.dp),
+        ) {
+            Text(
+                text = text,
+                color = EratwInk.consoleOnHighlight(),
+                fontFamily = fontFamily,
+                style = ReaderType.Meta,
+            )
+        }
     }
 }
 

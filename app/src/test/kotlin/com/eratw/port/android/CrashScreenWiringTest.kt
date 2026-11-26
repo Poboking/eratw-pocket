@@ -99,6 +99,30 @@ class CrashScreenWiringTest {
         assertTrue("摘要只从 intent 的五个标量来", code.contains("summaryOf(intent)"))
     }
 
+    @Test
+    fun `崩溃屏版本号小字接线：正常屏与 fallback 都从文案表取并注入 BuildConfig`() {
+        val code = codeLines("CrashScreenActivity.kt")
+        assertEquals(
+            "正常屏一处 + fallback 一处",
+            2,
+            code.countOccurrences("copy.versionLine(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE)"),
+        )
+    }
+
+    @Test
+    fun `竖屏失败屏与横屏失败屏都带版本号小字`() {
+        val portrait = codeLines("ShellUi.kt")
+        assertTrue(
+            "竖屏 FailureOverlay 要在按钮后渲染版本号小字",
+            portrait.contains("failureCopy.versionLine(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE)"),
+        )
+        val landscape = codeLines("MainActivity.kt")
+        assertTrue(
+            "横屏失败屏 snapshot 要追加一行版本号",
+            landscape.contains("versionLine(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE)"),
+        )
+    }
+
     // ------------------------------------------------------------------
     // 标记纪律
     // ------------------------------------------------------------------
@@ -142,6 +166,73 @@ class CrashScreenWiringTest {
         assertTrue("crash 进程早退必须在（gate=$gate）", gate >= 0)
         assertTrue("早退必须在内存档位装配之前（tier=$tier）", tier > gate)
         assertTrue("早退必须真的 return", code.contains("if (isCrashScreenProcess()) {\n            runCatching"))
+    }
+
+    // ------------------------------------------------------------------
+    // 安装时机（RECON-STAB-C C1）
+    // ------------------------------------------------------------------
+
+    /**
+     * 缺省未捕获异常处理器必须装在**进程入口**且先于其余装配（C1 前移）。
+     *
+     * 判据函数/装配函数本身对不代表接线对 —— 把 `CrashForensics.install(this)` 从
+     * EratwApplication 挪回 MainActivity（= 撤掉前移）行为面看不出差别，冷启早段崩与
+     * SettingsActivity 会话又回到零取证，所以钉在生产源码上：
+     * ① 进程入口必须有进程级 install 调用；
+     * ② 安装必须早于 EventJournal.begin（onCreate 里其余装配的第一步）——「最早一步」
+     *    就是本条的全部；
+     * ③ 安装必须在崩溃屏进程早退**之后**（`:crash` 进程不装，维持 C6 登记现状）。
+     */
+    @Test
+    fun `崩溃处理器装在进程入口且早于其余装配`() {
+        val app = codeLines("EratwApplication.kt")
+        val gate = app.indexOf("if (isCrashScreenProcess())")
+        val install = app.indexOf("CrashForensics.install(this)")
+        val begin = app.indexOf("EventJournal.begin(this)")
+        assertTrue("进程入口必须装崩溃处理器（找不到 = C1 前移被撤）", install >= 0)
+        assertTrue(
+            "安装必须早于事件日志装配（install=$install begin=$begin）：晚一步就漏掉那段窗口里的崩",
+            install in 0 until begin,
+        )
+        assertTrue(
+            "安装必须在崩溃屏进程早退之后（gate=$gate install=$install）：崩溃屏进程不装处理器",
+            install > gate,
+        )
+    }
+
+    /**
+     * 处理器仍然**只包一层**（双重判定不许拆），壳层调用点保留幂等刷新。
+     *
+     * Application 与 MainActivity 两个入口都会进 installHandler：判定拆掉任何一半，
+     * 每次壳层重建都会在崩溃路径上再套一轮采集 + 补发。壳层调用点撤掉则宿主读数口
+     * （crashHostProvider）没人刷新，崩溃报告永远拿不到宿主。
+     */
+    @Test
+    fun `处理器只包一层且壳层保留幂等刷新`() {
+        val forensics = codeLines("CrashForensics.kt")
+        assertTrue(
+            "双重判定之一必须在：installedCrashHandler 指针比对",
+            forensics.contains("current === installedCrashHandler"),
+        )
+        assertTrue(
+            "双重判定之二必须在：crashHandlerWrapped CAS（防换掉默认处理器后的重复套娃）",
+            forensics.contains("crashHandlerWrapped.compareAndSet(false, true)"),
+        )
+        assertTrue("进程级安装入口必须在（C1 前移的落点）", forensics.contains("internal fun install(context: Context)"))
+        assertTrue(
+            "壳层刷新入口必须在（宿主读数口随 Activity 换代）",
+            forensics.contains("internal fun install(") && forensics.contains("hostProvider: () -> GameHost?"),
+        )
+        assertEquals(
+            "setDefaultUncaughtExceptionHandler 只许一处（包一层 = 单一安装点）",
+            1,
+            forensics.countOccurrences("Thread.setDefaultUncaughtExceptionHandler(handler)"),
+        )
+        val main = codeLines("MainActivity.kt")
+        assertTrue(
+            "MainActivity 保留刷新调用（找不到 = 宿主读数口没人刷新，崩溃报告拿不到宿主）",
+            main.contains("CrashForensics.install(this, hostProvider = { host })"),
+        )
     }
 
     // ------------------------------------------------------------------

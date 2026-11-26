@@ -1,5 +1,7 @@
 package com.eratw.port.android
 
+import android.content.Context
+
 /**
  * 壳层内联 UI（竖屏 HUD / 指令盘 / 立绘舞台 + 横屏壳与两版加载页、失败屏）的玩家面文案表
  * （三语，照 [UpdateCopy] 的表形态与三条硬规矩）。
@@ -202,6 +204,27 @@ data class PortraitShellCopy(
             SettingsLanguage.EN -> EN
             SettingsLanguage.JA -> JA
         }
+
+        /**
+         * 加载页专用取口（SHELL-PROFILE）：只把配置里的游戏名烙进两版 headline 与缺省进度说明，
+         * 其余几十枚壳层文案保持原语言表逐字不变。空覆盖 = 回落原表，eraTW 包零变化。
+         */
+        fun ofLoading(context: Context, lang: SettingsLanguage): PortraitShellCopy = applyLoadingBrand(
+            base = of(lang),
+            headline = ShellBrand.loadingHeadline(context),
+            detail = ShellBrand.loadingDetail(context),
+        )
+
+        /** 纯函数形态，供 JVM 单测钉「只改这三枚、空串回落」。 */
+        internal fun applyLoadingBrand(
+            base: PortraitShellCopy,
+            headline: String,
+            detail: String,
+        ): PortraitShellCopy = base.copy(
+            loadingPixelHeadline = headline.ifBlank { base.loadingPixelHeadline },
+            loadingModernHeadline = headline.ifBlank { base.loadingModernHeadline },
+            loadingPreparingData = detail.ifBlank { base.loadingPreparingData },
+        )
 
         /** 简体中文：每个值都与收口前的内联字面量逐字相同（中文零漂移的对拍右轴）。 */
         val ZH: PortraitShellCopy = PortraitShellCopy(

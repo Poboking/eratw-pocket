@@ -7,7 +7,6 @@ import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
-import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
@@ -36,12 +35,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.eratw.port.android.portrait.PORTRAIT_HUD_TAIL_LINES
+import com.eratw.port.android.ui.EratwInk
 import com.eratw.port.core.config.ConfigKey
 import com.eratw.port.core.host.AndroidKeyCodes
 import com.eratw.port.core.host.ConsoleOption
 import com.eratw.port.core.host.InputRequest
 import com.eratw.port.platform.config.SettingsStore
 import com.eratw.port.platform.input.BlankTapPolicy
+import com.eratw.port.platform.input.ConsoleTapDecision
 import com.eratw.port.platform.input.ScrollLineAccumulator
 import com.eratw.port.platform.input.InputBarState
 import com.eratw.port.platform.input.InputHint
@@ -115,8 +116,12 @@ import kotlin.math.floor
  *   与游戏屏在 onCreate 写下的横屏/竖屏锁互不干扰。
  * - 本 Activity 在设置页盖着期间被系统销毁（「不保留活动」/ OEM 清理）**不再等于丢进度**：
  *   `onDestroy` 以 `isFinishing` 分水岭只冻结不 close，VM 会话留在 [SessionVault] 的
- *   进程级槽里，下一实例首帧 `reattachView` 接回同一局（见 [SessionVault] 类头与
- *   `SessionHandoverWireTest`）。2026-11-13 那笔半透明窗口改造正是因此撤掉 —— 它让
+ *   进程级槽里，下一实例首帧 `reattachView` 接回同一局，并在接回成功处补一发解冻
+ *   （`onStart` 那发早于首帧接回、那时 `host` 还是 null，是 no-op）。冻结/重新入槽只认
+ *   [GameHost.isBoundToView]：槽在 takeover 时已清，接回壳自己再被销毁必须重新入槽，
+ *   否则下个实例只能冷启回标题、挂起的当日存档检查点也永远等不到 VM 安全点
+ *   （2026-11-17 玩家「切后台有概率卡回主菜单」）。见 [SessionVault] 类头与
+ *   `SessionHandoverWireTest`。2026-11-13 那笔半透明窗口改造正是因此撤掉 —— 它让
  *   MainActivity 保持 visible 的前提已被会话升进程级取代，副作用却是把设置页钉死在
  *   游戏的方向锁里。
  * - `onDestroy` 对 [GameHost.close] 只调一次（内部另有 `closed` 守卫）；[pump] 先摘回调再关，
@@ -450,7 +455,15 @@ class MainActivity : ComponentActivity() {
         vmThread = ::stallVmThread,
         // 落盘只走 RunWatch 既有的写侧闸（TrailWriteGate，RunWatch.kt:360）：这一发不在 UI 线程，
         // 所以不需要 StrictMode 豁免表条目；行尾的 `hb=` 心跳段由 forceSample 自己拼。
-        pin = { phase, _ -> RunWatch.forceSample(applicationContext, phase, heartbeat) },
+        // 2026-11-20 补口：现场**同时**落盘（StallSceneLog）——ANR 被系统收走时进程内存里的
+        // lastScene 随进程一起死，报告里只剩轨迹行的栈顶 1 帧；vivo 那份 `ui@StringFactory.
+        // newStringFromBytes:-2` 是 native 帧，调用者在被抓到的第 2 帧，没落盘就永远看不见。
+        pin = { phase, scene ->
+            RunWatch.forceSample(applicationContext, phase, heartbeat)
+            runCatching {
+                StallSceneLog.write(File(applicationContext.filesDir, StallSceneLog.DIR_NAME), scene)
+            }
+        },
     )
 
     /**
@@ -478,6 +491,41 @@ class MainActivity : ComponentActivity() {
         false
     }
 
+    /**
+     * [uiStage] 的计时版（2026-11-20 ANR 归因）：跑同一段活并量墙钟，超 [SlowUiGate.STAGE_SLOW_MS]
+     * 就钉一行 `slowui stage=<段名>` 轨迹。正常段 < 5 ms，这一行只在玩家可感知的异常段出现；
+     * 与哨兵的 `stallstack` 并读，就能分清「5 秒卡在 pump 四段之一」还是「卡在 onDraw 交帧」
+     * （后者由 [CanvasConsoleView.slowFrameNotify] 钉 `slowui onDraw`，装配见 [buildRootView]）。
+     */
+    private inline fun uiStageTimed(where: String, body: () -> Unit): Boolean {
+        val startNs = System.nanoTime()
+        val ok = try {
+            body()
+            true
+        } catch (t: RuntimeException) {
+            logUiFault(where, t)
+            false
+        }
+        val ms = (System.nanoTime() - startNs) / SlowUiGate.NS_PER_MS
+        if (SlowUiGate.isSlowStage(ms)) pinSlowUi(SlowUiGate.stagePhase(where, ms))
+        return ok
+    }
+
+    /** 慢帧钉发的冷却位（[SlowUiGate.PIN_MIN_INTERVAL_MS] 档）；任意线程写，比一次读旧值无害。 */
+    @Volatile
+    private var lastSlowUiPinAtMs = -1L
+
+    /**
+     * 钉一行 `slowui` 轨迹（走 [RunWatch.forceSample] 的既有写侧闸）。整段 runCatching：
+     * 归因钉发在任何异常下都只是「这一发没落」，不许把 UI 线程拖出第二场事故。
+     */
+    private fun pinSlowUi(phase: String) {
+        val nowMs = android.os.SystemClock.elapsedRealtime()
+        if (!SlowUiGate.shouldPin(nowMs, lastSlowUiPinAtMs)) return
+        lastSlowUiPinAtMs = nowMs
+        runCatching { RunWatch.forceSample(applicationContext, phase, heartbeat) }
+    }
+
     /** UI 线程故障的限流日志：首次全栈，之后每 [UiFaultLog.EVERY] 次一行计数。 */
     private fun logUiFault(where: String, t: RuntimeException) {
         uiFaultCount += 1L
@@ -488,6 +536,12 @@ class MainActivity : ComponentActivity() {
                 Log.w(TAG, "UI 线程异常（$where）累计 $uiFaultCount 次：" +
                     "${t.javaClass.simpleName}: ${t.message}")
             UiFaultLogMode.SILENT -> Unit
+        }
+        // 2026-11-17 覆盖补齐：UI 线程异常原先只记日志、玩家不反馈就永远不上报。
+        // 走聚合器（每型每局头两次落代表报告，其余计数），落盘+上传全 best-effort，
+        // 绝不让诊断代码在 UI 线程抛出第二场事故（recordDiagnostic 内部已 runCatching 兜住）。
+        runCatching {
+            ErrorReportCollector.recordDiagnostic(this, DiagnosticEventLog.DiagnosticKind.UI_FAULT, t, where)
         }
     }
 
@@ -567,13 +621,13 @@ class MainActivity : ComponentActivity() {
                 // 此前每帧无条件重绘（120Hz 屏 ~107fps、legacy janky 87%）＝高频抖动根因。
                 // 四段**各自**兜住（先全部跑完再合并结果，不能用 && 短路——一段坏了不该
                 // 把后面几段一起跳过；理由见 uiStage 的 KDoc）。
-                val snapshotOk = uiStage("快照差分") { consoleView.pumpAndInvalidateIfNeeded() }
-                val shellOk = uiStage("选项刷新") { refreshShell() }
-                val failureOk = uiStage("失败屏同步") { renderFailureIfNeeded() }
+                val snapshotOk = uiStageTimed("快照差分") { consoleView.pumpAndInvalidateIfNeeded() }
+                val shellOk = uiStageTimed("选项刷新") { refreshShell() }
+                val failureOk = uiStageTimed("失败屏同步") { renderFailureIfNeeded() }
                 // 内存采样（缺省关，见 GameHost.sampleMemoryIfNeeded）：20 秒一条，没开开关时
                 // 这里只是一次 long 比较。release 包没有 run-as/DevTools 通道，这是唯一能在
                 // 玩家机上拿到「G 系像素常驻涨不涨」读数的口。
-                val sampleOk = uiStage("内存采样") { host?.sampleMemoryIfNeeded(nowMs) }
+                val sampleOk = uiStageTimed("内存采样") { host?.sampleMemoryIfNeeded(nowMs) }
                 if (snapshotOk && shellOk && failureOk && sampleOk) {
                     pumpBreaker.recordSuccess()
                 } else if (pumpBreaker.recordFailure(nowMs)) {
@@ -793,8 +847,10 @@ class MainActivity : ComponentActivity() {
             if (i.hasExtra(EXTRA_FLAT_STATEMENTS)) i.getBooleanExtra(EXTRA_FLAT_STATEMENTS, false) else null
         }
         // 崩溃兑底（方案①）：任何线程未捕获异常先落一份报告再交给系统默认处理。
-        // 装在 onCreate 最早处：之后任何阶段的崩（解包/装载/脚本线程外逃）都走这里。
-        // 报告采集自会 runCatching 兑底，不会拦住真崩。
+        // C1（RECON-STAB-C）起**安装**已前移到 EratwApplication.onCreate（进程级单例挂进程
+        // 入口；冷启早段与不经过本壳的 SettingsActivity 会话从此不再零取证）。这里保留调用：
+        // 每次换代刷新宿主读数口 + 幂等补装 —— 已装则 installHandler 直接早退，
+        // 不会重复套娃（见 CrashForensics.installHandler 的双重判定）。
         CrashForensics.install(this, hostProvider = { host })
         // 冻结现场读数口：每次 onCreate 刷新到最新一只壳（口径同 CrashForensics 的 crashHostProvider，
         // 见 CrashForensics.install 里那段 fix-staticpin 的说明：真正不钉住死壳的是
@@ -836,8 +892,9 @@ class MainActivity : ComponentActivity() {
         }.getOrNull()?.let { pendingCrashBanner = it }
         // 方案③：冷启动补发上一轮失败/断网的报告（端点未配置时是 no-op）。
         runCatching { ErrorReportUploader.uploadPendingAsync(applicationContext) }
-        window.statusBarColor = Color.BLACK
-        window.navigationBarColor = Color.BLACK
+        // 系统栏与画布同色（壳层墨色表里的「屏幕底」），不留割裂的白/灰分界。
+        window.statusBarColor = EratwInk.consoleBgArgb()
+        window.navigationBarColor = EratwInk.consoleBgArgb()
 
         storage = GameStorage(this)
         // 方向（竖屏设计稿 §6）：manifest 不锁向，方向权在这里，且**竖屏只在玩家
@@ -900,7 +957,15 @@ class MainActivity : ComponentActivity() {
             liveReflow = appliedLiveReflow,
             // 0 = 关 = 满宽，与未传该参数逐值相同（ScreenLayout.resolve 的 contentMarginPx 闸）。
             contentMarginFraction = appliedContentMargin,
-        ).apply { setBackgroundColor(Color.BLACK) }
+        ).apply {
+            setBackgroundColor(EratwInk.consoleBgArgb())
+            // 慢帧归因（2026-11-20 ANR）：onDraw 单帧超阈值把毫秒数交回来钉轨迹；
+            // 冷却与判式在 [SlowUiGate]，这里只接原始读数（pump 四段见 [uiStageTimed]）。
+            slowFrameNotify = { ms -> pinSlowUi(SlowUiGate.framePhase(ms)) }
+            // 逐帧诊断包（`frames on|off` / `frames [n]`，默认关）的 `awaitingAnyKey` 列：
+            // 只在诊断包开启时被调用一次，关闭态零成本（口径见 CanvasConsoleView.FrameTrace）。
+            anyKeyProvider = { host?.awaitingAnyKey() == true }
+        }
         attachGestures()
         reloadMacros()
         // 右侧选项栏的可见状态跨会话记忆（螺旋图标切换，见 ShellUi.SpiralToggle）。
@@ -972,6 +1037,14 @@ class MainActivity : ComponentActivity() {
                         portraitLinesProvider = { portraitScreenLines() },
                     )
 
+                    // RT2 P0-LAST：mod 作者注册的交互项（UiApi.registerInteraction）真实上屏。
+                    // 独立浮层：入口只在「有贡献项」时出现；点击经 VM 线程派发（runtime.submit
+                    // 入队 → 页边界兑现），执行结果/失败回显在面板；1s 低频刷新（禁每帧）。
+                    ModUiOverlay(
+                        surfaceProvider = { host?.modUiSurface() },
+                        copy = ModUiCopy.of(UiPrefs.settingsLanguage(this@MainActivity)),
+                    )
+
                     // 首启教程（复古像素指南）：仅初次安装弹一次，且必须等首帧非空内容
                     // 真正落笔（标题页可见）之后才放行 —— 解包/装载的几十秒里不弹书，
                     // 玩家先看到加载页正常走完。关闭即落「已读」，此后冷启不再弹
@@ -984,7 +1057,7 @@ class MainActivity : ComponentActivity() {
                     }
                     if (tutorialVisible) {
                         TutorialDialog(
-                            copy = TutorialCopy.of(UiPrefs.settingsLanguage(this@MainActivity)),
+                            copy = TutorialCopy.of(this@MainActivity, UiPrefs.settingsLanguage(this@MainActivity)),
                             onDismiss = {
                                 tutorialVisible = false
                                 UiPrefs.markTutorialShown(this@MainActivity)
@@ -1019,9 +1092,24 @@ class MainActivity : ComponentActivity() {
             if (revived != null && revived.reattachView(consoleView)) {
                 host = revived
                 revived.heartbeat = heartbeat
+                // 接回必须解冻（2026-11-17 玩家「切后台有概率卡回主菜单 + 当日存档不见」）：
+                // 旧壳 onDestroy（非 finishing）把会话冻结后留槽，而本实例的 onStart 解冻
+                // 发生在首帧接回**之前**——那时 host 还是 null，那一发是 no-op。缺了这里，
+                // 接回的 VM 永久停在 awaitResume：画面卡在最后一屏（看起来就是「卡回主菜单」），
+                // 且已登记的后台存档检查点永远到不了 VM 安全点（当日自动存档因此不见）。
+                // 与 onStart 的放行同幂等口径；双壳交接窗口的迟到冻结由 onDestroy 的认主挡住。
+                uiStage("接回会话解冻") { revived.setBackgroundPaused(false) }
                 HotConfigChannel.install(this) { host?.liveConfigStore() }
                 // 认主装挂：口径同交接点（接回实例成为通道的当前归属）。
                 ModImportSessionChannel.install(this) { host?.debugSession() }
+                // 设置页也要能读 Mod UI 浮层：同一条认主通道，读回活会话的不可变快照。
+                ModUiSettingsEntry.install(this) { host?.modUiSurface() }
+                // 设置页「Mod 运行时概览」（Lane AW）同走一条活引用通道：账本未装配 / 会话
+                // 已收口时 read 为 null ⇒ 卡片整块不渲染；纯只读，不改 mod 状态。
+                ModRuntimeOverviewEntry.install(this) { ids -> host?.modRuntimeDataFor(ids) }
+                // 设置页「最近日志」回看（MODDX4-G8 组长接线）：同一条活引用通道，会话收口
+                // 后 read 为 null ⇒ 设置页渲染诚实空态；纯只读，不改 mod 状态。
+                ModRuntimeLogViewerEntry.install(this) { pkg -> host?.modLogsFor(pkg) }
                 Log.i(TAG, "接回进程级会话：${revived.javaClass.simpleName}@${revived.hashCode()}")
                 return@addOnGlobalLayoutListener
             }
@@ -1085,7 +1173,11 @@ class MainActivity : ComponentActivity() {
             // 上面三条判据只看玩家手改过的显示档，覆盖不到这一下。标记由设置页在恢复成功后
             // 写入、这里消费一次：返回游戏时问一句要不要重开，不让改完的设置静悄悄不生效。
             val restorePending = fromSettings && UiPrefs.consumeRestoreRestartPending(this)
+            // ModDX-4 A+（判据 2）：mod 变更标记在此消费一次；触发判据抽在 modRestartPromptNeeded（纯函数直测）。
+            val modChangedPending = fromSettings && UiPrefs.consumeModRestartPending(this)
+            // 拆成两条单行 if（detekt ComplexCondition 每条 4 操作数内）：与合取逐字等价。
             if (!wantsRestart && !displayTouched && !orientationTouched && !restorePending) return
+            if (!modChangedPending) return
             if (orientationTouched) {
                 // 方向变更要重建整只 Activity（连带重开游戏），两种入口在这里合流：
                 // 玩家按了「保存并重启游戏」就直接执行，否则先问一句。
@@ -1114,6 +1206,8 @@ class MainActivity : ComponentActivity() {
                 confirmRestoreDefaultsRestart()
                 return
             }
+            // mod 面变更（ModDX-4 A+）：盘上已变、当前局仍跑旧装配（ModEnablement.kt:13-14），问一句。
+            if (modRestartPromptNeeded(fromSettings, wantsRestart, modChangedPending)) confirmModChangedRestart()
             // 档位改回原值或无变化，但玩家按了「保存并重启游戏」：改的多半是
             // `emuera.config` 的 FONT SIZE / LINE HEIGHT / 字体，这些只在会话开始前灌入
             // （见 GameHost.applyBootFontMetrics），重开会话即可，不必重建 Activity。
@@ -1186,6 +1280,35 @@ class MainActivity : ComponentActivity() {
                 activity = this,
                 title = copy.restoreDefaultsDialogTitle,
                 body = copy.restoreDefaultsDialogBody,
+                positiveLabel = copy.dialogRestartNow,
+                onPositive = { runCatching { restartGame { recreate() } }.onFailure(::onRestartFault) },
+                negativeLabel = copy.dialogApplyNextLaunch,
+            )
+        }.onFailure(::onRestartFault)
+    }
+
+    /**
+     * 设置页改过 mod 面（per-mod 启停 / 导入成功，ModDX-4 A+）之后从设置页返回时问一句：
+     * mod 链在会话构造期一次装配（ModEnablement.kt:13-14 的生效口径），盘上已变、当前局
+     * 仍跑旧装配 —— 把「记得手动重开」的作者记忆负担清掉，装配语义本身不动。
+     *
+     * 与 [confirmRestoreDefaultsRestart] 同一副面板、同一对按钮（[ShellFailureCopy] 现在是
+     * 四枚确认框共用「现在重开 / 下次启动生效」）。同意 = [restartGame] + [recreate]，与
+     * 显示档 / 方向 / 恢复默认三枚同链；拒绝 = 保留当前会话，标记在读这一拍已清、不再追问
+     * （取消路径裁定见 [UiPrefs.consumeModRestartPending] 的 KDoc：变更已在盘上，下次冷启
+     * 必生效；「保留至生效」要一台标记↔会话代际的小状态机，本波不做）。
+     *
+     * 与既有三枚确认框的撞车口径：显示档 / 方向 / 恢复默认判据在前，同一次返回里它们命中
+     * 时只弹先到的那一枚（mod 标记已在入口消费掉），mod 变更由下次冷启兜底 —— 与既有
+     * restorePending / displayChanged 撞车时只弹一枚的口径一致，不做多弹队列。
+     */
+    private fun confirmModChangedRestart() {
+        val copy = ShellFailureCopy.of(UiPrefs.settingsLanguage(this))
+        runCatching {
+            EratwShellDialog.show(
+                activity = this,
+                title = copy.modChangedDialogTitle,
+                body = copy.modChangedDialogBody,
                 positiveLabel = copy.dialogRestartNow,
                 onPositive = { runCatching { restartGame { recreate() } }.onFailure(::onRestartFault) },
                 negativeLabel = copy.dialogApplyNextLaunch,
@@ -1653,6 +1776,10 @@ class MainActivity : ComponentActivity() {
         // AudioManager（真机上有 OEM 抛 IllegalStateException 的形态），抛出去就是
         // 「切回前台，应用没了」—— 而重绘循环还没排上，屏也醒不过来。
         uiStage("回前台恢复会话") { host?.onResume() }
+        // 逐帧诊断开关（玩家取证通道）：设置页改过之后回前台按新值挂/摘。
+        // **不放在 onStop 摘** —— 玩家复现完抖动要去设置页点「分享诊断」，那一趟必然经过
+        // onStop；在那里摘会把要分享的那段现场当场清掉。只在 Activity 真正销毁时摘。
+        runCatching { FrameTraceChannel.sync(this, consoleView) }
         // onPause 摘掉了重绘循环；回前台恢复唯一一条。这里**无条件**投一次：后台期间装载失败
         // 或脚本结束时 isRunning() 已是 false，若按它跳过，pump 就再也不会跑，
         // renderFailureIfNeeded 不上屏，画面会永远停在最后一张「正在装载…」快照。
@@ -1709,6 +1836,11 @@ class MainActivity : ComponentActivity() {
         runCatching {
             EratwStrictMode.allowUiDiskIo(StrictModeGuard.WHERE_LIFECYCLE_STATE) {
                 RunWatch.markStopped(applicationContext, "onDestroy")
+                // STAB-C3（EventJournal 异步化）：事件行现在走单写线程，壳销毁前把队列里剩的
+                // 尾行尽量落盘 —— 与 markStopped 同一类「必达」收尾（异步 handoff 会丢行），
+                // 所以共用这同一个豁免口与同一扇窗口。有界等待 + 抢不到锁就放弃（flushForExit
+                // 的契约），本进程绝不因这一步挂死；配置变更重建时写线程不会停，这里只是多等一次排空。
+                EventJournal.flushForExit()
             }
         }
         ticking = false
@@ -1727,6 +1859,10 @@ class MainActivity : ComponentActivity() {
         // 先摘待触发的后台暂停，再走既有收口：销毁后绝不能再有回调去打已关闭的宿主。
         consoleView.removeCallbacks(backgroundPauseRunnable)
         consoleView.removeCallbacks(pump)
+        // 逐帧诊断环：Activity 真正销毁才摘（配置变更也会走到这里，但那一路紧接着就重建、
+        // onResume 会重新挂上；清空换一段新现场的代价可接受）。不摘 = 静态边把已销毁的
+        // View 钉住（与下面 CrashForensics 同一条泄漏面）。
+        runCatching { FrameTraceChannel.detach() }
         // 崩溃读数口持有的是本 Activity 的闭包；不在这里摘掉，静态边会把已销毁的壳钉住
         // （下一次 onCreate 才会覆盖，若不再重建就永久钉住）。只回收**自己**那一份：
         // 两个实例交接时旧壳的 onDestroy 不得把新壳刚装好的读数口清掉。
@@ -1749,8 +1885,22 @@ class MainActivity : ComponentActivity() {
             runCatching { host?.close() }
                 .onFailure { Log.e(TAG, "onDestroy: host.close 抛异常（照常往下收口）", it) }
         } else {
-            runCatching { host?.setBackgroundPaused(true) }
-                .onFailure { Log.e(TAG, "onDestroy: 会话冻结失败（照常往下收口）", it) }
+            // 冻结与重新入槽都要认主，且**认视图而不是认槽**（2026-11-17 玩家
+            // 「切后台有概率卡回主菜单 + 最新一天自动存档不见」的第二半）：
+            // * 槽在 takeover 时已清空 —— 接回壳自己后续再被系统销毁时，槽归属恒为
+            //   false。若照旧跳过，会话成无主孤儿：下个实例问槽扑空，冷启回标题；
+            //   旧壳里挂起的后台存档检查点也再没有 VM 安全点可兑现，正是玩家看到的两件事。
+            // * 视图由 reattachView 换绑 —— 旧壳迟到的 onDestroy 发现 view 已不是自己，
+            //   冻结与入槽一并跳过，绝不把新壳刚解冻的会话重新钉进 awaitResume。
+            // 首次系统销毁时重新入槽是幂等覆盖（同一宿主），接回后的第二次销毁靠它续命。
+            val owned = host?.takeIf { it.isBoundToView(consoleView) }
+            if (owned != null) {
+                runCatching { owned.setBackgroundPaused(true) }
+                    .onFailure { Log.e(TAG, "onDestroy: 会话冻结失败（照常往下收口）", it) }
+                // 入槽独立兜住：冻结那一步抛异常也不能让无壳期间的会话没有主人。
+                runCatching { SessionVault.install(owned) }
+                    .onFailure { Log.e(TAG, "onDestroy: 会话重新入槽失败（照常往下收口）", it) }
+            }
         }
         // 热更通道装的是闭包（捕获本 Activity，fix-staticpin 阶段一实测：捕获槽反射可见、
         // 接线期间 WeakReference 收不回），销毁时必须摘掉，否则进程级单例攥着一个已销毁的壳。
@@ -1761,6 +1911,12 @@ class MainActivity : ComponentActivity() {
         // 活会话要么是空，不会是已 close 的旧会话。认主（2026-11-13）：接回形态下旧壳
         // 的销毁不得撅空新壳刚装的接线（ModImportSessionChannel 类头）。
         ModImportSessionChannel.uninstall(this)
+        // 设置页 Mod UI 浮层的读口同一寿命令：认主卸载，双壳交接窗口下旧壳不得撅空新壳。
+        ModUiSettingsEntry.uninstall(this)
+        // 运行时概览读数口同一寿命令：认主卸载，双壳交接窗口下旧壳不得撅空新壳的接线。
+        ModRuntimeOverviewEntry.uninstall(this)
+        // 「最近日志」读数口同一寿命令（MODDX4-G8 组长接线）：认主卸载。
+        ModRuntimeLogViewerEntry.uninstall(this)
         // CMP-17：调试通道是进程级单代槽，销毁时**必须**真复位（interrupt + join + 清引用）。
         // 顺序放在 host.close() 之后：轮询线程可能还在执行一条命令（它读 host/view 的
         // volatile 快照口），让会话先收口再打断，命令读到的就是「已关闭」而不是半关状态。
@@ -1860,6 +2016,11 @@ class MainActivity : ComponentActivity() {
         runCatching {
             EratwStrictMode.allowUiDiskIo(StrictModeGuard.WHERE_LIFECYCLE_STATE) {
                 RunWatch.markStopped(applicationContext, "exitButton")
+                // STAB-C3（EventJournal 异步化）：这一发后面紧跟 `Runtime.exit(0)`，daemon 写
+                // 线程随进程一起死 —— 尾行必须在这里抢出来（口径同上：必达收尾共用既有豁免口，
+                // 有界等待、绝不挂死退出流程）。flushForExit 返回 false（写线程卡死）也只丢
+                // 诊断行，照常往下走退出。
+                EventJournal.flushForExit()
             }
         }
         // 「重启应用」那一族（上一局没让出堆）：它要的就是**换一个干净进程**，所以先把
@@ -1983,15 +2144,22 @@ class MainActivity : ComponentActivity() {
                 disableBadApple = UiPrefs.disableBadApple(this),
                 // ECHO-INPUT：同一条线程纪律 —— 装配期在 VM 线程上，读数在这里（UI 线程）取好。
                 echoInput = UiPrefs.echoInput(this),
+                // COMEND-WAIT：同一条线程纪律（UI 线程读好 → 构造参数 → GameSession），
+                // 装配线程上不许再摸 UiPrefs。
+                commandEndWait = UiPrefs.commandEndWait(this),
                 // 长页忙碌提示：同一条线程纪律（UI 线程读好 → 构造参数 → 页中检查点），
                 // GameHost 里不许再摸 UiPrefs。
                 busyIndicator = UiPrefs.busyIndicator(this),
                 modRuntime = UiPrefs.modRuntime(this),
+                // 路 B dex 载体供给（MODDX4-DEX S5 组长接线）：UI 线程经 androidDexCarrierProvision
+                // 构造好单路传入（dex 总闸快照在构造期读一次、关态 carriers() 零构造零扫盘，
+                // 出厂缺省关）；装配线程只消费现成缝，GameHost/装配期不摸偏好表。
+                dexCarriers = androidDexCarrierProvision(this),
                 // RT2 Mod 装载优先级：同一条线程纪律（UI 线程读好 → 构造参数单路传入；
                 // 空表 = LinkOrder() 缺省 packageId 规范序，装配行为与接线前逐位一致）。
                 modPackageOrder = UiPrefs.preferredPackageIds(this),
                 // RT2 Mod 运行时总闸：同一条线程纪律 —— UI 线程读好、经构造参数单路传入
-                // （缺省关 = 装配链一次都不进；写面是开发者闸，不给玩家设设置页开关）。
+                // （偏好缺省开 = 开箱装配，设置页有玩家面开关；关 = 装配链一次都不进）。
                 // 失败面文案：构造期（UI 线程）一次取好，VM/装载线程的 failure 写点只吃这份
                 // 快照（照 ModImportController「起线程前一次取好进线程」的口径）。
                 failureCopy = ShellFailureCopy.of(UiPrefs.settingsLanguage(this)),
@@ -1999,6 +2167,22 @@ class MainActivity : ComponentActivity() {
             // CONTRACT-BOOTPHASE：装载链分段进度 → UI 线程 → 覆盖层进度条与明细。
             // 照 onConsoleReady 的回调惯例在构造后赋值，不改 GameHost 构造参数表。
             host.loadPhaseSink = { progress -> runOnUiThread { applyLoadPhase(progress) } }
+            // ADR-013 S6b 第三方代码包载体来源：照 loadPhaseSink 的回调惯例在构造后赋值（不进
+            // 构造参数表）。同一条线程纪律 —— 在这里（UI 线程）取总闸快照，开态才建
+            // DexClassLoader 工厂（关态连工厂都不建），装配期只读取结论、不再摸偏好表。
+            host.modCodeCarriers = if (UiPrefs.modDexLoaderEnabled(this)) {
+                // ADR-013 D2 闸 2 的 compat 表（只补拒绝文案的信息面）也在同址读一次：缺失/读失败由
+                // ModCompatTable 退化成空表且不抛，装配期只吃这份快照、不再碰 assets（同一条线程纪律）。
+                val codeProviders = ModCodeCarrierProvider.forGate(
+                    gameRoot = storage.gameRoot(),
+                    enabled = true,
+                    factory = AndroidDexLoaderFactory(this),
+                    compat = ModCompatTable.loadFromAssets(assets),
+                ) { line -> Log.i("EratwModCode", line) }
+                ModCodeCarrierSource { builtinIds -> codeProviders.collect(builtinIds).carriers }
+            } else {
+                null
+            }
             val gameRoot = storage.gameRoot()
             // 随包形态（M10-PKG400）：APK 里带 erbc.v1 + CSV/resources/sound/plugins + emuera.config，
             // 首启要解到游戏根 —— 全 STORED 口径下是 679.9 MiB、四千个条目，量级是「几十秒到几分钟」，
@@ -2018,6 +2202,10 @@ class MainActivity : ComponentActivity() {
                 // 必须早于 12 秒后的自动更新检查，否则首启解包还没跑完时，检查会把「盘上数据 0 版」
                 // 当成真实的数据更新 —— 玩家装完最新整包仍被弹更新窗。磁盘 IO 不上 UI 线程。
                 seedBundledDataVersionOnStartup(storage)
+                // 孤儿诊断账并入（DBG-TOOLING 波）：checkpoint 还在 = 上局没走正常清账
+                // （native 崩溃/系统回收），把那份账并进「诊断汇总」上报——恰恰是最需要
+                // 数据的局。best-effort：失败保留 checkpoint 下次启动再试；绝不拖垮启动。
+                runCatching { ErrorReportCollector.reportOrphanCheckpoint(this@MainActivity) }
                 // 跨 Activity 单飞：上一代解包线程还在跑就先等它（见 [claimUnpackSlot] 的 KDoc）。
                 claimUnpackSlot()
                 try {
@@ -2079,6 +2267,12 @@ class MainActivity : ComponentActivity() {
     private fun onStartupFault(candidate: GameHost?, t: Throwable) {
         ticking = false
         Log.e(TAG, "启动流程异常：本次放弃，交给失败屏", t)
+        // 2026-11-17 覆盖补齐：壳层启动异常原先只上屏+日志，不上报。VM 线程内的启动失败
+        // 已由 GameHost 上报，但解包/装配/交接这一段的 Throwable 走这里，过去是黑洞。
+        // candidate 可能半装配或已 close，传进去只作可选现场源（collectFull 全程可空处理）。
+        runCatching {
+            ErrorReportCollector.recordDiagnostic(this, DiagnosticEventLog.DiagnosticKind.STARTUP_FAULT, t, "启动流程")
+        }
         // 用 `runOnUiThread` 而不是 `consoleView.post`：后者在视图已 detach 时会把 Runnable
         // 压进 View 自己的 RunQueue，等一次「再附着」才跑 —— 而这条路径上可能再也不附着，
         // 于是 `candidate.close()` 永远不执行，半装配宿主连同存储引用一直挂到进程结束。
@@ -2274,6 +2468,13 @@ class MainActivity : ComponentActivity() {
                 // 认主装挂（2026-11-13）：销毁清场走 uninstall(this)，双壳交接窗口下旧壳
                 // 无权把本壳刚装的接线撅空。
                 ModImportSessionChannel.install(this) { host?.debugSession() }
+                // 设置页的 Mod UI 浮层同走「活引用」口径（冷启路径；与接回路径同一行，幂等）。
+                ModUiSettingsEntry.install(this) { host?.modUiSurface() }
+                // 设置页「Mod 运行时概览」（Lane AW）同走一条活引用通道：账本未装配 / 会话
+                // 已收口时 read 为 null ⇒ 卡片整块不渲染；纯只读，不改 mod 状态。
+                ModRuntimeOverviewEntry.install(this) { ids -> host?.modRuntimeDataFor(ids) }
+                // 设置页「最近日志」回看（MODDX4-G8 组长接线；冷启路径，与接回路径同一行，幂等）。
+                ModRuntimeLogViewerEntry.install(this) { pkg -> host?.modLogsFor(pkg) }
                 // 解包/判定这几十秒里 Activity 可能已经切到后台：这次 onPause 走过时
                 // `host` 还是 null（`onPause` 只转发现有 host），新 host 的 `activityPaused`
                 // 于是停在构造值 false。补一次 onPause，装载完成时就不会在后台申请焦点
@@ -2736,6 +2937,42 @@ class MainActivity : ComponentActivity() {
             }
             true
         }
+
+        // 鼠标/触控板/悬停手写笔的悬停高亮（引擎 hover 两步走第一步，2026-11-18）：
+        // 原版 `isFocus` / `isSelecting` 都由 MoveMouse 悬停驱动（`EmueraConsole.cs:2524-2585`、
+        // `ConsoleButtonString.cs:279-280`），门与原版 `canSelect` 同形（`:2574-2577`）——
+        // 脚本执行期原版 MoveMouse 直接返回，悬停同样不亮，故非等待态清 hover 高亮。
+        // 触屏设备不产 `ACTION_HOVER_*` ⇒ 本段整体惰性，行为零变化。
+        // TODO(verify) 真机：点击后鼠标静止要等下一次移动才重新点亮（UP 走 clearPointer
+        // 连 hover 一起清；原版鼠标停在按钮上保持焦点）。
+        consoleView.setOnHoverListener { _, event ->
+            try {
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
+                        if (host?.awaitingInput() == true) {
+                            consoleView.setPointer(
+                                event.x,
+                                event.y,
+                                pressed = false,
+                                acceptance = host?.acceptance() ?: ButtonAcceptance.ANY,
+                                hover = true,
+                            )
+                        } else {
+                            consoleView.clearPointerIfHovering()
+                        }
+                        true
+                    }
+                    MotionEvent.ACTION_HOVER_EXIT -> {
+                        consoleView.clearPointerIfHovering()
+                        true
+                    }
+                    else -> false
+                }
+            } catch (t: RuntimeException) {
+                logUiFault("悬停", t)
+                true
+            }
+        }
     }
 
     /**
@@ -2808,27 +3045,65 @@ class MainActivity : ComponentActivity() {
      * @return 这一下到底交付了什么，供双击判定用（[TouchGestureController.noteTapExecuted]）
      */
     private fun handleConsoleTap(x: Float, y: Float): TapResult {
-        if (shell.inputVisible) {
-            shell.inputVisible = false
-            shell.inputFocused = false
-            return TapResult(advanced = false, hitButton = false)
+        val active = host
+        // 输入栏展开时这一击只收栏：原实现连「按下左键沿变」与命中都不做，保持原样。
+        val tapped = if (active != null && !shell.inputVisible) {
+            // 点在任何位置都算一次「按下鼠标左键」：原版 `GetKeyState(VK_LBUTTON)` 读的是
+            // 指针按下位（`FunctionMethodCreator.cs:7825`），语料的打断条件 `TITLE.ERB:158`
+            // 把左键与回车/ESC 并列（红 E）。命中按钮时随后还会走提交口再补一次回车沿变，
+            // 两者是不同的键、不互相顶掉。
+            active.fireVirtualKeyEdge(AndroidKeyCodes.VK_LBUTTON)
+            // NF 等待期不抢焦点、不把玩家从历史位置拉回底部（MainWindow.cs:949）。
+            consoleView.tap(x, y, active.acceptance(), noFocusWait())
+        } else {
+            null
         }
-        val active = host ?: return TapResult(advanced = false, hitButton = false)
-        active.fireVirtualKeyEdge(AndroidKeyCodes.VK_LBUTTON)
-        // NF 等待期不抢焦点、不把玩家从历史位置拉回底部（MainWindow.cs:949）。
-        val outcome = consoleView.tap(x, y, active.acceptance(), noFocusWait())
-        val submitted = outcome.hit
-        if (submitted != null) {
-            // 世代闸（2026-10-26 静态复查补）：命中表是渲染侧的**可见行**按钮，
-            // 上一页的按钮没滚出屏幕就仍在表里；原版的可点判据是按钮对象的
-            // `Generation == lastButtonGeneration`（EmueraConsole.cs:2439、:2456）。
-            // 判定收在 [GameHost.isCurrentGeneration]（只查世代、借右侧栏的
-            // 取值类型过滤会误杀合法组合），不在当前世代的命中直接吞掉 ——
-            // 真机 2026-10-25 的「跨屏串值把 CFLAG 打越界」就是这类错位的账。
-            val current = active.isCurrentGeneration(submitted)
-            if (current) submitButtonValue(submitted)
-            return TapResult(advanced = current, hitButton = true)
+        val hit = tapped?.hit
+        // 判据全在 [ConsoleTapDecision]（纯函数、有定向单测）：输入栏 → 宿主 → 命中 →
+        // 世代 → 可提交，五道判假的任一条都表现为「点了没反应」。抽出来之前这段零覆盖，
+        // 真机复发三轮都只能靠猜。
+        val decision = ConsoleTapDecision.decide(
+            inputBarVisible = shell.inputVisible,
+            hasHost = active != null,
+            hit = hit,
+            // 世代闸（2026-10-26 静态复查补）：命中表是渲染侧的**可见行**按钮，上一页的
+            // 按钮没滚出屏幕就仍在表里；原版的可点判据是按钮对象的
+            // `Generation == lastButtonGeneration`（EmueraConsole.cs:2439、:2456、:2724）。
+            currentGeneration = hit != null && active != null && active.isCurrentGeneration(hit),
+            canSubmit = inputBarState().canSubmit,
+        )
+        return when (decision) {
+            ConsoleTapDecision.Outcome.CollapseInputBar -> {
+                shell.inputVisible = false
+                shell.inputFocused = false
+                TapResult(advanced = false, hitButton = false)
+            }
+            is ConsoleTapDecision.Outcome.Refused -> {
+                // 静默吞点击是本 bug 三轮复发的藏身处：至少留一条日志，真机一份报告就能
+                // 指出是哪一道闸判的假（CrashForensics / DevTools `log` 都读得到）。
+                EventJournal.record(
+                    "input.tapRefused",
+                    mapOf(
+                        "reason" to decision.reason.code,
+                        "value" to (decision.value ?: ""),
+                    ),
+                )
+                TapResult(advanced = false, hitButton = ConsoleTapDecision.hitButton(decision))
+            }
+            ConsoleTapDecision.Outcome.BlankTap -> blankTap(fellBackToBottom = tapped?.snappedToBottom == true)
+            is ConsoleTapDecision.Outcome.Submit -> {
+                submitButtonValue(decision.value)
+                TapResult(advanced = true, hitButton = true)
+            }
         }
+    }
+
+    /**
+     * 未命中按钮时的落点：按 [BlankTapPolicy] 在 WAIT 系交一次输入框草稿
+     * （`mesSkip = false`）；本击刚把视口弹回底部时只回贴底、什么都不交
+     * （`MainWindow.cs:799-820`）。
+     */
+    private fun blankTap(fellBackToBottom: Boolean): TapResult {
         // HOST-06：未命中按钮时，原版左键在非按钮区直接提交一次回车
         // （`MainWindow.cs:806` 的 `IsWaitingEnterKey && selectedString == null`，
         // 左键走 `:818-820` 的 `PressEnterKey`）。判定抽在 [BlankTapPolicy] 里：
@@ -2848,7 +3123,7 @@ class MainActivity : ComponentActivity() {
                 overlayVisible = shell.loading || shell.failure != null,
                 canSkip = inputBarState().canSkip,
                 hitButton = false,
-                snappedToBottom = outcome.snappedToBottom,
+                snappedToBottom = fellBackToBottom,
             )
         ) {
             val draft = BlankTapPolicy.textToSubmit(shell.input)
@@ -3221,11 +3496,29 @@ class MainActivity : ComponentActivity() {
             // 「已发布」，右侧栏停在上一次场景的按钮上 —— 点下去还会提交到错的等待方。
             shell.chips = chips
             optionFingerprint = h
-            // 换屏才并入置顶历史候选（设置页「从最近见过的指令里新增」的数据面）：
-            // 同屏重扫不重复合并 —— 名字没变，合了也是同一条。
-            UiPrefs.recordRailHistory(this, recognized)
+            // 换屏才并入置顶历史候选（设置页「从最近见过的指令里新增」的数据面）。
+            //
+            // 判据必须是**页面身份**，不能用上面的内容指纹（2026-11-23）：内容指纹里含
+            // `lineSerial`，而整屏重印（`qol_MAP.ERB` 的 `CLEARLINE` + 重印，每
+            // `ANIMATERECOLOREDMAPS` 一次）会让每枚候选的行号整体 +N ⇒ 指纹每拍都「变了」，
+            // 于是动态地图页上每 250 ms 就往 SharedPreferences 写一次 LRU + 扫一遍候选
+            // （实测行号每拍 +60、内容一字未变）。这里改用等待点的身份位
+            // `InputRequest.scriptLine`（同一条 INPUT 语句在循环里重进也是同一个值）：
+            // 同一页重扫不再写盘，换到别的等待语句才并入。
+            val pageId = host?.pendingRequest()?.scriptLine ?: -1L
+            if (pageId != -1L && pageId != lastHistoryPageId) {
+                lastHistoryPageId = pageId
+                UiPrefs.recordRailHistory(this, recognized)
+            }
         }
     }
+
+    /**
+     * 上次并入置顶历史的**页面身份**（等待点 `scriptLine`；-1 = 尚未并入）。
+     *
+     * 只给 [refreshShell] 的写盘闸用：换屏判据与内容指纹解耦，见那里的注释。
+     */
+    private var lastHistoryPageId: Long = -1L
 
     // ------------------------------------------------------------------
     // 右栏置顶/隐藏动作（2026-11-11 自定义过滤 + 常用置顶的宿主接线）
@@ -3441,7 +3734,15 @@ class MainActivity : ComponentActivity() {
             listOf(ScreenRows.line(ScreenRows.run(failureScreenTitle(screenKind, ShellFailureCopy.of(UiPrefs.settingsLanguage(this))), fore = 0xFF6060, styleMask = 1))) +
                 listOf(ScreenRows.textLine(message)) +
                 failureScreenArtifactLines(screenKind, host?.artifactDir()?.absolutePath, ShellFailureCopy.of(UiPrefs.settingsLanguage(this)))
-                    .map { ScreenRows.textLine(it) },
+                    .map { ScreenRows.textLine(it) } +
+                // 版本号小字：玩家反馈往往只截这一屏，暗色弱化、不抢失败主信息。
+                listOf(
+                    ScreenRows.textLine(
+                        ShellFailureCopy.of(UiPrefs.settingsLanguage(this))
+                            .versionLine(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE),
+                        fore = 0x6A6A6A,
+                    ),
+                ),
         )
         // **先做活、后记账**（与 `ConsoleFeed.publish` / `force` 同一条纪律，2026-10-31 复查）：
         // 上面任何一步抛出去（最可能是 `submitSnapshot`），本帧会被 `pump` 的分段兜底吞掉，
@@ -3545,6 +3846,20 @@ class MainActivity : ComponentActivity() {
             nowScreenFit != appliedScreenFit ||
             nowLiveReflow != appliedLiveReflow ||
             nowContentMargin != appliedContentMargin
+
+        /**
+         * 「mod 已变更」重开询问的触发判据（ModDX-4 A+）：从设置页返回、标记在位、且玩家
+         * 没按过「保存并重启游戏」时才问 —— 已显式要求重启的落到 [restartGame]，新会话
+         * 装配自然带上盘上的 mod 变更（ModEnablement.kt:13-14 生效口径），不必再问一遍。
+         *
+         * 口径与 [displaySettingChanged] 相同：`MainActivity` 是 Android 壳，app 的 JVM
+         * 单测面实例化不了它，判据抽成 companion 纯函数直测。
+         */
+        internal fun modRestartPromptNeeded(
+            fromSettings: Boolean,
+            wantsRestart: Boolean,
+            modChangedPending: Boolean,
+        ): Boolean = fromSettings && !wantsRestart && modChangedPending
 
         /**
          * 解包线程的**跨 Activity 单飞槽**（2026-10-24 真机实证补的口子）。

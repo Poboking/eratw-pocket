@@ -1,0 +1,22 @@
+--- a/SHOP関連/SHOP.ERB
++++ b/SHOP関連/SHOP.ERB
+@@ -850,14 +850,17 @@
+ 		CLEARLINE 3
+ 	ENDIF
+ ;slot 2+ 详情（QOLDISH）：键＝显示号 601+（按反解析，非公式逆算）；slot 1 键＝角色号（上支不动）
+-;🔴 INRANGE 是闭区间 ⇒ 上界直接取 DISPLAY_TOP(SLOTS)（＝末槽最大合法号）；写「- 1」会把每槽末号（owner=CHARANUM）漏在详情外
++;🔴 INRANGE 是闭区间、TOP(SLOTS) 是开区间上界 ⇒ 上界代入的是幻影号 1168；601..1167 之间还夹着段内空号
++;   与 owner=CHARANUM 的幻影号（768/968 等）—— 真正的域判定在下方 SEL_OWNER 守卫，只靠上界挡不住
+ ELSEIF INRANGE(RESULT, QOL_DISH_DISPLAY_SPECIAL_START(2), QOL_DISH_DISPLAY_TOP(DISH_SPECIAL_SLOTS))
+ 	SEL_DID = RESULT
+ 	;显示号反解析（⛔ 非 DB 反查：钩子供菜无 DB 行，SLOT_OF/OWNER_OF 会返回 0；反解析对有行/无行通吃）
+ 	SEL_SLOT = QOL_DISH_DISPLAY_SLOT(SEL_DID)
+ 	SEL_OWNER = QOL_DISH_DISPLAY_OWNER(SEL_DID)
+ 	RESULT = 0
+-	IF SEL_SLOT >= 2 && SEL_OWNER
++	;⛔ owner 必须落在真实角色域 1..CHARANUM-1：末位幻影号（owner=CHARANUM）与段内空号反解析出的
++	;   owner 会越界或为负，直进下方 DECLARED_COUNT 就是 NO:CHARA 越界崩（本支不经 DISHDATA 兜底）
++	IF SEL_SLOT >= 2 && INRANGE(SEL_OWNER, 1, CHARANUM - 1)
+ 		TRYCALLFORM SPECIAL_MENU{SEL_SLOT}_{SEL_OWNER}
+ 		IF !RESULT
+ 			;静态无 → 钩子 v2 详情（DATA(slot)；NO==索引不变量同全系统）

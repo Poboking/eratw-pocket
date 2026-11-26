@@ -29,6 +29,15 @@ jobs:
       - name: 把 Kotera 链接到本仓同级
         run: ln -s "$GITHUB_WORKSPACE/Kotera" "$GITHUB_WORKSPACE/../Kotera"
 
+      - name: Source gates (data source / business words / corpus-specific names)
+        run: python3 devtools/test_source_gates.py
+
+      - name: Shell profile gate
+        run: python3 devtools/test_shell_profile.py
+
+      - name: Game version ledger gate
+        run: python3 devtools/test_game_versions.py
+
       - name: 编译 debug 包 + 单测（-PeratwSkipAssets：CI 无语料）
         # 4 个语料 / 真 GAMEBASE 门控用例按 JUnit assumption 跳过；其余全部真跑。
         run: ./gradlew --no-daemon :app:assembleDebug -PeratwSkipAssets :app:testDebugUnitTest :platform:testDebugUnitTest

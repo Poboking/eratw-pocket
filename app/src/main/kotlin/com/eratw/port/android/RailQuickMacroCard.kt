@@ -1,6 +1,5 @@
 package com.eratw.port.android
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -10,11 +9,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -27,13 +25,22 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.eratw.port.android.ui.EratwInk
+import com.eratw.port.android.ui.design.ShellAlertDialog
+import com.eratw.port.android.ui.design.ShellDialogActions
+import com.eratw.port.android.ui.design.ShellField
+import com.eratw.port.android.ui.design.ShellRowHairline
+import com.eratw.port.android.ui.design.ShellShape
+import com.eratw.port.android.ui.design.ShellSpace
+import com.eratw.port.android.ui.design.ShellStepper
+import com.eratw.port.android.ui.design.ShellType
 
 /** 编辑对话框最多显示多少枚最近指令（再多的历史候选不进主视图，避免又变成长名单）。 */
 private const val MACRO_CANDIDATE_LIMIT = 12
+
+/** 编辑正文的最大高度：横屏可用高只有 300 多 dp，正文不滚会把按钮挤出视区。 */
+private val MACRO_EDITOR_MAX_HEIGHT = 460.dp
 
 /**
  * 「快捷宏」功能卡（2026-11-11 重做，同日按复查意见再改一轮）：玩家**拼**出来的连发宏。
@@ -46,7 +53,7 @@ private const val MACRO_CANDIDATE_LIMIT = 12
  * 编译成 era 原生指令集串交给引擎（[RailOptionRules.macroContent] → `QueueInputSink.submit`），
  * 分段与剥离在引擎侧；按钮文案由 [RailOptionRules.macroLabel] 自动生成，玩家不起名字。
  *
- * ## 本轮（复查后）改了什么
+ * ## 复查那轮改了什么
  *
  * 1. **草稿模型外移**：状态与校验搬进纯 Kotlin 的 [MacroDraft]（可脱离 Android 单测），
  *    本文件只剩「画出来 + 把动作翻译成纯函数调用」。
@@ -58,6 +65,15 @@ private const val MACRO_CANDIDATE_LIMIT = 12
  * 4. **陈旧下标守卫**：编辑期间宏列表被删/改时，用打开编辑那一刻的快照比对，拒绝把改动
  *    写回错误的宏（列表按内容而非下标确认，避免「保存到别人身上」）。
  * 5. **清空二次确认**。
+ *
+ * ## 壳层设计系统那一轮（2026-11-26 第三轮）改了什么
+ *
+ * - 每条宏 / 每一步不再各自套一块 8dp 圆角浮底（卡内套卡，密度反而更差），改成
+ *   **发丝分隔的一行**，与口上包管理卡同一种扫读节奏；
+ * - 数字步进器换成共享件 [ShellStepper]：视觉仍是紧凑小方块，但热区撑到 48dp、边界两侧
+ *   独立灰化（原先那版是 6dp 圆角 + 2dp 内距，小屏上点不中）；
+ * - 两个确认框换共享件 [ShellAlertDialog]：标题字阶、面板色、圆角与全壳同拍，不再各写一份；
+ * - 全部字阶改取 [ShellType]，不再出现 `13.sp` / `10.sp` 这类裸值。
  */
 @Composable
 internal fun RailQuickMacroCard(
@@ -119,51 +135,21 @@ internal fun RailQuickMacroCard(
             EmptyHint(text = text.railQuickMacroEmpty)
         } else {
             val shown = previewOf(macros, expanded = listExpanded, limit = SettingsListPreview.MACRO)
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(top = ShellSpace.CardGap)) {
                 shown.forEachIndexed { index, macro ->
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(8.dp),
-                        color = UiColors.CardAlt,
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(start = 10.dp, end = 4.dp, top = 5.dp, bottom = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = RailOptionRules.macroLabel(macro),
-                                    color = UiColors.Text,
-                                    fontSize = 13.sp,
-                                    maxLines = 1,
-                                )
-                                Text(
-                                    text = text.railQuickMacroSegments(
-                                        RailOptionRules.macroSegmentCount(macro),
-                                    ),
-                                    color = UiColors.TextMuted,
-                                    fontSize = 10.sp,
-                                    maxLines = 1,
-                                )
-                            }
-                            InlineAction(text = text.railQuickMacroEdit, onClick = { openFor(index) })
-                            InlineAction(
-                                text = text.railQuickMacroDelete,
-                                color = UiColors.TextMuted,
-                                onClick = {
-                                    // 删掉一条之后「已满」提示必须立刻灭：否则会出现
-                                    // 「提示说满了、可「新增」又点得动」的自相矛盾。
-                                    showFullHint = false
-                                    onDelete(index)
-                                },
-                            )
-                        }
-                    }
+                    // 行间只摆一条发丝线：一条宏是一行记录，框起来会让卡里再长出一层卡。
+                    if (index > 0) ShellRowHairline()
+                    MacroSummaryRow(
+                        macro = macro,
+                        text = text,
+                        onEdit = { openFor(index) },
+                        onDelete = {
+                            // 删掉一条之后「已满」提示必须立刻灭：否则会出现
+                            // 「提示说满了、可「新增」又点得动」的自相矛盾。
+                            showFullHint = false
+                            onDelete(index)
+                        },
+                    )
                 }
                 if (macros.size > SettingsListPreview.MACRO) {
                     InlineAction(
@@ -178,7 +164,7 @@ internal fun RailQuickMacroCard(
             }
         }
         Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = ShellSpace.CardGap),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             SettingChip(
@@ -196,8 +182,8 @@ internal fun RailQuickMacroCard(
                 Text(
                     text = text.railQuickMacroFull(RailOptionRules.QUICK_MACRO_CAP),
                     color = UiColors.TextMuted,
-                    fontSize = 11.sp,
-                    modifier = Modifier.padding(start = 8.dp),
+                    style = ShellType.Label,
+                    modifier = Modifier.padding(start = ShellSpace.CardGap),
                 )
             } else {
                 Spacer(modifier = Modifier.weight(1f))
@@ -213,93 +199,114 @@ internal fun RailQuickMacroCard(
         Text(
             text = text.railQuickMacroHint,
             color = UiColors.TextMuted,
-            fontSize = 11.sp,
-            lineHeight = 16.sp,
-            modifier = Modifier.padding(top = 8.dp),
+            style = ShellType.Label,
+            modifier = Modifier.padding(top = ShellSpace.CardGap),
         )
     }
     if (confirmClear) {
-        AlertDialog(
-            onDismissRequest = { confirmClear = false },
-            shape = RoundedCornerShape(14.dp),
-            containerColor = EratwInk.raised(),
-            tonalElevation = 0.dp,
-            title = { Text(text.railQuickMacroClear) },
-            text = { Text(text.railQuickMacroClearConfirm) },
-            confirmButton = {
-                TextButton(onClick = {
+        ShellAlertDialog(
+            title = text.railQuickMacroClear,
+            actions = ShellDialogActions(
+                confirmLabel = text.railQuickMacroClear,
+                confirmTone = EratwInk.warn(),
+                onConfirm = {
                     confirmClear = false
                     showFullHint = false
                     onClear()
-                }) {
-                    Text(text.railQuickMacroClear, color = UiColors.Warn)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmClear = false }) {
-                    Text(text.railQuickMacroCancel, color = UiColors.TextMuted)
-                }
-            },
-        )
+                },
+                dismissLabel = text.railQuickMacroCancel,
+            ),
+            onDismissRequest = { confirmClear = false },
+        ) {
+            Text(
+                text = text.railQuickMacroClearConfirm,
+                color = EratwInk.textDim(),
+                style = ShellType.Body,
+            )
+        }
     }
 
     if (dialogOpen) {
-        AlertDialog(
-            onDismissRequest = { dialogOpen = false },
-            shape = RoundedCornerShape(14.dp),
-            containerColor = EratwInk.raised(),
-            tonalElevation = 0.dp,
-            title = { Text(if (editIndex >= 0) text.railQuickMacroEdit else text.railQuickMacroAdd) },
-            text = {
-                // 正文必须可滚：步骤 + 候选芯片 + 手动输入 + 整组重复 + 预览，
-                // 横屏可用高只有 300 多 dp，不滚会把「保存/取消」挤出视区。
-                Column(
-                    modifier = Modifier
-                        .heightIn(max = 460.dp)
-                        .verticalScroll(rememberScrollState()),
-                ) {
-                    MacroEditorBody(
-                        text = text,
-                        state = MacroEditorViewState(
-                            draft = draft,
-                            issueText = issueText,
-                            staleEdit = staleEdit,
-                        ),
-                        recent = recent,
-                        onDraftChange = { draft = it },
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = result is MacroDraftResult.Valid && !draft.pendingOverQuota,
-                    onClick = {
-                        val macro = (result as? MacroDraftResult.Valid)?.macro ?: return@TextButton
-                        if (editIndex >= 0) {
-                            // 陈旧下标守卫：列表在编辑期间被删/改时不写回错误的宏。
-                            if (MacroEditGuard.isStale(macros, editIndex, editSnapshot)) {
-                                staleEdit = true
-                                return@TextButton
-                            }
+        ShellAlertDialog(
+            title = if (editIndex >= 0) text.railQuickMacroEdit else text.railQuickMacroAdd,
+            actions = ShellDialogActions(
+                confirmLabel = text.railQuickMacroSave,
+                confirmEnabled = result is MacroDraftResult.Valid && !draft.pendingOverQuota,
+                onConfirm = {
+                    val macro = (result as? MacroDraftResult.Valid)?.macro
+                    if (macro != null && editIndex >= 0) {
+                        // 陈旧下标守卫：列表在编辑期间被删/改时不写回错误的宏。
+                        if (MacroEditGuard.isStale(macros, editIndex, editSnapshot)) {
+                            staleEdit = true
+                        } else {
                             onUpdate(editIndex, macro)
                             dialogOpen = false
-                        } else if (onAdd(macro)) {
+                        }
+                    } else if (macro != null) {
+                        if (onAdd(macro)) {
                             dialogOpen = false
                         } else {
                             showFullHint = true
                             dialogOpen = false
                         }
-                    },
-                ) {
-                    Text(text.railQuickMacroSave)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { dialogOpen = false }) {
-                    Text(text.railQuickMacroCancel, color = UiColors.TextMuted)
-                }
-            },
-        )
+                    }
+                    // macro == null：保存键本来就灰着，这里只是兜一层，不写回任何东西。
+                },
+                dismissLabel = text.railQuickMacroCancel,
+                onDismiss = { dialogOpen = false },
+            ),
+            onDismissRequest = { dialogOpen = false },
+        ) {
+            // 正文必须可滚：步骤 + 候选芯片 + 手动输入 + 整组重复 + 预览，
+            // 横屏可用高只有 300 多 dp，不滚会把「保存/取消」挤出视区。
+            Column(
+                modifier = Modifier
+                    .heightIn(max = MACRO_EDITOR_MAX_HEIGHT)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                MacroEditorBody(
+                    text = text,
+                    state = MacroEditorViewState(
+                        draft = draft,
+                        issueText = issueText,
+                        staleEdit = staleEdit,
+                    ),
+                    recent = recent,
+                    onDraftChange = { draft = it },
+                )
+            }
+        }
+    }
+}
+
+/** 一条宏的汇总行：名称 + 段数 + 编辑 / 删除（行内动作，删完立刻从列表消失）。 */
+@Composable
+private fun MacroSummaryRow(
+    macro: RailOptionRules.QuickMacro,
+    text: SettingsStrings,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = RailOptionRules.macroLabel(macro),
+                color = UiColors.Text,
+                style = ShellType.Tab,
+                maxLines = 1,
+            )
+            Text(
+                text = text.railQuickMacroSegments(RailOptionRules.macroSegmentCount(macro)),
+                color = UiColors.TextMuted,
+                style = ShellType.Overline,
+                maxLines = 1,
+            )
+        }
+        InlineAction(text = text.railQuickMacroEdit, onClick = onEdit)
+        InlineAction(text = text.railQuickMacroDelete, color = UiColors.TextMuted, onClick = onDelete)
     }
 }
 
@@ -335,7 +342,7 @@ internal fun MacroEditorBody(
     InlineAction(
         text = if (manualOpen) text.commonCollapse else text.railQuickMacroManualToggle,
         onClick = { manualOpen = !manualOpen },
-        modifier = Modifier.padding(top = 8.dp),
+        modifier = Modifier.padding(top = ShellSpace.CardGap),
     )
     if (manualOpen) {
         MacroManualInput(text = text, draft = draft, onDraftChange = onDraftChange)
@@ -346,16 +353,16 @@ internal fun MacroEditorBody(
         Text(
             text = it,
             color = UiColors.TextMuted,
-            fontSize = 11.sp,
-            modifier = Modifier.padding(top = 6.dp),
+            style = ShellType.Label,
+            modifier = Modifier.padding(top = ShellSpace.CardGap),
         )
     }
     if (state.staleEdit) {
         Text(
             text = text.railQuickMacroEditStale,
             color = UiColors.TextMuted,
-            fontSize = 11.sp,
-            modifier = Modifier.padding(top = 6.dp),
+            style = ShellType.Label,
+            modifier = Modifier.padding(top = ShellSpace.CardGap),
         )
     }
 }
@@ -371,8 +378,9 @@ private fun MacroStepsEditor(
         EmptyHint(text = text.railQuickMacroStepsEmpty)
         return
     }
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(modifier = Modifier.fillMaxWidth()) {
         draft.steps.forEachIndexed { index, step ->
+            if (index > 0) ShellRowHairline()
             MacroStepRow(
                 index = index,
                 step = step,
@@ -395,15 +403,14 @@ private fun MacroCandidatePicker(
     Text(
         text = text.railQuickMacroTapHint,
         color = UiColors.TextMuted,
-        fontSize = 11.sp,
-        lineHeight = 16.sp,
+        style = ShellType.Label,
     )
     if (draft.stepQuotaFull) {
         Text(
             text = text.railQuickMacroStepQuotaFull(RailOptionRules.MACRO_STEP_CAP),
             color = UiColors.TextMuted,
-            fontSize = 11.sp,
-            modifier = Modifier.padding(top = 4.dp),
+            style = ShellType.Label,
+            modifier = Modifier.padding(top = ShellSpace.CardGap),
         )
         return
     }
@@ -413,9 +420,9 @@ private fun MacroCandidatePicker(
         return
     }
     FlowRow(
-        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = ShellSpace.CardGap),
+        horizontalArrangement = Arrangement.spacedBy(ShellSpace.CardGap),
+        verticalArrangement = Arrangement.spacedBy(ShellSpace.CardGap),
     ) {
         candidates.forEach { entry ->
             SettingChip(
@@ -438,13 +445,20 @@ private fun MacroManualInput(
         onValueChange = { onDraftChange(draft.copy(pendingValue = it)) },
         label = { Text(text.railQuickMacroValueLabel) },
         singleLine = true,
-        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        // 走壳层 token：缺省那套取的是系统主题的 primary（实机上是默认紫），在这张暖绿卡上像块贴错的东西。
+        textStyle = ShellType.Body,
+        colors = ShellField.outlined(),
+        modifier = Modifier.fillMaxWidth().padding(top = ShellSpace.CardGap),
     )
     TextButton(
         enabled = draft.pendingValue.isNotBlank() && !draft.stepQuotaFull,
+        colors = ButtonDefaults.textButtonColors(
+            contentColor = EratwInk.accent(),
+            disabledContentColor = EratwInk.textMuted(),
+        ),
         onClick = { onDraftChange(draft.appendStep()) },
     ) {
-        Text(text.railQuickMacroAddStep)
+        Text(text = text.railQuickMacroAddStep, style = ShellType.Tab)
     }
 }
 
@@ -455,16 +469,16 @@ private fun MacroRepeatRow(
     onDraftChange: (MacroDraft) -> Unit,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = ShellSpace.CardGap),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = text.railQuickMacroRepeatLabel,
             color = UiColors.Text,
-            fontSize = 13.sp,
+            style = ShellType.Body,
             modifier = Modifier.weight(1f),
         )
-        IntStepper(
+        ShellStepper(
             value = draft.repeat.toIntOrNull() ?: 1,
             min = 1,
             max = RailOptionRules.MACRO_REPEAT_MAX,
@@ -478,20 +492,20 @@ private fun MacroPreviewBlock(text: SettingsStrings, draft: MacroDraft) {
     val preview = (draft.build() as? MacroDraftResult.Valid)?.macro ?: return
     PrefCaption(text.railQuickMacroPreviewHeader)
     Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = ShellSpace.CardGap),
+        shape = ShellShape.Inset,
         color = UiColors.CardAlt,
     ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)) {
+        Column(modifier = Modifier.fillMaxWidth().padding(ShellSpace.RowPadding)) {
             Text(
                 text = text.railQuickMacroPreview(RailOptionRules.macroLabel(preview)),
                 color = UiColors.Text,
-                fontSize = 13.sp,
+                style = ShellType.Tab,
             )
             Text(
                 text = text.railQuickMacroSegments(draft.previewSegmentCount()),
                 color = UiColors.TextMuted,
-                fontSize = 10.sp,
+                style = ShellType.Overline,
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
@@ -506,91 +520,32 @@ private fun MacroStepRow(
     onTimes: (Int) -> Unit,
     onRemove: () -> Unit,
 ) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = UiColors.CardAlt,
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 9.dp, end = 4.dp, top = 5.dp, bottom = 5.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "${index + 1}",
-                color = UiColors.TextMuted,
-                fontSize = 11.sp,
-                modifier = Modifier.width(18.dp),
-            )
-            Text(
-                text = step.label.ifBlank { step.value },
-                color = UiColors.Text,
-                fontSize = 13.sp,
-                maxLines = 1,
-                modifier = Modifier.weight(1f),
-            )
-            IntStepper(
-                value = step.times,
-                min = 1,
-                max = RailOptionRules.MACRO_TIMES_MAX,
-                onChange = onTimes,
-            )
-            InlineAction(
-                text = "×",
-                color = UiColors.TextMuted,
-                onClick = onRemove,
-            )
-        }
-    }
-}
-
-/** 数字步进器：`− [N] +`，不要求玩家打开键盘；边界处自动禁用对应一侧。 */
-@Composable
-private fun IntStepper(
-    value: Int,
-    min: Int,
-    max: Int,
-    onChange: (Int) -> Unit,
-) {
     Row(
+        modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
     ) {
-        StepperButton(label = "−", enabled = value > min) {
-            onChange((value - 1).coerceAtLeast(min))
-        }
         Text(
-            text = value.toString(),
+            text = "${index + 1}",
+            color = UiColors.TextMuted,
+            style = ShellType.Label,
+            modifier = Modifier.widthIn(min = ShellSpace.DialogRowGap),
+        )
+        Text(
+            text = step.label.ifBlank { step.value },
             color = UiColors.Text,
-            fontSize = 12.sp,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.width(24.dp),
+            style = ShellType.Tab,
+            maxLines = 1,
+            modifier = Modifier.weight(1f),
         )
-        StepperButton(label = "+", enabled = value < max) {
-            onChange((value + 1).coerceAtMost(max))
-        }
+        ShellStepper(
+            value = step.times,
+            min = 1,
+            max = RailOptionRules.MACRO_TIMES_MAX,
+            onChange = onTimes,
+        )
+        InlineAction(text = "×", color = UiColors.TextMuted, onClick = onRemove)
     }
 }
-
-@Composable
-private fun StepperButton(label: String, enabled: Boolean, onClick: () -> Unit) {
-    Surface(
-        shape = RoundedCornerShape(6.dp),
-        color = UiColors.Card,
-    ) {
-        Text(
-            text = label,
-            color = if (enabled) UiColors.TextDim else UiColors.TextMuted.copy(alpha = 0.35f),
-            fontSize = 14.sp,
-            modifier = Modifier
-                .clickable(enabled = enabled, onClick = onClick)
-                .padding(horizontal = 9.dp, vertical = 2.dp),
-        )
-    }
-}
-
-
 
 /**
  * 草稿的 `rememberSaveable` 编码：`[pendingValue, pendingTimes, repeat, (value,label,times)*]`。

@@ -50,7 +50,7 @@ internal fun startupFaultAction(adopted: Boolean, destroyed: Boolean): StartupFa
  *   `GotoTitle`（`EmueraConsole.cs:2569-2581`）。所以这一类穿破泵、上「启动失败」屏是移植侧
  *   自己加的升级，不是官方行为。
  * - [LoopGuardCause.PlayerChoseExit]：墙钟告警框里玩家按「是」抛的那条 `CodeEE`
- *   （skia `Process.cs:482-484`；官方 reference `Process.cs:505-507`，方法体 `:493-512`；
+ *   （skia `Process.cs:506-508`；官方 reference `Process.cs:505-507`，方法体 `:493-512`；
  *   文案 = `Lang.Error.SelectExitInfiniteLoopMB`）。它**就是普通脚本错误**，
  *   必须走可恢复终局；ENGFIX-3/4 把它复刻进 [StepLimitExceeded] 时已经要求宿主按
  *   `guardCause` 分流（`Errors.kt:249-253`），本判据是那一环的落点。
@@ -70,40 +70,6 @@ internal fun isRecoverableScriptError(t: Throwable): Boolean = when {
     t is VmException -> false
     else -> true
 }
-
-/**
- * 「回到标题」那条复活线程抛出来之后：按下不表，还是照旧上失败屏并落一份报告。
- *
- * 判据只有一条，而且与既有的两道闸同源 —— 宿主此刻是不是已经 `close()`：
- * - [SUPPRESS_BY_CLOSE]：复活途中宿主被关（`onDestroy`、换局）。`gotoTitle()` 撞上 VM 主循环的
- *   中断检查点时抛的是「执行被中断（宿主正在关闭）」（`Vm.kt:732-746`，消息逐字保留就是给
- *   这种按消息识别的收口用的）；会话已关时任何等待抛 `InputSinkClosedException`
- *   （`QueueInputSink.kt:11`，`IllegalStateException` 的子类，所以 `catch (t: Throwable)` 捞得到）。
- *   两者都是**玩家正在拆这一局**的正常退出路径。照旧上屏就把失败屏换成「回到标题失败」，
- *   照旧落报告就是一份「回到标题失败」的缺陷单 —— 收件箱 2026-11-03 一天 6 份「关闭竞态」
- *   正是同一形状。`GameHost` 的 `drive`（`GameHost.kt:3350-3353`）与 `pumpUntilTerminal`
- *   （`:3482` 与 `:3495`）已经按这条闸静默收口，独漏 `backToTitle` 的工作线程那一条。
- * - [FAIL_AND_REPORT]：宿主还活着却失败 = 真事故，屏与报告都要留（既有形状一字不动）。
- *
- * 判据放本文件（纯逻辑、无 Android 依赖）就是为了两枚都能在 JVM 单测里钉死；接线侧「闸必须排在
- * `writeErrorReport` 之前」由 `UiFaultTest` 的源码哨兵钉 —— 顺序写反了这两枚判据全绿但行为照旧。
- */
-internal enum class BackToTitleFaultAction {
-    /** 宿主正在关闭：只打一行日志即收，不动失败屏、不落报告。 */
-    SUPPRESS_BY_CLOSE,
-
-    /** 宿主还活着：按既有形状上「回到标题失败」屏并落报告。 */
-    FAIL_AND_REPORT,
-}
-
-/**
- * 决定「回到标题」工作线程那发 `catch (t: Throwable)` 怎么收场。
- *
- * @param closed 宿主是否已收口（生产读 `GameHost.closed`，`@Volatile`；口径同
- * [ViewportReflowChain.run] 的 `closed` 参数）
- */
-internal fun backToTitleFaultAction(closed: Boolean): BackToTitleFaultAction =
-    if (closed) BackToTitleFaultAction.SUPPRESS_BY_CLOSE else BackToTitleFaultAction.FAIL_AND_REPORT
 
 /**
  * 失败屏该按哪一族讲（2026-11-01 一位玩家的截图带出来的这条）。

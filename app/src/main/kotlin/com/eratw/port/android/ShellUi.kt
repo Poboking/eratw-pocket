@@ -2,7 +2,6 @@ package com.eratw.port.android
 
 import android.os.SystemClock
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -61,7 +60,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -121,6 +119,10 @@ import com.eratw.port.core.host.ConsoleOption
 import com.eratw.port.core.host.OptionOrigin
 import com.eratw.port.core.host.PALETTE_MIN_SWATCH_RUN
 import com.eratw.port.core.host.paletteSwatchMask
+import com.eratw.port.android.ui.design.ShellField
+import com.eratw.port.android.ui.design.ShellShape
+import com.eratw.port.android.ui.design.ShellType
+import com.eratw.port.android.ui.design.ShellMotion
 import com.eratw.port.android.portrait.PortraitShellContent
 import com.eratw.port.platform.input.InputBarState
 import com.eratw.port.render.canvas.CanvasConsoleView
@@ -524,17 +526,40 @@ internal fun railBadgeReserve(
  * 避免两处各写一份数值后走形（2026-10-29 回滚四档网格后统一）。
  * 尺寸类的数值（高/字号/栏宽）随档位变，见 [railMetricsOf]。
  */
-private val RAIL_BUTTON_SHAPE = RoundedCornerShape(7.dp)
+private val RAIL_BUTTON_SHAPE = ShellShape.Chip
 private val RAIL_BUTTON_CONTENT_PADDING =
     androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+
+/**
+ * 两套启动屏共用的品牌字：字号 24 / 行高 30，只差字距与字族（像素屏用点阵等宽、现代屏用系统字）。
+ *
+ * 以前是 24sp 与 25sp 两个值：同一块「eraThe World」在两套皮肤间会跳 1sp，截图对比时看得出来。
+ * 品牌字只该有一个尺码。
+ */
+private val BOOT_TITLE_TYPE = ShellType.Title.copy(fontSize = 24.sp, lineHeight = 30.sp)
+
+/** 像素屏标题字距（点阵字本身宽，2sp 已够撑开）。 */
+private val BOOT_TITLE_LETTER_SPACING = 2.sp
+
+/** 现代屏标题字距（细字重，3sp 才立得住）。 */
+private val MODERN_BOOT_TITLE_LETTER_SPACING = 3.sp
+
+/** 现代屏副标题字距。 */
+private val MODERN_BOOT_LETTER_SPACING = 2.sp
+
+/**
+ * 失败屏标题：比壳层标题大一档（20/26），与「这一屏不是普通弹窗」的分量相称。
+ * 颜色由调用侧点 [EratwInk.danger]，字阶在这里只有一个尺码。
+ */
+private val FAILURE_TITLE_TYPE = ShellType.Title.copy(fontSize = 20.sp, lineHeight = 26.sp)
 
 /** 深绿半透明底 + 浅字；禁用态压暗（选项栏收起动画期间可见）。 */
 @Composable
 private fun railButtonColors() = ButtonDefaults.buttonColors(
-    containerColor = Color(0xE62A3A2A),
-    contentColor = Color(0xFFEDEDED),
-    disabledContainerColor = Color(0x662A3A2A),
-    disabledContentColor = Color(0xFF6A6A6A),
+    containerColor = Color(ARGB_RAIL_BASE),
+    contentColor = EratwInk.text(),
+    disabledContainerColor = EratwInk.railButton().copy(alpha = EratwInk.RAIL_BUTTON_DISABLED_ALPHA),
+    disabledContentColor = EratwInk.textMuted(),
 )
 
 /**
@@ -807,7 +832,7 @@ internal fun PinnedRailSection(
     if (pinnedChips.isNotEmpty()) {
         Text(
             text = headerLabel,
-            color = Color(0xFF9A9A9A),
+            color = EratwInk.textDim(),
             fontSize = metrics.labelTextSize,
             maxLines = 1,
             modifier = Modifier.padding(start = 2.dp, bottom = 3.dp),
@@ -1153,16 +1178,42 @@ private fun ContinueButton(metrics: RailMetrics, enabled: Boolean, onClick: () -
  * 色值全部转引 [EratwInk]：设置页、壳层浮层与各类弹窗共用同一份墨色，改一处不会让另一处分叉。
  * `primary` 比 [EratwInk.accent] 暗一档是有意的 —— Material3 拿它当开关轨道与焦点环，
  * 用亮绿会把整屏的控件点亮，这里要的是压住的绿。
+ *
+ * 2026-11-26 补齐语义角色：此前只给了 primary / background / surface / onX 四个位，其余角色
+ * （surfaceContainer、outline、onSurfaceVariant、error…）全靠 Material 默认深色值，于是
+ * `Switch` 轨道、`TextField` 边框、`HorizontalDivider` 这些「我们没写样式的控件」会各自
+ * 露出默认的蓝灰，和壳层墨色对不上。现在按 Material 3 的 surface 层级把它们全部对齐到
+ * [EratwInk]，壳层里凡是没显式写颜色的控件也落在同一套墨色里。
  */
 @Composable
 fun EratwTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
-            primary = Color(0xFF7FAF7F),
+            primary = EratwInk.accentMid(),
+            onPrimary = EratwInk.text(),
+            primaryContainer = EratwInk.primaryButton(),
+            onPrimaryContainer = EratwInk.text(),
+            secondary = EratwInk.accent(),
+            onSecondary = EratwInk.background(),
             background = EratwInk.background(),
-            surface = EratwInk.panel(),
             onBackground = EratwInk.text(),
+            surface = EratwInk.panel(),
             onSurface = EratwInk.text(),
+            surfaceVariant = EratwInk.panelAlt(),
+            onSurfaceVariant = EratwInk.textDim(),
+            surfaceContainerLowest = EratwInk.background(),
+            surfaceContainerLow = EratwInk.panelAlt(),
+            surfaceContainer = EratwInk.panel(),
+            surfaceContainerHigh = EratwInk.raised(),
+            surfaceContainerHighest = EratwInk.raised(),
+            outline = EratwInk.border(),
+            outlineVariant = EratwInk.hairline(),
+            error = EratwInk.danger(),
+            onError = EratwInk.background(),
+            errorContainer = EratwInk.danger(),
+            onErrorContainer = EratwInk.text(),
+            inverseSurface = EratwInk.text(),
+            inverseOnSurface = EratwInk.background(),
         ),
         content = content,
     )
@@ -1259,11 +1310,12 @@ fun EratwShell(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+    // 游戏画布底与页面底同色（纯黑）：留一条亮边就会在窄屏上看出「框」。
+    Box(modifier = Modifier.fillMaxSize().background(EratwInk.consoleBg())) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black)
+                .background(EratwInk.consoleBg())
                 // 键盘/输入条不得改游戏列的测量尺寸：safeDrawing 含 IME，键盘每帧动画都会
                 // 缩短 AndroidView ⇒ ConsoleFeed.updateLayout(force) 整屏重展平/重绘。
                 // 实际 IME 抬升只作用于底部输入条覆盖层（见下方 AnimatedVisibility）。
@@ -1345,7 +1397,7 @@ fun EratwShell(
                     // 一处算（栏宽 + 右留白 + 余量）；隐藏时按钮 enabled=false，不接收点击/读屏焦点。
                     val railOffset by animateDpAsState(
                         targetValue = if (state.railVisible) 0.dp else railCollapseOffset(railMetrics.railWidth),
-                        animationSpec = tween(220),
+                        animationSpec = ShellMotion.content(),
                     )
 
                     // 布局三模式（2026-11-11）：游戏行分组与调色板密集行三档都一样，普通段的
@@ -1398,7 +1450,7 @@ fun EratwShell(
                                 } else {
                                     shellCopy.fill(shellCopy.railCountFormat, state.chips.size)
                                 },
-                                color = Color(0xFF9A9A9A),
+                                color = EratwInk.textDim(),
                                 fontSize = railMetrics.labelTextSize,
                                 maxLines = 1,
                                 modifier = Modifier.padding(start = 2.dp, bottom = 3.dp),
@@ -1410,7 +1462,7 @@ fun EratwShell(
                         if (railRows.isEmpty() && !commonSectionFirst) {
                             Text(
                                 text = shellCopy.trayEmptyLine,
-                                color = Color(0xFF9A9A9A),
+                                color = EratwInk.textDim(),
                                 fontSize = railMetrics.labelTextSize,
                                 maxLines = 1,
                                 modifier = Modifier.padding(start = 2.dp, top = 6.dp, bottom = 3.dp),
@@ -1491,13 +1543,13 @@ fun EratwShell(
             // 宏条只在输入条展开时显示（宏的用途就是预填输入框）。
             AnimatedVisibility(
                 visible = state.inputVisible && state.macros.isNotEmpty(),
-                enter = slideInVertically { it } + fadeIn(tween(120)),
-                exit = slideOutVertically { it } + fadeOut(tween(100)),
+                enter = slideInVertically { it } + fadeIn(ShellMotion.quick()),
+                exit = slideOutVertically { it } + fadeOut(ShellMotion.quickOut()),
             ) {
                 LazyRow(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(Color(0xFF1B1B1B))
+                        .background(EratwInk.panelAlt())
                         .padding(horizontal = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1506,8 +1558,8 @@ fun EratwShell(
                         TextButton(onClick = onMacroGroup) {
                             Text(
                                 state.macroGroupLabel.ifEmpty { shellCopy.macroGroupFallback },
-                                color = Color(0xFFB9D3B9),
-                                fontSize = 12.sp,
+                                color = EratwInk.accent(),
+                                style = ShellType.Caption,
                             )
                         }
                     }
@@ -1520,7 +1572,7 @@ fun EratwShell(
                                 onInputChanged(macro.content)
                             }
                         }) {
-                            Text(macro.label, color = Color(0xFFDCDCDC), fontSize = 12.sp)
+                            Text(macro.label, color = EratwInk.text(), style = ShellType.Caption)
                         }
                     }
                 }
@@ -1548,8 +1600,8 @@ fun EratwShell(
                         WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom,
                     ),
                 ),
-            enter = slideInVertically { it } + fadeIn(tween(140)),
-            exit = slideOutVertically { it } + fadeOut(tween(120)),
+            enter = ShellMotion.PanelEnter,
+            exit = ShellMotion.PanelExit,
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 InputGrabBar(onDragDown = {
@@ -1765,7 +1817,10 @@ private fun DirtyExitReportDialog(
                 .semantics { contentDescription = copy.inputKnobA11y }
                 .offset(x = areaWidth * (fraction - 1f))
                 .size(width = 52.dp, height = 14.dp)
-                .background(Color(0xB31B1B1B), RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp))
+                .background(
+                    EratwInk.panelOverlay(),
+                    RoundedCornerShape(topStart = ShellShape.ChipRadius, topEnd = ShellShape.ChipRadius),
+                )
                 // 单入口手势（2026-10-24 鹰眼实测修）：原来同时挂 clickable + draggable +
                 // detectVerticalDragGestures，三者抢同一个 down —— 垂直拖的 pointerInput 先
                 // 消费事件，`clickable` 永远收不到 tap、上滑也被横拖判据抢走，结果是
@@ -1808,7 +1863,7 @@ private fun DirtyExitReportDialog(
                     lineTo(size.width / 2f, 0f)
                     lineTo(size.width, size.height)
                 }
-                drawPath(p, color = Color(0xFF9A9A9A), style = Stroke(width = 1.4f * this.density))
+                drawPath(p, color = EratwInk.textDim(), style = Stroke(width = 1.4f * this.density))
             }
         }
     }
@@ -1821,7 +1876,7 @@ private fun DirtyExitReportDialog(
         modifier = Modifier
             .fillMaxWidth()
             .height(14.dp)
-            .background(Color(0xFF262626))
+            .background(EratwInk.panel())
             .pointerInput(Unit) {
                 detectVerticalDragGestures(
                     onDragEnd = {
@@ -1837,7 +1892,7 @@ private fun DirtyExitReportDialog(
             modifier = Modifier
                 .width(56.dp)
                 .height(4.dp)
-                .background(Color(0xFF6E6E6E), RoundedCornerShape(2.dp)),
+                .background(EratwInk.overlayRule(), ShellShape.Bar),
         )
     }
 }
@@ -1884,7 +1939,7 @@ private fun InputBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFF262626))
+            .background(EratwInk.panel())
             .padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1899,10 +1954,10 @@ private fun InputBar(
                 },
                 modifier = Modifier.width(44.dp).height(40.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFB9D3B9)),
+                shape = ShellShape.Chip,
+                colors = ButtonDefaults.textButtonColors(contentColor = EratwInk.accent()),
             ) {
-                Text("±", fontSize = 20.sp)
+                Text("±", style = ShellType.Figure)
             }
             Spacer(Modifier.width(6.dp))
         }
@@ -1925,12 +1980,11 @@ private fun InputBar(
                         false
                     }
                 },
-            placeholder = { Text(state.hint, color = Color(0xFF8A8A8A), fontSize = 15.sp) },
+            placeholder = { Text(state.hint, color = EratwInk.textMuted(), style = ShellType.Body) },
             singleLine = true,
-            textStyle = MaterialTheme.typography.bodyLarge.copy(
-                color = Color(0xFFE8E8E8),
-                fontSize = 15.sp,
-            ),
+            // 输入区的字样只取壳层字阶：系统主题的 typography 默认字阶与本壳层不是一族 ——
+            // 壳层没有装配自己的 M3 主题，混用会让输入框文字与旁边按钮不成一族。
+            textStyle = ShellType.Body.copy(color = EratwInk.text()),
             keyboardOptions = KeyboardOptions(
                 keyboardType = if (state.numberKeyboard) KeyboardType.Number else KeyboardType.Text,
                 imeAction = ImeAction.Done,
@@ -1941,25 +1995,20 @@ private fun InputBar(
                 onGo = { doSubmit() },
                 onSend = { doSubmit() },
             ),
-            shape = RoundedCornerShape(8.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = Color(0xFF1A1A1A),
-                unfocusedContainerColor = Color(0xFF1A1A1A),
-                focusedBorderColor = Color(0xFF4A6A4A),
-                unfocusedBorderColor = Color(0xFF3A3A3A),
-                cursorColor = Color(0xFF9FC79F),
-            ),
+            shape = ShellShape.Chip,
+            // 输入框配色只在 ShellField 里定义一份（四挡齐备），本处不再自写色值。
+            colors = ShellField.outlined(),
         )
         Spacer(Modifier.width(8.dp))
         Button(
             onClick = { doSubmit() },
-            shape = RoundedCornerShape(8.dp),
+            shape = ShellShape.Chip,
             colors = ButtonDefaults.buttonColors(
-                containerColor = Color(0xFF3A3A3A),
-                contentColor = Color(0xFFEDEDED),
+                containerColor = EratwInk.raised(),
+                contentColor = EratwInk.text(),
             ),
         ) {
-            Text(copy.submitButton, fontSize = 15.sp)
+            Text(copy.submitButton, style = ShellType.Body)
         }
     }
 }
@@ -1976,7 +2025,7 @@ private fun SpiralToggle(expanded: Boolean, onClick: () -> Unit) {
     val copy = PortraitShellCopy.of(UiPrefs.settingsLanguage(LocalContext.current))
     val rotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
-        animationSpec = tween(420),
+        animationSpec = ShellMotion.Turn,
     )
     ShellIconButton(
         label = if (expanded) copy.railToggleExpanded else copy.railToggleCollapsed,
@@ -2023,7 +2072,7 @@ private fun SettingsGearButton(onClick: () -> Unit) {
     var turns by remember { mutableIntStateOf(0) }
     val rotation by animateFloatAsState(
         targetValue = turns * -180f,
-        animationSpec = tween(420),
+        animationSpec = ShellMotion.Turn,
     )
     ShellIconButton(
         label = "设置",
@@ -2373,14 +2422,23 @@ internal fun railColorLabel(colorRgb: Int): String =
 private const val RAIL_BASE_RGB = 0x2A3A2A
 private const val RAIL_BASE_ALPHA = 0xE6
 private const val RAIL_COLOR_TINT = 0.32f
-private val ARGB_RAIL_BASE = 0xE62A3A2A.toInt()
-private val ARGB_TEXT_LIGHT = 0xFFEDEDED.toInt()
+
+/** 普通（无色块）右栏按钮底：由 [EratwInk] 的基准色 + 本文件的不透明度合成，不再手抄一份 ARGB。 */
+private val ARGB_RAIL_BASE = (RAIL_BASE_ALPHA shl SHIFT_ALPHA) or (EratwInk.railButtonArgb() and RGB_MASK)
+/**
+ * 游戏自绘按钮（HTML `color` 属性）的对比度常量。
+ *
+ * 这一组**不是**壳层墨色：它们要跟语料任意给的颜色算对比度（见 [readableTextOn]），深字 / 浅字
+ * 两端与描边都按「压在玩家自定义色块上」标定。壳层自己的面板与字色仍在 [EratwInk]，
+ * 这里只取它的两端值，不另立一套。
+ */
+private val ARGB_TEXT_LIGHT = EratwInk.textArgb()
 private val ARGB_TEXT_DARK = 0xFF101010.toInt()
-private val COLOR_DISABLED_CONTENT = Color(0xFF6A6A6A)
-private val ARGB_OPAQUE_BLACK = 0xFF000000.toInt()
+private val COLOR_DISABLED_CONTENT = EratwInk.textMuted()
+private val ARGB_OPAQUE_BLACK = EratwInk.backgroundArgb()
 private val ARGB_BORDER_ON_LIGHT = 0x66000000.toInt()
 private val ARGB_BORDER_ON_DARK = 0x99FFFFFF.toInt()
-private val COLOR_BADGE = Color(0xB3B9D3B9)
+private val COLOR_BADGE = EratwInk.badgeFill()
 private const val BADGE_ALPHA = 0.75f
 
 private const val RGB_MASK = 0xFFFFFF
@@ -2472,20 +2530,21 @@ private fun LoadingOverlay(state: ShellState) {
 @Composable
 private fun PixelLoadingOverlay(state: ShellState) {
     val progress = state.progress
-    val copy = PortraitShellCopy.of(UiPrefs.settingsLanguage(LocalContext.current))
+    val context = LocalContext.current
+    val copy = PortraitShellCopy.ofLoading(context, UiPrefs.settingsLanguage(context))
     // 真点阵字体（Ark Pixel 12px 等宽 zh_hans，OFL-1.1，见 assets/licenses/）
     val pixelFont = EratwPixelFont.family
     val blink = rememberInfiniteTransition(label = "pixel-blink")
     val pulse by blink.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(durationMillis = 620, easing = LinearEasing)),
+        animationSpec = infiniteRepeatable(ShellMotion.Pulse),
         label = "pulse",
     )
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0A0A0A)),
+            .background(EratwInk.bootBg()),
         contentAlignment = Alignment.Center,
     ) {
         // 指针消费层（DEV-03）：整屏、排在内容之前 ⇒ 内部可点项在它上面，其余点击被吃掉。
@@ -2499,7 +2558,7 @@ private fun PixelLoadingOverlay(state: ShellState) {
             var y = 0f
             while (y < size.height) {
                 drawLine(
-                    color = Color(0x22FFFFFF),
+                    color = EratwInk.consoleScanline(),
                     start = Offset(0f, y),
                     end = Offset(size.width, y),
                     strokeWidth = 1f,
@@ -2513,16 +2572,16 @@ private fun PixelLoadingOverlay(state: ShellState) {
         ) {
             Text(
                 text = "eraThe World",
-                color = Color(0xFFD8D4BC),
-                fontSize = 24.sp,
-                letterSpacing = 2.sp,
+                color = EratwInk.bootTitle(),
+                style = BOOT_TITLE_TYPE,
+                letterSpacing = BOOT_TITLE_LETTER_SPACING,
                 fontFamily = pixelFont,
             )
             Spacer(Modifier.height(6.dp))
             Text(
                 text = copy.loadingPixelHeadline,
-                color = Color(0xFF8C8C6E),
-                fontSize = 12.sp,
+                color = EratwInk.bootSubtitle(),
+                style = ShellType.Caption,
                 fontFamily = pixelFont,
             )
             Spacer(Modifier.height(26.dp))
@@ -2534,7 +2593,7 @@ private fun PixelLoadingOverlay(state: ShellState) {
             }
             Row(
                 modifier = Modifier
-                    .border(1.dp, Color(0xFF3A3A2E))
+                    .border(1.dp, EratwInk.bootFrame())
                     .padding(3.dp),
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
@@ -2544,30 +2603,29 @@ private fun PixelLoadingOverlay(state: ShellState) {
                         modifier = Modifier
                             .width(10.dp)
                             .height(12.dp)
-                            .background(if (on) Color(0xFFA8C88E) else Color(0xFF1E1E18)),
+                            .background(if (on) EratwInk.bootCellOn() else EratwInk.bootCellOff()),
                     )
                 }
             }
             Spacer(Modifier.height(12.dp))
             Text(
                 text = if (progress != null) "[ ${(progress * 100).toInt()}% ]" else "[ ... ]",
-                color = Color(0xFFB8C8A0),
-                fontSize = 12.sp,
+                color = EratwInk.bootPercent(),
+                style = ShellType.Caption,
                 fontFamily = pixelFont,
             )
             Spacer(Modifier.height(10.dp))
             Text(
                 text = "▶ " + state.loadingTitle.ifEmpty { copy.loadingPreparingData },
-                color = Color(0xFF7A7A62),
-                fontSize = 12.sp,
+                color = EratwInk.bootStage(),
+                style = ShellType.Caption,
                 fontFamily = pixelFont,
             )
             Spacer(Modifier.height(16.dp))
             Text(
                 text = copy.freeNotice,
-                color = Color(0xFF6A6A55),
-                fontSize = 10.sp,
-                lineHeight = 15.sp,
+                color = EratwInk.bootNotice(),
+                style = ShellType.Overline,
                 fontFamily = pixelFont,
                 textAlign = TextAlign.Center,
             )
@@ -2579,19 +2637,20 @@ private fun PixelLoadingOverlay(state: ShellState) {
 @Composable
 private fun ModernLoadingOverlay(state: ShellState) {
     val progress = state.progress
-    val copy = PortraitShellCopy.of(UiPrefs.settingsLanguage(LocalContext.current))
+    val context = LocalContext.current
+    val copy = PortraitShellCopy.ofLoading(context, UiPrefs.settingsLanguage(context))
     val transition = rememberInfiniteTransition(label = "loading")
     // 总量未知时来回扫的窄光带（已知总量时走填充，不画它）
     val sweep by transition.animateFloat(
         initialValue = -0.30f,
         targetValue = 1.30f,
-        animationSpec = infiniteRepeatable(tween(durationMillis = 1500, easing = LinearEasing)),
+        animationSpec = infiniteRepeatable(ShellMotion.Sweep),
         label = "sweep",
     )
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF060807)),
+            .background(EratwInk.modernBootBg()),
         contentAlignment = Alignment.Center,
     ) {
         // 指针消费层（DEV-03）：同像素风，整屏压在下层之上、排在内容之前。
@@ -2606,16 +2665,16 @@ private fun ModernLoadingOverlay(state: ShellState) {
         ) {
             Text(
                 text = "eraThe World",
-                color = Color(0xFFE7E3D6),
-                fontSize = 25.sp,
-                letterSpacing = 3.sp,
+                color = EratwInk.modernBootTitle(),
+                style = BOOT_TITLE_TYPE,
+                letterSpacing = MODERN_BOOT_TITLE_LETTER_SPACING,
             )
             Spacer(Modifier.height(7.dp))
             Text(
                 text = copy.loadingModernHeadline,
-                color = Color(0xFF7C887C),
-                fontSize = 12.sp,
-                letterSpacing = 2.sp,
+                color = EratwInk.modernBootSubtitle(),
+                style = ShellType.Caption,
+                letterSpacing = MODERN_BOOT_LETTER_SPACING,
             )
             Spacer(Modifier.height(36.dp))
             Canvas(
@@ -2626,22 +2685,24 @@ private fun ModernLoadingOverlay(state: ShellState) {
             ) {
                 val w = size.width
                 val h = size.height
-                drawRect(color = Color(0xFF1B201C), size = Size(w, h))
+                drawRect(color = EratwInk.modernBootTrack(), size = Size(w, h))
                 if (progress != null) {
                     val filled = (w * progress).coerceIn(0f, w)
                     if (filled > 0f) {
                         drawRect(
                             brush = Brush.horizontalGradient(
-                                listOf(Color(0xFF6F9E70), Color(0xFFB7D8A9)),
+                                listOf(EratwInk.modernBootFillStart(), EratwInk.modernBootFillEnd()),
                             ),
                             size = Size(filled, h),
                         )
                     }
                 } else {
                     val band = w * 0.22f
+                    // 两端全透明 = 光带只在中间一段亮起，扫过时不留下硬边。
+                    val fade = EratwInk.modernBootTrack().copy(alpha = 0f)
                     drawRect(
                         brush = Brush.horizontalGradient(
-                            listOf(Color(0x00303430), Color(0xFF9CC79C), Color(0x00303430)),
+                            listOf(fade, EratwInk.modernBootSweep(), fade),
                         ),
                         topLeft = Offset((w + band) * sweep - band, 0f),
                         size = Size(band, h),
@@ -2651,21 +2712,20 @@ private fun ModernLoadingOverlay(state: ShellState) {
             Spacer(Modifier.height(13.dp))
             Text(
                 text = if (progress != null) "${(progress * 100).toInt()}%" else "· · ·",
-                color = Color(0xFF9DB79D),
-                fontSize = 12.sp,
+                color = EratwInk.modernBootPercent(),
+                style = ShellType.Caption,
             )
             Spacer(Modifier.height(12.dp))
             Text(
                 text = state.loadingTitle.ifEmpty { copy.loadingPreparingData },
-                color = Color(0xFF6A736A),
-                fontSize = 11.sp,
+                color = EratwInk.modernBootNote(),
+                style = ShellType.Label,
             )
             Spacer(Modifier.height(18.dp))
             Text(
                 text = copy.freeNotice,
-                color = Color(0xFF6A736A),
-                fontSize = 10.sp,
-                lineHeight = 15.sp,
+                color = EratwInk.modernBootNote(),
+                style = ShellType.Overline,
                 textAlign = TextAlign.Center,
             )
         }
@@ -2715,7 +2775,7 @@ private fun FailureOverlay(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xF2000000)),
+            .background(EratwInk.scrimOpaque()),
         contentAlignment = Alignment.Center,
     ) {
         // 指针消费层（DEV-03）：压在整屏、排在内容之前 ——「回到标题」「重试」在它上面，
@@ -2729,14 +2789,14 @@ private fun FailureOverlay(
             modifier = Modifier.width(520.dp).padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(failureScreenTitle(kind, failureCopy), color = Color(0xFFFF7B7B), fontSize = 20.sp)
+            Text(failureScreenTitle(kind, failureCopy), color = EratwInk.danger(), style = FAILURE_TITLE_TYPE)
             Spacer(Modifier.height(12.dp))
-            Text(message, color = Color(0xFFEDEDED), fontSize = 14.sp)
+            Text(message, color = EratwInk.text(), style = ShellType.Body)
             Spacer(Modifier.height(8.dp))
             Text(
                 failureScreenNote(kind, canBackToTitle, failureCopy),
-                color = Color(0xFF9A9A9A),
-                fontSize = 12.sp,
+                color = EratwInk.textDim(),
+                style = ShellType.Caption,
             )
             if (canRetryCompat) {
                 // 玩家话，不带术语：这颗按钮慢在哪、省在哪、可能失败，一次说完。
@@ -2745,8 +2805,8 @@ private fun FailureOverlay(
                 // 所以这一次尝试必须是玩家的知情选择（判据见 shouldAutoRetryCompat）。
                 Text(
                     copy.retryCompatNote,
-                    color = Color(0xFF9A9A9A),
-                    fontSize = 12.sp,
+                    color = EratwInk.textDim(),
+                    style = ShellType.Caption,
                 )
             }
             // 重试又失败的说明行：判据与「结束应用」同一处出（failureActions），
@@ -2754,12 +2814,12 @@ private fun FailureOverlay(
             if (exitIsRestart) {
                 Text(
                     copy.exitIsRestartNote,
-                    color = Color(0xFF9A9A9A),
-                    fontSize = 12.sp,
+                    color = EratwInk.textDim(),
+                    style = ShellType.Caption,
                 )
             }
             note?.let {
-                Text(it, color = Color(0xFFB98A8A), fontSize = 12.sp)
+                Text(it, color = EratwInk.danger().copy(alpha = 0.72f), style = ShellType.Caption)
             }
             Spacer(Modifier.height(20.dp))
             if (reportReady) {
@@ -2768,23 +2828,23 @@ private fun FailureOverlay(
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Button(
                         onClick = onCopyReport,
-                        shape = RoundedCornerShape(8.dp),
+                        shape = ShellShape.Chip,
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF2A2A2A),
-                            contentColor = Color(0xFFEDEDED),
+                            containerColor = EratwInk.raised(),
+                            contentColor = EratwInk.text(),
                         ),
                     ) {
-                        Text(copy.copyReport, fontSize = 14.sp)
+                        Text(copy.copyReport, style = ShellType.Body)
                     }
                     Button(
                         onClick = onShareReport,
-                        shape = RoundedCornerShape(8.dp),
+                        shape = ShellShape.Chip,
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF2A2A2A),
-                            contentColor = Color(0xFFEDEDED),
+                            containerColor = EratwInk.raised(),
+                            contentColor = EratwInk.text(),
                         ),
                     ) {
-                        Text(copy.shareReport, fontSize = 14.sp)
+                        Text(copy.shareReport, style = ShellType.Body)
                     }
                 }
                 Spacer(Modifier.height(10.dp))
@@ -2792,13 +2852,13 @@ private fun FailureOverlay(
             if (canBackToTitle) {
                 Button(
                     onClick = onBackToTitle,
-                    shape = RoundedCornerShape(8.dp),
+                    shape = ShellShape.Chip,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF2F4B6B),
-                        contentColor = Color(0xFFEDEDED),
+                        containerColor = EratwInk.shareButton(),
+                        contentColor = EratwInk.text(),
                     ),
                 ) {
-                    Text(copy.backToTitle, fontSize = 16.sp)
+                    Text(copy.backToTitle, style = ShellType.Title)
                 }
                 Spacer(Modifier.height(10.dp))
             }
@@ -2807,25 +2867,25 @@ private fun FailureOverlay(
                 // 视觉上要压过普通「重试」（同一档反复重试还是同样的峰值，换档才是出路）。
                 Button(
                     onClick = onRetryCompat,
-                    shape = RoundedCornerShape(8.dp),
+                    shape = ShellShape.Chip,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF2F4B6B),
-                        contentColor = Color(0xFFEDEDED),
+                        containerColor = EratwInk.shareButton(),
+                        contentColor = EratwInk.text(),
                     ),
                 ) {
-                    Text(copy.retryCompatButton, fontSize = 16.sp)
+                    Text(copy.retryCompatButton, style = ShellType.Title)
                 }
                 Spacer(Modifier.height(10.dp))
             }
             Button(
                 onClick = onRetry,
-                shape = RoundedCornerShape(8.dp),
+                shape = ShellShape.Chip,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF3A3A3A),
-                    contentColor = Color(0xFFEDEDED),
+                    containerColor = EratwInk.raised(),
+                    contentColor = EratwInk.text(),
                 ),
             ) {
-                Text(copy.retryButton, fontSize = 16.sp)
+                Text(copy.retryButton, style = ShellType.Title)
             }
             if (canExitApp) {
                 // 「结束应用」排在最后：它是离开而不是又一次尝试。颜色与「重试」同深浅但偏暖，
@@ -2836,15 +2896,29 @@ private fun FailureOverlay(
                 Spacer(Modifier.height(10.dp))
                 Button(
                     onClick = onExitApp,
-                    shape = RoundedCornerShape(8.dp),
+                    shape = ShellShape.Chip,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF4A3535),
-                        contentColor = Color(0xFFEDEDED),
+                        containerColor = EratwInk.exitButton(),
+                        contentColor = EratwInk.text(),
                     ),
                 ) {
-                    Text(if (exitIsRestart) copy.exitAppRestart else copy.exitAppQuit, fontSize = 16.sp)
+                    Text(if (exitIsRestart) copy.exitAppRestart else copy.exitAppQuit, style = ShellType.Title)
                 }
             }
+            // 版本号小字：玩家反馈往往只截这一屏，带上版本/构建号就不用再来回问「你用的是哪一版」。
+            // 排在最后、字号最小、色最淡，不抢上面任何一颗按钮的视觉主次。
+            Spacer(Modifier.height(16.dp))
+            Text(
+                failureCopy.versionLine(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE),
+                color = EratwInk.textMuted(),
+                style = ShellType.Overline,
+            )
         }
     }
 }
+
+
+
+
+
+

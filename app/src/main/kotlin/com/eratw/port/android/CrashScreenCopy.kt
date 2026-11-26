@@ -102,6 +102,9 @@ internal data class CrashScreenCopy(
     val bannerBodyFormat: String,
     /** 下次启动兜底横幅的关闭按钮。 */
     val bannerAck: String,
+
+    /** 崩溃屏版本号小字：{0} 版本名、{1} versionCode。截图反馈要带上。 */
+    val versionLineFormat: String,
 ) {
 
     /** 句式占位符单趟替换：参数本身带花括号不会被二次展开（写法同 [ShellFailureCopy.fill]）。 */
@@ -110,6 +113,10 @@ internal data class CrashScreenCopy(
             val arg = match.groupValues[1].toIntOrNull()?.let { args.getOrNull(it) }
             arg?.toString() ?: match.value
         }
+
+    /** 崩溃屏版本号小字（{0} 版本名、{1} versionCode）。 */
+    fun versionLine(versionName: String, versionCode: Int): String =
+        fill(versionLineFormat, versionName, versionCode)
 
     companion object {
         /** ICU 与 OpenJDK 都认的写法：花括号走字符类，不写反斜杠转义。 */
@@ -147,6 +154,7 @@ internal data class CrashScreenCopy(
             bannerTitle = "上次游戏出错了",
             bannerBodyFormat = "上次游戏出错：{0}（{1}）。记录已经保存在手机上，下次可以分享给开发者。",
             bannerAck = "知道了",
+            versionLineFormat = "版本 {0}（build {1}）",
         )
 
         /** English. */
@@ -174,6 +182,7 @@ internal data class CrashScreenCopy(
             bannerTitle = "The game errored last time",
             bannerBodyFormat = "Last time the game stopped with: {0} ({1}). The record is saved on this phone and can be shared with the developer.",
             bannerAck = "Got it",
+            versionLineFormat = "Version {0} (build {1})",
         )
 
         /** 日本語。 */
@@ -201,6 +210,7 @@ internal data class CrashScreenCopy(
             bannerTitle = "前回ゲームでエラーが発生しました",
             bannerBodyFormat = "前回ゲームが停止した原因：{0}（{1}）。記録はスマートフォンに保存済みで、次回開発者へ共有できます。",
             bannerAck = "了解",
+            versionLineFormat = "バージョン {0}（ビルド {1}）",
         )
     }
 }

@@ -104,8 +104,8 @@ class UpdateFileProvider : ContentProvider() {
 
     companion object {
 
-        /** authorities（与 `AndroidManifest.xml` 的 provider 声明一致）。 */
-        const val AUTHORITY = "com.eratw.port.android.updatefiles"
+        /** authorities（与 `AndroidManifest.xml` 的 `${applicationId}.updatefiles` 一致）。 */
+        val AUTHORITY: String = BuildConfig.APPLICATION_ID + ".updatefiles"
 
         private const val APK_MIME = "application/vnd.android.package-archive"
         private const val APK_PREFIX = "eratw-"

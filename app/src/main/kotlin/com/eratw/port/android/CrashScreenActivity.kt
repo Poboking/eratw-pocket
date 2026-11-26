@@ -2,7 +2,6 @@ package com.eratw.port.android
 
 import android.app.Activity
 import android.content.Intent
-import android.graphics.Color
 import android.os.Bundle
 import android.util.Log
 import android.view.View
@@ -11,6 +10,8 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import com.eratw.port.android.ui.EratwInk
+import com.eratw.port.android.ui.design.ShellType
 
 /**
  * 崩溃屏（C6）：玩家当场读得到「出了什么事」，而不是对着桌面反复点图标。
@@ -47,21 +48,35 @@ class CrashScreenActivity : Activity() {
         val body = runCatching {
             summary?.let { CrashSummaryText.screenText(copy, it) } ?: copy.title
         }.getOrDefault(copy.title)
-        val content = runCatching { buildContent(copy, body) }.getOrElse { fallbackView(body) }
+        val content = runCatching { buildContent(copy, body) }.getOrElse { fallbackView(body, copy) }
         runCatching { setContentView(content) }
     }
 
     /** 界面：可滚正文 + 「重新启动」「关闭」两颗按钮（全平台控件，无 Compose）。 */
     private fun buildContent(copy: CrashScreenCopy, body: String): View {
         val message = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            textSize = 15f
-            setPadding(dip(28), dip(48), dip(28), dip(24))
+            setTextColor(EratwInk.textArgb())
+            textSize = ShellType.Body.fontSize.value
+            setPadding(dip(28), dip(48), dip(28), dip(MESSAGE_BOTTOM_PADDING_DIP))
             // 允许长按复制：玩家发反馈时不必依赖截图（口径同崩壳失败最后一屏）。
             setTextIsSelectable(true)
             text = body
         }
-        val scroll = ScrollView(this).apply { addView(message) }
+        val versionLine = TextView(this).apply {
+            setTextColor(EratwInk.textMutedArgb())
+            textSize = ShellType.Label.fontSize.value
+            setPadding(dip(28), 0, dip(28), dip(24))
+            setTextIsSelectable(true)
+            text = copy.versionLine(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE)
+        }
+        val scroll = ScrollView(this).apply {
+            val bodyStack = LinearLayout(this@CrashScreenActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(message)
+                addView(versionLine)
+            }
+            addView(bodyStack)
+        }
         val restart = Button(this).apply {
             text = copy.restartButton
             isAllCaps = false
@@ -79,7 +94,7 @@ class CrashScreenActivity : Activity() {
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.BLACK)
+            setBackgroundColor(EratwInk.consoleBgArgb())
             addView(
                 scroll,
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0).apply { weight = 1f },
@@ -94,14 +109,16 @@ class CrashScreenActivity : Activity() {
         }
     }
 
-    /** 连控件都搭不起来时的最后一屏：一行可选文字，至少还能截图。 */
-    private fun fallbackView(body: String): View = TextView(this).apply {
-        setTextColor(Color.WHITE)
-        setBackgroundColor(Color.BLACK)
-        textSize = 15f
+    /** 连控件都搭不起来时的最后一屏：一行可选文字，至少还能截图（版本号也带上）。 */
+    private fun fallbackView(body: String, copy: CrashScreenCopy): TextView = TextView(this).apply {
+        setTextColor(EratwInk.textArgb())
+        setBackgroundColor(EratwInk.consoleBgArgb())
+        textSize = ShellType.Body.fontSize.value
         setPadding(dip(28), dip(48), dip(28), dip(24))
         setTextIsSelectable(true)
-        text = body
+        text = runCatching {
+            "$body\n\n${copy.versionLine(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE)}"
+        }.getOrDefault(body)
     }
 
     /**
@@ -156,5 +173,9 @@ class CrashScreenActivity : Activity() {
         internal const val EXTRA_THREAD_NAME: String = "com.eratw.port.android.crash.thread_name"
         internal const val EXTRA_CENSUS_LINE: String = "com.eratw.port.android.crash.census_line"
         internal const val EXTRA_REPORT_NAME: String = "com.eratw.port.android.crash.report_name"
+
+        // 版本号小字（玩家截图反馈要自带版本信息）：弱一档字色 + 注脚字号，
+        // 不抢正文；正文底 padding 相应收窄给小字让位。
+        private const val MESSAGE_BOTTOM_PADDING_DIP: Int = 8
     }
 }

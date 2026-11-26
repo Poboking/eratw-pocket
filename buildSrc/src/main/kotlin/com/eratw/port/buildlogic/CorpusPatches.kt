@@ -96,6 +96,52 @@ sealed interface CorpusPatchPlan {
 /** staging 目录里的 marker 文件名（compileCorpus 的 doLast 读它往 manifest 追记）。 */
 const val CORPUS_PATCHES_MARKER = "corpus-patches-applied.txt"
 
+/**
+ * 产物 manifest 里补丁资产指纹的行名（compileCorpus 的 doLast 追记，CMP-66 与
+ * `devtools/erbc_freshness_probe.py` 一起对账）。
+ */
+const val CORPUS_PATCHES_DIGEST_LINE = "corpus-patches-digest"
+
+/**
+ * `devtools/corpus-patches` 整棵树的指纹 —— 补丁资产是 erbc 产物的第三个输入面。
+ *
+ * 计算口径与 `devtools/erbc_freshness_probe.py` 的 `corpus_patches_digest()` **逐字节一致**
+ * （改一处必须同步另一处）：递归全部文件，按相对**仓库根**的 posix 路径字典序，逐文件
+ * `u32be(路径字节数) ‖ 路径 UTF-8 ‖ u32be(文件字节数) ‖ 文件字节` 喂 SHA-256。
+ * 目录缺席（第三方语料根 / 裁剪树）⇒ `null`：该根没有补丁面，既不记行也不校验；
+ * 目录在而空 ⇒ 空输入的 SHA-256 与 0 个文件。
+ *
+ * 为什么必须进新鲜度判据：只改 corpus-patches 的提交不动 `.kt` 树（compiler-digest 不变）
+ * 也不动语料树（mtime 不变），旧判据会判「新鲜、复用」——`:tools:erbcc:compileCorpus`
+ * 压根不跑，[planCorpusPatches] 不执行，补丁从来没进过包（2026-11-20 CB-020/021/022 事故）。
+ */
+fun corpusPatchesDigest(repoRoot: File): Pair<String, Int>? {
+    val base = File(repoRoot, "devtools/corpus-patches")
+    if (!base.isDirectory) return null
+    val root = repoRoot.absoluteFile.toPath().normalize()
+    val files = base.walkTopDown()
+        .filter { it.isFile }
+        .map { f -> root.relativize(f.absoluteFile.toPath().normalize()).toString().replace('\\', '/') to f }
+        .sortedBy { it.first }
+        .toList()
+    val sha = MessageDigest.getInstance("SHA-256")
+    for ((rel, f) in files) {
+        val relBytes = rel.toByteArray(Charsets.UTF_8)
+        val body = f.readBytes()
+        sha.update(byteArrayOf(
+            (relBytes.size ushr 24).toByte(), (relBytes.size ushr 16).toByte(),
+            (relBytes.size ushr 8).toByte(), relBytes.size.toByte(),
+        ))
+        sha.update(relBytes)
+        sha.update(byteArrayOf(
+            (body.size ushr 24).toByte(), (body.size ushr 16).toByte(),
+            (body.size ushr 8).toByte(), body.size.toByte(),
+        ))
+        sha.update(body)
+    }
+    return sha.digest().hexLower() to files.size
+}
+
 /** 必填字段（缺一判红）。 */
 private val INDEX_REQUIRED_FIELDS =
     listOf("id", "target", "patch", "bad-sha256", "fixed-sha256", "corpus", "status", "summary", "evidence")

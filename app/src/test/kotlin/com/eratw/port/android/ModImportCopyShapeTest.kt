@@ -41,6 +41,8 @@ class ModImportCopyShapeTest {
         "failureTitleStorage" to ModImportCopy::failureTitleStorage,
         "failureTitleUnexpected" to ModImportCopy::failureTitleUnexpected,
         "succeededDetailFormat" to ModImportCopy::succeededDetailFormat,
+        "assetPackSucceededDetailFormat" to ModImportCopy::assetPackSucceededDetailFormat,
+        "packagedSucceededDetailFormat" to ModImportCopy::packagedSucceededDetailFormat,
         "warningLineFormat" to ModImportCopy::warningLineFormat,
         "savedSourcesFormat" to ModImportCopy::savedSourcesFormat,
         "nameListSeparator" to ModImportCopy::nameListSeparator,
@@ -59,6 +61,11 @@ class ModImportCopyShapeTest {
         "zipUnpackFailedFormat" to ModImportCopy::zipUnpackFailedFormat,
         "zipNoEntriesFormat" to ModImportCopy::zipNoEntriesFormat,
         "zipLooksLikeAssetPackFormat" to ModImportCopy::zipLooksLikeAssetPackFormat,
+        "zipTooManyEntriesFormat" to ModImportCopy::zipTooManyEntriesFormat,
+        "zipEntryTooLargeFormat" to ModImportCopy::zipEntryTooLargeFormat,
+        "zipTotalTooLargeFormat" to ModImportCopy::zipTotalTooLargeFormat,
+        "zipBombSuspectFormat" to ModImportCopy::zipBombSuspectFormat,
+        "zipDuplicateEntryFormat" to ModImportCopy::zipDuplicateEntryFormat,
         "dedupSkippedWarningFormat" to ModImportCopy::dedupSkippedWarningFormat,
         "saveSourceFailedFormat" to ModImportCopy::saveSourceFailedFormat,
         "readBaseFailedFormat" to ModImportCopy::readBaseFailedFormat,
@@ -70,11 +77,84 @@ class ModImportCopyShapeTest {
         "identityFailedFallback" to ModImportCopy::identityFailedFallback,
         "artifactSaveFailedFormat" to ModImportCopy::artifactSaveFailedFormat,
         "verifyWrittenFailedFormat" to ModImportCopy::verifyWrittenFailedFormat,
+        "codeArtifactStageFailedFormat" to ModImportCopy::codeArtifactStageFailedFormat,
+        "codeArtifactCommitFailedFormat" to ModImportCopy::codeArtifactCommitFailedFormat,
         "modRuntimeOffHint" to ModImportCopy::modRuntimeOffHint,
+        "modCodeGateHintFormat" to ModImportCopy::modCodeGateHintFormat,
+        "modCodeGateReasonGateOff" to ModImportCopy::modCodeGateReasonGateOff,
+        "modCodeGateReasonUntrusted" to ModImportCopy::modCodeGateReasonUntrusted,
+        "modCodeGateReasonCorrupt" to ModImportCopy::modCodeGateReasonCorrupt,
+        "modCodeGateReasonMultipleVersions" to ModImportCopy::modCodeGateReasonMultipleVersions,
+        "overrideSummaryFormat" to ModImportCopy::overrideSummaryFormat,
+        "reinstallSummaryFormat" to ModImportCopy::reinstallSummaryFormat,
+        "reinstallNoVersionSummaryFormat" to ModImportCopy::reinstallNoVersionSummaryFormat,
+        "versionChangedSummaryFormat" to ModImportCopy::versionChangedSummaryFormat,
+        "packMetaPackageIdMismatchFormat" to ModImportCopy::packMetaPackageIdMismatchFormat,
+        "engineApiGateWarningFormat" to ModImportCopy::engineApiGateWarningFormat,
+        "engineTooOldWarningFormat" to ModImportCopy::engineTooOldWarningFormat,
+        "resourceSummaryFormat" to ModImportCopy::resourceSummaryFormat,
+        "resourceEntryInvalidNameFormat" to ModImportCopy::resourceEntryInvalidNameFormat,
+        "resourceEntryDuplicateFormat" to ModImportCopy::resourceEntryDuplicateFormat,
+        "resourceFileTooLargeFormat" to ModImportCopy::resourceFileTooLargeFormat,
+        "resourceTotalTooLargeFormat" to ModImportCopy::resourceTotalTooLargeFormat,
+        "resourcePrefixRebasedFormat" to ModImportCopy::resourcePrefixRebasedFormat,
+        "resourcePrefixConflictFormat" to ModImportCopy::resourcePrefixConflictFormat,
+        "resourceStageFailedFormat" to ModImportCopy::resourceStageFailedFormat,
+        "resourceCommitFailedFormat" to ModImportCopy::resourceCommitFailedFormat,
+        "mediaDirConflictFormat" to ModImportCopy::mediaDirConflictFormat,
+        "mediaDirInvalidFormat" to ModImportCopy::mediaDirInvalidFormat,
+        "mediaEntryInvalidNameFormat" to ModImportCopy::mediaEntryInvalidNameFormat,
+        "mediaEntryDuplicateFormat" to ModImportCopy::mediaEntryDuplicateFormat,
+        "mediaExtensionRejectedFormat" to ModImportCopy::mediaExtensionRejectedFormat,
+        "mediaFileTooLargeFormat" to ModImportCopy::mediaFileTooLargeFormat,
+        "mediaResourceTotalTooLargeFormat" to ModImportCopy::mediaResourceTotalTooLargeFormat,
+        "mediaSoundTotalTooLargeFormat" to ModImportCopy::mediaSoundTotalTooLargeFormat,
+        "mediaCombinedTooLargeFormat" to ModImportCopy::mediaCombinedTooLargeFormat,
+        "mediaStageFailedFormat" to ModImportCopy::mediaStageFailedFormat,
+        "mediaCommitFailedFormat" to ModImportCopy::mediaCommitFailedFormat,
+        "previewTitle" to ModImportCopy::previewTitle,
+        "previewCodeSourcesFormat" to ModImportCopy::previewCodeSourcesFormat,
+        "previewCodeCompiledFormat" to ModImportCopy::previewCodeCompiledFormat,
+        "previewAssetsFormat" to ModImportCopy::previewAssetsFormat,
+        "previewMediaFormat" to ModImportCopy::previewMediaFormat,
+        "previewMediaNoneLine" to ModImportCopy::previewMediaNoneLine,
+        "previewExtensionsFormat" to ModImportCopy::previewExtensionsFormat,
+        "previewExtensionCountFormat" to ModImportCopy::previewExtensionCountFormat,
+        "previewConflictFormat" to ModImportCopy::previewConflictFormat,
+        "previewLimitFormat" to ModImportCopy::previewLimitFormat,
+        "previewLimitCombinedFormat" to ModImportCopy::previewLimitCombinedFormat,
+        "previewUnavailableFormat" to ModImportCopy::previewUnavailableFormat,
+        "previewPackageCountFormat" to ModImportCopy::previewPackageCountFormat,
+        "previewPackageCountSingleLine" to ModImportCopy::previewPackageCountSingleLine,
+        "previewPackageRowFormat" to ModImportCopy::previewPackageRowFormat,
+        "previewPackageVersionUnknown" to ModImportCopy::previewPackageVersionUnknown,
+        "previewPackageIdUnknown" to ModImportCopy::previewPackageIdUnknown,
+        "previewBatchDirConflictFormat" to ModImportCopy::previewBatchDirConflictFormat,
+        "batchResultSummaryFormat" to ModImportCopy::batchResultSummaryFormat,
+        "batchResultRowSucceededFormat" to ModImportCopy::batchResultRowSucceededFormat,
+        "batchResultRowFailedFormat" to ModImportCopy::batchResultRowFailedFormat,
+        "batchCardSummaryFormat" to ModImportCopy::batchCardSummaryFormat,
+        "batchResultOverflowSucceededFormat" to ModImportCopy::batchResultOverflowSucceededFormat,
+        "batchResultOverflowFailedFormat" to ModImportCopy::batchResultOverflowFailedFormat,
+        "batchResultCollapse" to ModImportCopy::batchResultCollapse,
         "sourceReadFailedFormat" to ModImportCopy::sourceReadFailedFormat,
         "allReadsFailedFormat" to ModImportCopy::allReadsFailedFormat,
         "unexpectedFormat" to ModImportCopy::unexpectedFormat,
         "unknownStorageError" to ModImportCopy::unknownStorageError,
+        // KI-4 报错专页（2026-11-23）：免责导向 + 一键复制 + 报告拼装词。
+        "failureGuidanceAuthorFormat" to ModImportCopy::failureGuidanceAuthorFormat,
+        "failureGuidanceStorageFormat" to ModImportCopy::failureGuidanceStorageFormat,
+        "failureGuidanceUnexpectedFormat" to ModImportCopy::failureGuidanceUnexpectedFormat,
+        "copyErrorReportButton" to ModImportCopy::copyErrorReportButton,
+        "copyWarningsButton" to ModImportCopy::copyWarningsButton,
+        "errorReportTitle" to ModImportCopy::errorReportTitle,
+        "errorReportKindFormat" to ModImportCopy::errorReportKindFormat,
+        "errorReportSourcesFormat" to ModImportCopy::errorReportSourcesFormat,
+        "errorReportTimeFormat" to ModImportCopy::errorReportTimeFormat,
+        "copyDoneToast" to ModImportCopy::copyDoneToast,
+        // KI-8 月更重复导入：预览替换行。
+        "previewReplaceFormat" to ModImportCopy::previewReplaceFormat,
+        "previewReplaceNoTimeFormat" to ModImportCopy::previewReplaceNoTimeFormat,
     )
 
     private val slot = Regex("[{](\\d+)[}]")
@@ -85,11 +165,50 @@ class ModImportCopyShapeTest {
 
     @Test
     fun `三档条目数相等且与显式键清单对账`() {
-        // data class 的 toString 逐个列构造属性：1 个 lang + 46 条键 = 47 个 '='。
+        // data class 的 toString 逐个列构造属性：1 个 lang + 112 条键 = 113 个 '='。
         // 表里的值不许带 '=' 字符（有就换一种计数法，别硬绕）。
         // 断言本体走共享形状闸（T-3 抽取）；本表就是这份工具的口径来源。
-        assertEquals(46, keys.size)
-        CopyShapeGate.assertKeyCount("ModImportCopy", copies, keys, expectedPerCopy = 47)
+        // 键数算式：112 = 60（基线：55 + 3 BU 版本读数 + 1 pack-mod + 1 CH）
+        //           + 5（CM zip 防御闸：条目数 / 单条目体积 / 整包体积 / 压缩比 / 条目重名）
+        //           + 1（DC 引擎 API 下限：engineApiGateWarningFormat）
+        //           + 1（本 lane 引擎太新：engineTooOldWarningFormat）
+        //           + 1（MODDX3-A3 纯资源包成功详情行 assetPackSucceededDetailFormat）
+        //           + 1（ERAFIN-C3 成品包成功详情行 packagedSucceededDetailFormat）
+        //           + 11（ADR-014 S4 旁挂媒体资源面：冲突 / 目录名非法 / 条目名非法 / 条目重名 /
+        //                 扩展名白名单 / 单文件超限 / 图·文树超限 / 音频树超限 / 两树合计超限 /
+        //                 临时落盘失败 / 正式落盘失败）
+        //           + 12（导入预览面：小标题 / 代码面源文件 / 代码面已编译模块 / 资源面 /
+        //                 媒体面 / 媒体面无声明 / 扩展名外壳 / 单扩展名计数 / 目录冲突预警 /
+        //                 限额预警 / 两树合计预警 / 预览不可用）
+        //           + 6（批导入预览面：包数 / 单包措辞 / 逐包摘要 / 版本未知 / 包名未知 / 同批目录共用）
+        //           + 2（ADR-013 代码产物面：暂存校验失败 / 内容寻址目录落盘失败）
+        //           + 4（task-178 批导入结果面：汇总计数 / 逐包成功行 / 逐包失败行 / 入口卡摘要）
+        //           + 5（task-179/187 代码闸提示面：提示句 + 总闸关 / 未信任 / 身份损坏 /
+        //                 多版本残留四个原因）
+        //           + 3（task-183 批结果折叠面：成功折叠行 / 失败折叠行 / 收起开关）。
+        // G3 静默洞补锁（班次 5）：既有两个计数互相独立——「表加键 + keys.size 与
+        // expectedPerCopy 双双跟上、唯独显式清单漏点名」时，新键整键逃过下面四条形状闸
+        // （2026-11-20 班次以探针键实测：漂移态五条全绿静默通过）。本断言把三件事锁成
+        // 一个算式：显式清单 + lang == 全表构造属性 == toString 的 '=' 计数，漏点名先红。
+        val expectedPerCopy = 125
+        assertEquals(
+            "键数算式：124 = 60（基线）+ 5（CM zip 闸）+ 1（DC 引擎 API）+ 1（引擎太新提示）+ " +
+                "1（MODDX3 纯资源包）+ 1（ERAFIN-C3 成品包）+ 11（S4 媒体面）+ 12（导入预览面）+ " +
+                "6（批导入预览面）+ 2（代码产物面：暂存校验 / 落盘）+ 4（批导入结果面：汇总 / 成功行 / " +
+                "失败行 / 卡片摘要）+ 5（代码闸提示面：提示句 + 四个原因）+ " +
+                "3（批结果折叠面：成功折叠行 / 失败折叠行 / 收起开关）+ " +
+                "12（KI-4 报错专页 10：导向×3 / 复制按钮×2 / 报告词×4 / Toast + KI-8 预览替换 2）",
+            124,
+            keys.size,
+        )
+        assertEquals(
+            "显式键清单必须覆盖全表：keys.size + 1（lang）== expectedPerCopy。" +
+                "表加键而清单漏点名时，keys.size 字面量与 toString 计数各自都能对上、" +
+                "新键整键逃过其余四条形状闸，只有这里能红",
+            expectedPerCopy,
+            keys.size + 1,
+        )
+        CopyShapeGate.assertKeyCount("ModImportCopy", copies, keys, expectedPerCopy = expectedPerCopy)
     }
 
     @Test

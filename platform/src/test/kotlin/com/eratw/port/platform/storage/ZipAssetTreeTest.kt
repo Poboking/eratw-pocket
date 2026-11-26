@@ -22,8 +22,9 @@ import org.junit.rules.TemporaryFolder
  *
  * 钉的是这条通道最容易赔钱的三件事：
  * 1. **zip 条目名是不可信输入**：`..`、空段、控制字符一律不进索引，并且要**计数**留给调用方拒装；
- * 2. **更新档必须真的覆盖**：新内容与旧内容**同长**时首启档会判「已装好」而跳过 ——
- *    这条是本功能的成败点（重编码的 webp 撞长度是常态，不是巧合）；
+ * 2. **同长换代必须真的覆盖**：更新档「包里有就重写」，首启档对 `CSV`/`plugins` 也按内容
+ *    对账（261111 把 `Palam.csv` 的 `眠姦` 改成 `眠奸`，两代同为 228 字节）；其余目录仍
+ *    按长度判，等长重编码的 webp 由更新档负责；
  * 3. **覆盖不许越界**：玩家的 `emuera.config` 仍然不动，program 与侧车仍然同进同退，
  *    包里没有的文件不删。
  *
@@ -173,18 +174,24 @@ class ZipAssetTreeTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `同长的新内容只有更新档才落盘`() {
+    fun `CSV同长新内容首启档也落盘_玩家配置仍不覆盖`() {
         val v1 = newBundle("CSV/x.txt" to "AAAA".toByteArray(), "emuera.config" to "包内默认配置".toByteArray())
         val first = GameAssetInstaller(ZipAssetTree(v1), gameRoot).install()
         assertEquals("首启要落配置与一条 CSV", 2, first.copiedFiles)
 
         File(gameRoot, "emuera.config").writeText("玩家自己改的配置")
 
-        // 新包里的立绘与旧文件**同长不同内容** —— 首启档判成「已经装好」，更新档必须换。
+        // 新包里的 CSV 与旧文件同长不同内容 —— 与 261017→261111 的 Palam.csv 同形。
+        // 内容对账认得出这种等长换代，否则新翻译表配旧名字表会在运行期报「未能找到 X 翻译」。
         val v2 = newBundle("CSV/x.txt" to "BBBB".toByteArray(), "emuera.config" to "新默认".toByteArray())
         val kept = GameAssetInstaller(ZipAssetTree(v2), gameRoot).install()
-        assertEquals("首启档比长度：同长 ⇒ 一个字节都不动（这正是更新会赔的地方）", 0, kept.copiedFiles)
-        assertEquals("AAAA", File(gameRoot, "CSV/x.txt").readText())
+        assertEquals("CSV 等长换代必须按内容重拷", 1, kept.copiedFiles)
+        assertEquals("BBBB", File(gameRoot, "CSV/x.txt").readText())
+        assertEquals(
+            "emuera.config 不在内容对账目录内，玩家改过的仍不动",
+            "玩家自己改的配置",
+            File(gameRoot, "emuera.config").readText(),
+        )
 
         val replaced = GameAssetInstaller(ZipAssetTree(v2), gameRoot, forceReplace = true).install()
         assertEquals("更新档只换 CSV：配置不在覆盖范围", 1, replaced.copiedFiles)

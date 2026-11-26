@@ -1,0 +1,13 @@
+--- a/コマンド関連/COMF/日常系/DISHDATA.ERB
++++ b/コマンド関連/COMF/日常系/DISHDATA.ERB
+@@ -35,4 +35,10 @@
+ 		SP_CHARA = QOL_DISH_DISPLAY_OWNER(DISH_NUM)
+ 	ENDIF
+ ENDIF
++;幻影号守卫：显示域反解析可能得到 owner ≥ CHARANUM（＝400+CHARANUM 一族，池与手输入都能造出来）
++;越界号进 NO:/KOJO_CHECK 必抛 CodeEE ⇒ 按「无此人」清零，后续走空号隐藏
++IF SP_SLOT >= 1 && (SP_CHARA < 0 || SP_CHARA >= CHARANUM)
++	SP_SLOT = 0
++	SP_CHARA = 0
++ENDIF
+ IF QOL_DISH_HAS_DATA(DISH_NUM)
