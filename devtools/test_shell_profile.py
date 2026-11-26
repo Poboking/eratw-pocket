@@ -96,7 +96,10 @@ def main() -> int:
           shell_profile.artifact_stem(None) == shell_profile.ARTIFACT_STEM_FALLBACK)
     check("非法字符归一", shell_profile.artifact_stem({"gameName": "era/tw:β"}) == "era-tw-β")
     check("空目录名不产生空前缀",
-          shell_profile.artifact_stem(None, "C:/") == shell_profile.ARTIFACT_STEM_FALLBACK)
+          # 用「文件系统根」而不是硬写 "C:/"：Windows 上 "C:/" 是盘符根（basename 为空），
+          # POSIX 上它是相对路径（basename 是 "C:"）⇒ 判据只在 Windows 上成立。
+          # os.sep 给的是本机根：Windows "\\"、POSIX "/"，两边 basename 都为空。
+          shell_profile.artifact_stem(None, os.path.join(os.sep)) == shell_profile.ARTIFACT_STEM_FALLBACK)
     check("空串根目录不产生空前缀",
           shell_profile.artifact_stem(None, "") == shell_profile.ARTIFACT_STEM_FALLBACK)
 
