@@ -14,3 +14,15 @@ allprojects {
     group = "com.eratw.port"
     version = "0.1.0-SNAPSHOT"
 }
+
+// 失败摘要只给类名不给消息，排障要翻 XML 报告 —— 这里把失败用例的完整异常打进
+// CI 日志（与引擎仓 Kotera 同一口径）：断言消息是判据的一部分，缺了就得重跑本地复现。
+subprojects {
+    tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+        testLogging {
+            events("failed")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            showStandardStreams = false
+        }
+    }
+}
