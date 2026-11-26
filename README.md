@@ -30,6 +30,7 @@
 | 路径 | 说明 |
 |---|---|
 | `app` | Compose 壳层 + 装配 + 出包；含设置页、输入条、覆盖层、错误上报与更新 UI |
+| `app/src/test/.../sentinel/` | 审**壳层真源**的源码哨兵（主语是壳层的闸归本仓，理由见 [跨仓契约](https://github.com/Poboking/Kotera/blob/main/specs/cross-repo-contract.md)） |
 | `platform` | 平台能力：资源解包 / 素材导入、存档导入导出、音频焦点、字体、设置存储（Android library） |
 | `render-canvas` | Android 自绘 View：命中区与绘制，消费 Kotera 的显示列表 |
 | `buildSrc` | 出包期任务与纯函数：随包资产 staging、语料补丁、erbc 新鲜度、ART profile 转换 |
@@ -77,6 +78,19 @@ CI 等价命令为：
   :app:assembleDebug -PeratwSkipAssets \
   :app:testDebugUnitTest :platform:testDebugUnitTest
 ```
+
+CI 另跑三道**源码闸**（纯 Python，不依赖 Gradle / Android SDK / 网络）：
+
+```bash
+python3 devtools/test_source_gates.py    # 数据源 / 业务词 / 语料专名
+python3 devtools/test_shell_profile.py   # 壳层 profile 口径
+python3 devtools/test_game_versions.py   # 游戏版本台账
+```
+
+CI 还会把姐妹仓 [Kotera](https://github.com/Poboking/Kotera) **同级检出**（读对方
+`main`）：上面的语料专名闸要扫引擎主源，引擎侧的入库资产闸要读本仓的随包资产 ——
+两道跨仓守卫都靠这道互检才真跑。合并次序与冻结夹具口径见
+[跨仓契约](https://github.com/Poboking/Kotera/blob/main/specs/cross-repo-contract.md)。
 
 本仓不分发游戏数据；随包资源、产物与更新通道均可通过变量 / 属性指定：
 

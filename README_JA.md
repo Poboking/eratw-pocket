@@ -31,6 +31,7 @@
 | パス | 概要 |
 |---|---|
 | `app` | Compose シェル + アセンブリ + パッケージング。設定画面、入力バー、オーバーレイ、エラーレポート、更新 UI |
+| `app/src/test/.../sentinel/` | **壳層の真源**を監査する源码哨兵（主語が壳層のゲートは本仓に置く。理由は[跨仓契約](https://github.com/Poboking/Kotera/blob/main/specs/cross-repo-contract.md)） |
 | `platform` | プラットフォーム機能：アセット展開 / 素材インポート、セーブ入出力、オーディオフォーカス、フォント、設定ストレージ（Android library） |
 | `render-canvas` | Android カスタム View：当たり判定と描画。Kotera のディスプレイリストを消費 |
 | `buildSrc` | パッケージ時のタスクと純関数：アセット staging、コーパスパッチ、erbc 鮮度、ART profile 変換 |
@@ -80,6 +81,20 @@ CI と同等のコマンド：
   :app:assembleDebug -PeratwSkipAssets \
   :app:testDebugUnitTest :platform:testDebugUnitTest
 ```
+
+CI はさらに 3 つの**源码闸**（純 Python。Gradle / Android SDK / ネットワークに依存しません）を回します：
+
+```bash
+python3 devtools/test_source_gates.py    # データソース / 業務語 / コーパス固有名
+python3 devtools/test_shell_profile.py   # シェル profile の契約
+python3 devtools/test_game_versions.py   # ゲームバージョン台帳
+```
+
+CI は姉妹仓 [Kotera](https://github.com/Poboking/Kotera) も同级にチェックアウトします
+（相手の `main` を読む）：上のコーパス固有名闸はエンジンの主源を走査し、エンジン側の
+随包資産闸は本仓の随包資産を読みます — この 2 つの跨倉ガードはこの相互検査作用下でこそ
+本当に走ります。merge の順序と凍結夾具の契約は
+[跨仓契約](https://github.com/Poboking/Kotera/blob/main/specs/cross-repo-contract.md) にあります。
 
 本リポジトリはゲームデータを同梱しません。同梱アセット・産物・更新チャネルは
 変数 / プロパティで指定します：

@@ -31,6 +31,7 @@ standalone on desktop.
 | Path | Description |
 |---|---|
 | `app` | Compose shell + assembly + packaging; settings, input bar, overlays, error reporting, update UI |
+| `app/src/test/.../sentinel/` | Source sentinels that audit the **shell's own** real sources (a guard whose subject is the shell belongs in this repo — see the [cross-repo contract](https://github.com/Poboking/Kotera/blob/main/specs/cross-repo-contract.md)) |
 | `platform` | Platform capabilities: asset unpacking / material import, save import-export, audio focus, fonts, settings storage (Android library) |
 | `render-canvas` | Android custom View: hit regions and drawing, consuming Kotera's display list |
 | `buildSrc` | Packaging-time tasks and pure helpers: asset staging, corpus patches, erbc freshness, ART profile conversion |
@@ -79,6 +80,22 @@ The CI-equivalent command is:
   :app:assembleDebug -PeratwSkipAssets \
   :app:testDebugUnitTest :platform:testDebugUnitTest
 ```
+
+CI additionally runs three **source gates** (pure Python — no Gradle, no Android SDK,
+no network):
+
+```bash
+python3 devtools/test_source_gates.py    # data source / business words / corpus-specific names
+python3 devtools/test_shell_profile.py   # shell profile contract
+python3 devtools/test_game_versions.py   # game version ledger
+```
+
+CI also checks out the sibling repo [Kotera](https://github.com/Poboking/Kotera)
+(reading its `main`): the corpus-specific-name gate above scans the engine's main
+sources, and the engine's packaged-asset guard reads this repo's bundled assets —
+both cross-repo guards only actually run under that cross-check. The merge order
+and the frozen-fixture contract are documented in the
+[cross-repo contract](https://github.com/Poboking/Kotera/blob/main/specs/cross-repo-contract.md).
 
 This repo ships no game data; bundled assets, artifacts, and update channels are
 configured through variables / properties:
