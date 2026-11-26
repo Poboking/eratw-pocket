@@ -10,9 +10,9 @@
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.0.20-7F52FF?style=flat-square)
 ![Jetpack Compose](https://img.shields.io/badge/UI-Jetpack_Compose-4285F4?style=flat-square)
 ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)
-![players](https://img.shields.io/endpoint?url=https%3A%2F%2Feratw-android.asia%2Fplayers)
-![active today](https://img.shields.io/endpoint?url=https%3A%2F%2Feratw-android.asia%2Fplayers%3Fmetric%3Dactive)
-![downloads](https://img.shields.io/github/downloads/Poboking/eratw-pocket/total)
+![players](https://img.shields.io/endpoint?url=https%3A%2F%2Feratw-android.asia%2Fplayers&cacheSeconds=600)
+![active today](https://img.shields.io/endpoint?url=https%3A%2F%2Feratw-android.asia%2Fplayers%3Fmetric%3Dactive&cacheSeconds=600)
+![downloads](https://img.shields.io/github/downloads/Poboking/eratw-pocket/total?style=flat)
 
 **A native Android port of EraTW.**
 
