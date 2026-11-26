@@ -84,7 +84,10 @@ def main() -> int:
     # 归档名跟随语料（SHELL-PROFILE 附带）：第三方包不许再顶着 eratw- 前缀。
     check("归档前缀取壳层 gameName", shell_profile.artifact_stem(full) == "eratohoReverse")
     check("无壳层配置时取游戏根目录名",
-          shell_profile.artifact_stem(None, r"C:\game\eratohoReverse") == "eratohoReverse")
+          # 用 os.path.join 拼「本机原生分隔符」的根目录：Windows 上是 C:\game\...，
+          # POSIX 上是 C:/game/... —— 硬写反斜杠会在 POSIX 上被当成普通字符
+          # （os.path.basename 不切分），判据就只对 Windows 成立。
+          shell_profile.artifact_stem(None, os.path.join("C:", "game", "eratohoReverse")) == "eratohoReverse")
     check("尾斜杠不影响取目录名",
           shell_profile.artifact_stem(None, "C:/game/eratohoReverse/") == "eratohoReverse")
     check("壳层配置优先于目录名",
