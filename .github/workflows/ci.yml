@@ -14,14 +14,16 @@ jobs:
 
       # 引擎仓必须与本仓同级检出（settings.gradle.kts 的 includeBuild("../Kotera")）
       #
-      # 检出目录放在 runner.temp（**本仓工作树之外**）：放进本仓目录下的话，本仓的
-      # 树遍历会把对方仓的源连同 "<对方仓>/" 前缀一起收进来 ⇒ 仓根相对键与冻结基线
-      # 对不上 ⇒ 跨仓守卫报假阳性。
+      # 检出后要**移出本仓工作树**：checkout 的 path 不能落在工作区之外，只能先检到
+      # 本仓目录下的子目录再移走。留在本仓工作树内的话，本仓的树遍历会把对方仓的源
+      # 连同 "<对方仓>/" 前缀一起收进来 ⇒ 仓根相对键与冻结基线对不上 ⇒ 跨仓守卫
+      # 报假阳性（壳层仓的源码哨兵曾把引擎仓 7 个 render 测试文件报成「新增未标注
+      # 引用」）。移出后再软链到同级 —— 与「两个仓同级检出」的口径一致。
       - uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/Kotera
           ref: main
-          path: ${{ runner.temp }}/Kotera
+          path: Kotera
 
       - uses: actions/setup-java@v4
         with:
@@ -30,8 +32,10 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: 把 Kotera 链接到本仓同级
-        run: ln -s "${{ runner.temp }}/Kotera" "$GITHUB_WORKSPACE/../Kotera"
+      - name: 把 Kotera 移出本仓工作树并链到本仓同级
+        run: |
+          mv "$GITHUB_WORKSPACE/Kotera" "$RUNNER_TEMP/Kotera"
+          ln -s "$RUNNER_TEMP/Kotera" "$GITHUB_WORKSPACE/../Kotera"
 
       - name: Source gates (data source / business words / corpus-specific names)
         run: python3 devtools/test_source_gates.py
