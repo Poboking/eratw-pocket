@@ -82,7 +82,7 @@ def compact(n: int, *, at_least: bool = False) -> str:
     return text + ("+" if at_least else "")
 
 
-def build_payloads(raw: object) -> dict[str, dict]:
+def build_payloads(raw: object, downloads: int | None = None) -> dict[str, dict]:
     """校验一轮读数并产出两枚徽章 JSON；不可信时抛 Skip。"""
     if not isinstance(raw, dict):
         raise Skip("读数不是 JSON 对象")
@@ -98,10 +98,85 @@ def build_payloads(raw: object) -> dict[str, dict]:
 
     # truncated = 这一轮只数到一部分：标成下界，别让徽章冻在旧快照上。
     at_least = raw.get("truncated") is True
-    return {
+    out = {
         "players.json": badge("players", compact(players, at_least=at_least), "brightgreen"),
         "active-today.json": badge("active today", compact(active, at_least=at_least), "blue"),
     }
+    # 下载数同样走静态档：shields 的 github/downloads 徽章在**渲染时**要现查 GitHub API
+    # （冷渲染 ~2.5s），GitHub 图片代理（camo）会因此超时并把 504 缓存住 —— 徽章整段坏掉。
+    if downloads is not None:
+        if not is_count(downloads):
+            raise Skip("downloads 不是非负整数")
+        out["downloads.json"] = badge("downloads", compact(downloads), "brightgreen")
+    return out
+
+
+_SVG_COLORS = {
+    "brightgreen": "#4c1",
+    "blue": "#007ec6",
+    "lightgrey": "#9f9f9f",
+}
+
+
+def render_svg(payload: dict) -> str:
+    """把一枚徽章 JSON 画成与 shields.io flat 同款的自包含 SVG。
+
+    为什么还要出 SVG：README 里的徽章是经 GitHub 的 camo 图片代理抓取渲染的，
+    camo 抓 shields 的 /endpoint（要回源现算、冷渲染 3~4s）会超时并把 504 缓存住，
+    徽章在网页上整段空白。SVG 直接放在仓里由 raw.githubusercontent 出，
+    camo 抓静态文件是毫秒级，不会再触发超时；数字精度由每日回退快照决定。
+    """
+    label = str(payload.get("label", ""))
+    message = str(payload.get("message", ""))
+    color = _SVG_COLORS.get(payload.get("color", ""), "#007ec6")
+
+    def text_width(text: str) -> int:
+        # 11px Verdana 的粗略前进宽度；只求排版不挤压，不追求逐字形精确。
+        return 7 * len(text)
+
+    label_w = text_width(label) + 10
+    msg_w = text_width(message) + 10
+    total_w = label_w + msg_w
+    label_mid = label_w / 2
+    msg_mid = label_w + msg_w / 2
+    label_x = f"{label_mid:g}"
+    msg_x = f"{msg_mid:g}"
+    label_w_s = f"{label_w:g}"
+    total_w_s = f"{total_w:g}"
+    msg_w_s = f"{msg_w:g}"
+
+    def esc(text: str) -> str:
+        return (
+            text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("'", "&apos;")
+        )
+
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" '
+        f'width="{total_w_s}" height="20" role="img" aria-label="{esc(label)}: {esc(message)}">'
+        f"<title>{esc(label)}: {esc(message)}</title>"
+        f'<linearGradient id="s" x2="0" y2="100%">'
+        '<stop offset="0" stop-color="#bbb" stop-opacity=".1"/>'
+        '<stop offset="1" stop-opacity=".1"/>'
+        "</linearGradient>"
+        '<clipPath id="r"><rect width="'
+        f'{total_w_s}" height="20" rx="3" fill="#fff"/></clipPath>'
+        '<g clip-path="url(#r)">'
+        f'<rect width="{label_w_s}" height="20" fill="#555"/>'
+        f'<rect x="{label_w_s}" width="{msg_w_s}" height="20" fill="{color}"/>'
+        f'<rect width="{total_w_s}" height="20" fill="url(#s)"/>'
+        "</g>"
+        '<g fill="#fff" text-anchor="middle" '
+        'font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">'
+        f'<text x="{label_x}" y="14" fill="#010101" fill-opacity=".3">{esc(label)}</text>'
+        f'<text x="{label_x}" y="13">{esc(label)}</text>'
+        f'<text x="{msg_x}" y="14" fill="#010101" fill-opacity=".3">{esc(message)}</text>'
+        f'<text x="{msg_x}" y="13">{esc(message)}</text>'
+        "</g></svg>\n"
+    )
 
 
 def selftest() -> int:
@@ -133,6 +208,13 @@ def selftest() -> int:
     assert payloads["players.json"]["schemaVersion"] == 1
     assert payloads["players.json"]["cacheSeconds"] == CACHE_SECONDS
     checks += 4
+
+    # 下载数静态档：给了 downloads 才产出这一枚；不给就没有（不硬造 0）。
+    with_dl = build_payloads(ok_raw, 241)
+    assert with_dl["downloads.json"]["message"] == "241"
+    assert with_dl["downloads.json"]["label"] == "downloads"
+    assert "downloads.json" not in payloads
+    checks += 3
 
     cut = build_payloads({**ok_raw, "truncated": True})
     assert cut["players.json"]["message"] == "1.02k+"
@@ -166,6 +248,16 @@ def main(argv: list[str] | None = None) -> int:
         print("skip: 没给读数文件路径; 保留已有徽章 JSON", flush=True)
         return 0
 
+    downloads: int | None = None
+    if "--downloads" in args:
+        i = args.index("--downloads")
+        try:
+            downloads = int(args[i + 1])
+        except (IndexError, ValueError):
+            print("skip: --downloads 缺参数或不是整数；保留已有徽章 JSON", flush=True)
+            return 0
+        args = args[:i] + args[i + 2:]
+
     raw_path = Path(args[0])
     out_dir = Path(args[1]) if len(args) > 1 else Path("badges")
     try:
@@ -175,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        payloads = build_payloads(raw)
+        payloads = build_payloads(raw, downloads)
     except Skip as exc:
         print(f"skip: {exc}; 保留已有徽章 JSON", flush=True)
         return 0
@@ -185,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
         (out_dir / name).write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
+        (out_dir / (Path(name).stem + ".svg")).write_text(render_svg(payload), encoding="utf-8")
     print(
         f"ok: players={raw['players']} active_today={raw['active_today']} day={raw['day']} "
         f"truncated={raw.get('truncated') is True} -> {out_dir}",

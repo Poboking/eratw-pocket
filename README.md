@@ -10,9 +10,9 @@
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.0.20-7F52FF?style=flat-square)
 ![Jetpack Compose](https://img.shields.io/badge/UI-Jetpack_Compose-4285F4?style=flat-square)
 ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)
-![players](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FPoboking%2Feratw-pocket%2Fmain%2Fbadges%2Fplayers.json)
-![active today](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FPoboking%2Feratw-pocket%2Fmain%2Fbadges%2Factive-today.json)
-![downloads](https://img.shields.io/github/downloads/Poboking/eratw-pocket/total)
+![players](https://raw.githubusercontent.com/Poboking/eratw-pocket/main/badges/players.svg)
+![active today](https://raw.githubusercontent.com/Poboking/eratw-pocket/main/badges/active-today.svg)
+![downloads](https://raw.githubusercontent.com/Poboking/eratw-pocket/main/badges/downloads.svg)
 
 **EraTW 的安卓原生移植版。**
 

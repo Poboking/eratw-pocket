@@ -52,21 +52,41 @@ jobs:
           echo "raw=$raw" >> "$GITHUB_OUTPUT"
           echo "fetched=true" >> "$GITHUB_OUTPUT"
 
-      - name: 生成两枚 shields endpoint 徽章 JSON
+      - name: 取一次 release 累计下载数
+        id: downloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 取不到就不传 --downloads —— 脚本会保留上一次的 downloads.json，不硬造 0。
+          total="$(gh api "repos/${{ github.repository }}/releases" --paginate             --jq '[.[].assets[].download_count] | add // 0' 2>/dev/null | tail -1 || true)"
+          if [[ "$total" =~ ^[0-9]+$ ]]; then
+            echo "total=$total" >> "$GITHUB_OUTPUT"
+            echo "fetched=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::release 下载数取不到，保留已有 downloads.json"
+          fi
+
+      - name: 生成 shields endpoint 徽章 JSON
         if: steps.fetch.outputs.fetched == 'true'
         shell: bash
-        run: python3 .github/scripts/update_player_badges.py "$RUNNER_TEMP/players-raw.json" badges
+        run: |
+          set -euo pipefail
+          if [[ "${{ steps.downloads.outputs.fetched }}" == "true" ]]; then
+            python3 .github/scripts/update_player_badges.py               "$RUNNER_TEMP/players-raw.json" badges               --downloads "${{ steps.downloads.outputs.total }}"
+          else
+            python3 .github/scripts/update_player_badges.py               "$RUNNER_TEMP/players-raw.json" badges
+          fi
 
       - name: 有变化才提交
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- badges/players.json badges/active-today.json; then
+          if git diff --quiet -- badges/players.json badges/active-today.json badges/downloads.json; then
             echo "读数没变或本轮跳过，不提交"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add badges/players.json badges/active-today.json
+          git add badges/players.json badges/active-today.json badges/downloads.json
           git commit -m "chore(badges): refresh anonymous player counts [skip ci]"
           git push
