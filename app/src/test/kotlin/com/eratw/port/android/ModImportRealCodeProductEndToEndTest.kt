@@ -143,6 +143,13 @@ class ModImportRealCodeProductEndToEndTest {
             FIXTURE_ZIP_SHA256,
             sha256Hex(zip),
         )
+        // 包**内容摘要**（条目名 + 未压缩字节）与 modgen 侧同值：跨机可比的跨模块哨兵
+        // （整包 sha256 随 JDK 的 zlib 版本而变，只在冻结那台机成立）。
+        assertEquals(
+            "包内容摘要与 modgen 侧哨兵同值（改模板/写侧要同步重钉两侧）",
+            FIXTURE_ZIP_CONTENT_SHA,
+            zipContentDigest(zip),
+        )
         assertEquals(
             "条目布局（字典序；元数据/代码产物在 zip 根）",
             listOf(
@@ -240,6 +247,30 @@ class ModImportRealCodeProductEndToEndTest {
     private fun assetDirOf(tmp: File, packageId: String): File = File(rt2Of(tmp), packageId + ".assets")
 
     private fun fixtureZip(): ByteArray = Base64.getDecoder().decode(FIXTURE_BASE64)
+
+    /**
+     * zip 内容摘要（条目名 + 未压缩字节），与压缩实现无关 ⇒ 跨机可比。
+     *
+     * 与 modgen 侧 `zipContentDigest` 同一算法（两端各持一份实现，不共享代码，
+     * 免得「同一份实现算出的摘要」变成同义反复）。
+     */
+    private fun zipContentDigest(zipBytes: ByteArray): String {
+        val perEntry = sortedMapOf<String, ByteArray>()
+        ZipInputStream(ByteArrayInputStream(zipBytes)).use { zis ->
+            while (true) {
+                val entry = zis.nextEntry ?: break
+                perEntry[entry.name] = zis.readBytes()
+            }
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+        for ((name, content) in perEntry) {
+            digest.update(name.toByteArray(Charsets.UTF_8))
+            digest.update(0)
+            digest.update(MessageDigest.getInstance("SHA-256").digest(content))
+            digest.update(0)
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
 
     /** 正常路径与失败路径共用的残留判据：rt2 下不得有 `.tmp-` / `.bak-`，code 目录不得有临时件。 */
     private fun assertNoResidue(tmp: File) {
@@ -353,6 +384,13 @@ class ModImportRealCodeProductEndToEndTest {
          * 同值）：只重钉一侧 Base64 / 只改一侧 digest 时本断言必红。
          */
         const val FIXTURE_ZIP_SHA256 = "f4734bb9c6e3fa76b2663e8ff5dc05512b4c8a3f3612d58da1dc09e2c1da0d16"
+
+        /**
+         * 包内容摘要（跨模块哨兵，与 modgen 侧 `RealCodeProductFixtureTest.FIXTURE_ZIP_CONTENT_SHA`
+         * 同值；跨机可比 —— 整包 sha256 随 JDK 的 zlib 版本而变）。
+         */
+        const val FIXTURE_ZIP_CONTENT_SHA =
+            "67cf96333bd29a61739f000a61b7282878461b34d5331c77a5630c952678a9b9"
 
         /**
          * 内层 `code.mod` sha256 前 16 位（内容寻址文件名主体；与 modgen 侧
