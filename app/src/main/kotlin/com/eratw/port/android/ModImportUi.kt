@@ -1,27 +1,36 @@
 package com.eratw.port.android
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.min
 import com.eratw.port.android.ui.EratwDialogCard
 import com.eratw.port.android.ui.EratwFilledButton
 import com.eratw.port.android.ui.EratwGhostButton
+import com.eratw.port.android.ui.EratwHairline
 import com.eratw.port.android.ui.EratwInk
-import com.eratw.port.android.ui.EratwSubhead
 import com.eratw.port.android.ui.EratwText
 import com.eratw.port.android.ui.EratwTextTone
+import com.eratw.port.android.ui.design.DisclosureStyle
+import com.eratw.port.android.ui.design.ShellDisclosureSection
 import com.eratw.port.android.ui.design.ShellRuleLabel
 import com.eratw.port.android.ui.design.ShellShape
 import com.eratw.port.android.ui.design.ShellSpace
@@ -108,12 +117,17 @@ sealed interface ModImportUiState {
         override val preview: Preview? = null,
     ) : ModImportUiState
 
-    /** 导入进行中（编译 + 落盘在后台线程，UI 只显示这条文案）。 */
+    /** 导入进行中（编译 + 落盘在后台线程，UI 只显示这条文案 + 进度条）。 */
     data class Importing(
         val sourceCount: Int,
         val stageText: String,
         override val report: ModPatchReportSnapshot?,
         override val preview: Preview? = null,
+        /**
+         * 最近一发进度读数（[ModImportEvent.ImportProgressChanged]）。
+         * null = 还没收到第一发（刚点确认的那一帧）：UI 显示不确定态扫描带，不显示假百分比。
+         */
+        val progress: ModImportProgress? = null,
     ) : ModImportUiState
 
     /** 导入成功：补丁产物已落 mods（重启游戏后生效）。 */
@@ -151,9 +165,14 @@ sealed interface ModImportEvent {
     /** 开始导入（N 个源文件）。 */
     data class ImportStarted(val sourceCount: Int) : ModImportEvent
 
+    /**
+     * 进度推进（导入线程每进一个相位 / 每推进一项发一发）。
+     * 只在 [ModImportUiState.Importing] 上生效：结果态已经定型，迟到的进度读数不许覆盖它。
+     */
+    data class ImportProgressChanged(val progress: ModImportProgress) : ModImportEvent
+
     /** 导入成功。 */
     data class ImportSucceeded(val detail: ImportedPatchDetail, val report: ModPatchReportSnapshot?) : ModImportEvent
-
     /** 导入失败（三态 + 内部兜底见 [ModImportFailureKind]）。 */
     data class ImportFailed(val kind: ModImportFailureKind, val message: String, val report: ModPatchReportSnapshot?) : ModImportEvent
 
@@ -198,6 +217,10 @@ object ModImportUiReducer {
         )
         is ModImportEvent.ImportSucceeded ->
             ModImportUiState.Succeeded(event.detail, event.report ?: state.report, state.preview)
+        is ModImportEvent.ImportProgressChanged ->
+            // 只有「进行中」吃进度：结果态的盘面不许被迟到的读数改写（线程收尾与最后一发
+            // 进度可能同帧到达，方向不能反）。
+            if (state is ModImportUiState.Importing) state.copy(progress = event.progress) else state
         is ModImportEvent.ImportFailed ->
             ModImportUiState.Failed(event.kind, event.message, event.report ?: state.report, state.preview)
         is ModImportEvent.BatchImportFinished ->
@@ -369,6 +392,8 @@ internal fun modImportFailureTitle(kind: ModImportFailureKind, copy: ModImportCo
     ModImportFailureKind.COMPILE -> copy.failureTitleCompile
     ModImportFailureKind.IDENTITY -> copy.failureTitleIdentity
     ModImportFailureKind.STORAGE -> copy.failureTitleStorage
+    ModImportFailureKind.PASSWORD -> copy.failureTitlePassword
+    ModImportFailureKind.ARCHIVE -> copy.failureTitleArchive
     ModImportFailureKind.UNEXPECTED -> copy.failureTitleUnexpected
 }
 
@@ -464,6 +489,14 @@ data class ModImportChromeActions(
      * 写剪贴板与 Toast 归宿主）。
      */
     val onCopyText: (String) -> Unit,
+
+    /**
+     * 加密 zip 的密码重试：参数 = 玩家敲进输入框的密码（已去首尾空白、非空）。
+     *
+     * 只在 [ModImportFailureKind.PASSWORD] 面上出现（见 [needsImportPassword]）：那条路
+     * 玩家自己能修，不该只给他一句「解包失败」。宿主拿到密码后用同一份选中文件重跑导入。
+     */
+    val onRetryWithPassword: (String) -> Unit,
 )
 
 /**
@@ -491,9 +524,11 @@ data class ModImportChromeText(
  * 「确定 / 取消」——预览先上屏、确认才导入；其余相位仍是「选文件 / 关闭」。
  * 预览块（[PreviewBlock]）照旧只读 [state] 的预览读数，不参与判定。
  *
- * 外壳走 [EratwDialogCard]，但 `scrollable = false`：卡内的报告区自己滚（长编译错误全文要
- * 读得完），外层再滚会和它抢高度约束。`dismissOnClickOutside = false` 是有意的 —— 这一页
- * 有正在跑的导入，点卡外不该把它关掉，收场只认「关闭」那颗与返回键。
+ * 外壳走 [EratwDialogCard]，但 `scrollable = false`：**滚动归正文区独占**（预览 / 状态块 /
+ * 密码补救 / 报告四块都在里面），头部、进度、动作三个分区固定不滚。外层若再套一层滚动，就
+ * 会和正文抢同一份高度约束 —— 那正是旧版「长错误全文把底部按钮顶出卡外」的机制。
+ * `dismissOnClickOutside = false` 是有意的 —— 这一页有正在跑的导入，点卡外不该把它关掉，
+ * 收场只认「关闭」那颗与返回键。
  *
  * 真机观感（共用壳样式下的覆盖层）留组长真机验收调整（TODO(verify)）。
  */
@@ -505,72 +540,79 @@ fun ModImportChrome(
     previewPhase: ModImportPreviewPhase,
     copy: ModImportCopy,
 ) {
+    // 卡高必须跟着屏幕走：本作是横屏游戏，横屏可用高只有 320~420dp。旧实现钉死 620dp max
+    // 且 `scrollable = false`，内容一长（编译错误全文）就把底部按钮顶到卡外——父层裁掉绘制、
+    // 也裁掉命中区，玩家看到的是「取消键完全点不到」。这里同时改两件：
+    // ① 卡高 = min(620dp, 屏高 × 0.92)；② 正文单独滚、按钮钉在卡底（见下面的 weight 段）。
+    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+    val cardMaxHeight = min(MAX_CARD_HEIGHT, screenHeight * CARD_HEIGHT_FRACTION)
+
     EratwDialogCard(
         onDismissRequest = actions.onDismiss,
         dismissOnClickOutside = false,
         maxWidth = 680.dp,
-        maxHeight = 620.dp,
+        maxHeight = cardMaxHeight,
         scrollable = false,
         // 宿主是设置页（系统栏可见，那是页面语义的一部分）：只做几何装配，不藏栏。
         immersive = false,
     ) {
-        EratwText(text = copy.cardTitle, tone = EratwTextTone.HEADLINE)
-        Spacer(modifier = Modifier.height(4.dp))
-        EratwText(text = text.intro, tone = EratwTextTone.NOTE)
-        Spacer(modifier = Modifier.height(8.dp))
+        // ---- 头部：标题 + 状态签（固定区，不随正文滚）----
+        ImportChromeHeader(state, text, copy)
 
-        // 预览区：选中文件的只读读数（只读、只提示；null = 还没算过，整块不出）。
-        val preview = state.preview
-        if (preview != null) {
-            PreviewBlock(preview = preview, copy = copy)
-            Spacer(modifier = Modifier.height(8.dp))
+        // ---- 进度区：只在进行中出现（固定区：玩家滚动正文时仍看得到走到哪了）----
+        if (state is ModImportUiState.Importing) {
+            Spacer(modifier = Modifier.height(SECTION_GAP))
+            ModImportProgressLine(state, copy)
         }
+        Spacer(modifier = Modifier.height(SECTION_GAP))
 
-        // 状态区：导入中 / 成功 / 失败 三态（契约 C5 出口判据①）。
-        when (val s = state) {
-            is ModImportUiState.Importing -> EratwText(text = copy.fill(copy.importingFilesFormat, s.stageText, s.sourceCount))
-            is ModImportUiState.Succeeded -> SuccessBlock(
-                detail = s.detail,
-                onRestartGame = actions.onRestartGame,
-                onCopyText = actions.onCopyText,
-                copy = copy,
-            )
-            is ModImportUiState.Failed -> FailureBlock(
-                kind = s.kind,
-                message = s.message,
-                sourceNames = (state.preview as? Preview.Ready)?.packages?.map { it.displayName }.orEmpty(),
-                onCopyText = actions.onCopyText,
-                copy = copy,
-            )
-            is ModImportUiState.BatchFinished -> BatchResultBlock(
-                outcome = s.outcome,
-                onRestartGame = actions.onRestartGame,
-                copy = copy,
-            )
-            is ModImportUiState.Idle -> Unit
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // 报告区：I7 读数口 + mods 静态清单（可滚动，长错误全文可读）。
-        ReportBlock(state.report, copy)
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (previewPhase == ModImportPreviewPhase.AWAITING_CONFIRM) {
-                // 预览确认面：确认才进导入，取消只清盘面（导入事务的放行口在
-                // ModImportFeedReducer.importBatchOf，渲染层不判定）。
-                EratwFilledButton(text = text.confirmButton, onClick = actions.onConfirmImport)
-                EratwGhostButton(text = text.cancelButton, onClick = actions.onCancelPreview)
-            } else {
-                EratwFilledButton(
-                    text = text.pickButton,
-                    onClick = actions.onPickFiles,
-                    enabled = state !is ModImportUiState.Importing && previewPhase != ModImportPreviewPhase.READING,
-                )
+        // ---- 正文：唯一滚动区（预览 / 状态块 / 密码补救 / 报告都在这里）----
+        // `weight(1f, fill = false)`：内容短时卡体就短（不撑出空白），内容长时吃满剩余高度并
+        // 内部滚动 —— 无论多长都顶不到下面的按钮。
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = false)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            // 预览区：选中文件的只读读数（只读、只提示；null = 还没算过，整块不出）。
+            val preview = state.preview
+            if (preview != null) {
+                PreviewBlock(preview = preview, copy = copy)
+                Spacer(modifier = Modifier.height(SECTION_GAP))
             }
-            Spacer(modifier = Modifier.weight(1f))
-            EratwGhostButton(text = copy.closeButton, onClick = actions.onDismiss)
+
+            // 状态区：导入中 / 成功 / 失败 三态（契约 C5 出口判据①）。
+            when (val s = state) {
+                is ModImportUiState.Importing -> Unit
+                is ModImportUiState.Succeeded ->
+                    SuccessBlock(s.detail, actions.onRestartGame, actions.onCopyText, copy)
+                is ModImportUiState.Failed -> FailureBlock(
+                    kind = s.kind,
+                    message = s.message,
+                    sourceNames = (state.preview as? Preview.Ready)?.packages?.map { it.displayName }.orEmpty(),
+                    onCopyText = actions.onCopyText,
+                    copy = copy,
+                )
+                is ModImportUiState.BatchFinished ->
+                    BatchResultBlock(s.outcome, actions.onRestartGame, copy)
+                is ModImportUiState.Idle -> Unit
+            }
+            // 加密包补救口（ModImportPasswordUi.needsImportPassword）：密码输入 + 重试。
+            // 渲染位置在状态块外，单包失败页与批量结果页共用同一处，不为它开第二条分支。
+            PasswordRetrySection(state, copy, actions.onRetryWithPassword)
+
+            // 报告区：I7 读数口 + mods 静态清单。成功页默认收起（玩家此刻要看的是结果，
+            // 不是盘上清单），失败/待机页默认展开（排查时第一眼就要看到）。
+            Spacer(modifier = Modifier.height(SECTION_GAP))
+            ReportBlock(state.report, copy, initiallyExpanded = state !is ModImportUiState.Succeeded)
         }
+
+        // ---- 动作区：钉在卡底（永远可点）----
+        Spacer(modifier = Modifier.height(SECTION_GAP))
+        EratwHairline()
+        Spacer(modifier = Modifier.height(ACTION_TOP_GAP))
+        ImportChromeActionRow(state, actions, text, previewPhase, copy)
     }
 }
 
@@ -596,7 +638,26 @@ private fun SuccessBlock(
     onRestartGame: () -> Unit,
     onCopyText: (String) -> Unit,
     copy: ModImportCopy,
-) {    Column {
+) {
+    // 成功块与失败块同构（左竖条 + 淡色底）：玩家不必重新学一遍「哪块是结论」。
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min)
+            .clip(ShellShape.Inset)
+            .background(EratwInk.accent().copy(alpha = SUCCESS_FILL_ALPHA)),
+    ) {
+        Box(
+            modifier = Modifier
+                .width(FAILURE_BAR_WIDTH)
+                .fillMaxHeight()
+                .background(EratwInk.accent()),
+        )
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(ShellSpace.RowPadding),
+        ) {
         EratwText(text = detail.successDetailText(copy))
         if (detail.overrideCount > 0) {
             EratwText(text = copy.fill(copy.overrideSummaryFormat, detail.overrideCount))
@@ -635,10 +696,16 @@ private fun SuccessBlock(
             EratwGhostButton(
                 text = copy.copyWarningsButton,
                 onClick = { onCopyText(detail.parseWarnings.joinToString("\n")) },
+                modifier = Modifier.heightIn(min = ShellSpace.TouchMin),
             )
         }
-        Spacer(modifier = Modifier.height(6.dp))
-        EratwFilledButton(text = copy.restartButton, onClick = onRestartGame)
+        Spacer(modifier = Modifier.height(SECTION_GAP))
+        EratwFilledButton(
+            text = copy.restartButton,
+            onClick = onRestartGame,
+            modifier = Modifier.heightIn(min = ShellSpace.TouchMin),
+        )
+        }
     }
 }
 
@@ -650,70 +717,107 @@ private fun FailureBlock(
     onCopyText: (String) -> Unit,
     copy: ModImportCopy,
 ) {
-    Column(
+    // 危险块：左侧 3dp 竖条 + 13% 红底。竖条是「不只靠颜色」的那一手 —— 色弱玩家也能从
+    // 结构上认出「这块是坏消息」。**不再给 message 套内层滚动**（旧实现正是内外两层滚抢
+    // 高度约束，把按钮顶出卡外）；长文由外层正文区统一滚。
+    Row(
         modifier = Modifier
             .fillMaxWidth()
+            .height(IntrinsicSize.Min)
             .clip(ShellShape.Inset)
-            .background(EratwInk.dangerFill())
-            .padding(ShellSpace.RowPadding),
+            .background(EratwInk.dangerFill()),
     ) {
-        EratwText(
-            text = modImportFailureTitle(kind, copy),
-            colorOverride = EratwInk.danger(),
-        )        // message 全文原样展示（禁静默吞错；编译错误自带函数名 + 文件:行）。
-        EratwText(
-            text = message,
-            tone = EratwTextTone.NOTE,
-            modifier = Modifier.verticalScroll(rememberScrollState()),
+        Box(
+            modifier = Modifier
+                .width(FAILURE_BAR_WIDTH)
+                .fillMaxHeight()
+                .background(EratwInk.danger()),
         )
-        Spacer(modifier = Modifier.height(6.dp))
-        // KI-4 ②：免责/导向行（错误归属告诉玩家该找谁，不背口上包自身的错）。
-        EratwText(text = modImportFailureGuidance(kind, copy), tone = EratwTextTone.NOTE)
-        Spacer(modifier = Modifier.height(4.dp))
-        // KI-4 ③：一键复制报告（包名/类别/时间/全文四段，见 modImportErrorReportText）。
-        EratwGhostButton(
-            text = copy.copyErrorReportButton,
-            onClick = {
-                onCopyText(modImportErrorReportText(kind, message, copy, System.currentTimeMillis(), sourceNames))
-            },
-        )
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(ShellSpace.RowPadding),
+        ) {
+            EratwText(
+                text = modImportFailureTitle(kind, copy),
+                colorOverride = EratwInk.danger(),
+            )
+            // message 全文原样展示（禁静默吞错；编译错误自带函数名 + 文件:行）。
+            // 可选中：玩家想只贴某一段给作者时不用整份报告。
+            Spacer(modifier = Modifier.height(NOTE_TOP_GAP))
+            SelectionContainer {
+                EratwText(text = message, tone = EratwTextTone.NOTE)
+            }
+            Spacer(modifier = Modifier.height(SECTION_GAP))
+            // KI-4 ②：免责/导向行（错误归属告诉玩家该找谁，不背口上包自身的错）。
+            EratwText(text = modImportFailureGuidance(kind, copy), tone = EratwTextTone.NOTE)
+            Spacer(modifier = Modifier.height(SECTION_GAP))
+            // KI-4 ③：一键复制报告（包名/类别/时间/全文四段，见 modImportErrorReportText）。
+            EratwGhostButton(
+                text = copy.copyErrorReportButton,
+                onClick = {
+                    onCopyText(modImportErrorReportText(kind, message, copy, System.currentTimeMillis(), sourceNames))
+                },
+                // 块内按钮不占满宽：它是「可选的下一步」，不是主出口。
+                modifier = Modifier.heightIn(min = ShellSpace.TouchMin),
+            )
+        }
     }
 }
 
 @Composable
-private fun ReportBlock(report: ModPatchReportSnapshot?, copy: ModImportCopy) {
-    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-        ShellRuleLabel(text = copy.reportTitle)
-        if (report == null) {
-            EratwText(text = copy.reportNotRefreshed, tone = EratwTextTone.NOTE)
-            return
+private fun ReportBlock(report: ModPatchReportSnapshot?, copy: ModImportCopy, initiallyExpanded: Boolean) {
+    // 揭示式分节（M3 disclosure）：标题行整行可点、带计数徽标。成功页默认收起（玩家此刻
+    // 要看的是结果），失败/待机页默认展开（排查第一眼就要看到盘上现状）。
+    //
+    // `key(initiallyExpanded)`：折叠壳内部用 rememberSaveable 记住展开态，默认值变了必须重挂
+    // 才会按新默认值起算（只有「失败 → 成功」这种切换才重挂，普通重组不重置玩家的手动折叠）。
+    key(initiallyExpanded) {
+        ShellDisclosureSection(
+            title = copy.reportTitle,
+            style = DisclosureStyle(
+                accent = EratwInk.zoneAbout(),
+                badge = report?.loadedPatches?.size?.toString(),
+                initiallyExpanded = initiallyExpanded,
+            ),
+        ) {
+            ReportLines(report, copy)
         }
-        report.readError?.let {
-            EratwText(text = copy.fill(copy.reportReadFailedFormat, it), tone = EratwTextTone.NOTE, colorOverride = EratwInk.danger())
-            return
-        }
-        if (report.rolledBack) {
-            EratwText(text = copy.reportRolledBackLine, tone = EratwTextTone.NOTE, colorOverride = EratwInk.danger())
-        }
-        if (report.failures.isEmpty() && report.loadedPatches.isEmpty() && !report.rolledBack) {
-            EratwText(text = copy.reportNoneLoaded, tone = EratwTextTone.NOTE)
-        }
-        for (p in report.loadedPatches) {
-            EratwText(text = copy.fill(copy.reportLoadedFormat, p.name, p.functionCount, p.instructionCount), tone = EratwTextTone.NOTE)
-        }
-        for (f in report.failures) {
-            EratwText(text = copy.fill(copy.reportLoadFailedFormat, f), tone = EratwTextTone.NOTE, colorOverride = EratwInk.danger())
-        }
-        for (w in report.warnings) {
-            EratwText(text = copy.fill(copy.reportLoadWarningFormat, w), tone = EratwTextTone.NOTE, colorOverride = EratwInk.amber())
-        }
-        EratwText(
-            text = if (report.storedPatchFiles.isEmpty()) {
-                copy.reportNoStoredFiles
-            } else {
-                copy.fill(copy.reportStoredFilesFormat, report.storedPatchFiles.joinToString(copy.nameListSeparator))
-            },
-            tone = EratwTextTone.MUTED,
-        )
     }
+}
+
+/** 报告区正文（与折叠壳解耦：折叠只影响是否组合它，不影响内容判定）。 */
+@Composable
+private fun ReportLines(report: ModPatchReportSnapshot?, copy: ModImportCopy) {
+    if (report == null) {
+        EratwText(text = copy.reportNotRefreshed, tone = EratwTextTone.NOTE)
+        return
+    }
+    report.readError?.let {
+        EratwText(text = copy.fill(copy.reportReadFailedFormat, it), tone = EratwTextTone.NOTE, colorOverride = EratwInk.danger())
+        return
+    }
+    if (report.rolledBack) {
+        EratwText(text = copy.reportRolledBackLine, tone = EratwTextTone.NOTE, colorOverride = EratwInk.danger())
+    }
+    if (report.failures.isEmpty() && report.loadedPatches.isEmpty() && !report.rolledBack) {
+        EratwText(text = copy.reportNoneLoaded, tone = EratwTextTone.NOTE)
+    }
+    for (p in report.loadedPatches) {
+        EratwText(text = copy.fill(copy.reportLoadedFormat, p.name, p.functionCount, p.instructionCount), tone = EratwTextTone.NOTE)
+    }
+    for (f in report.failures) {
+        EratwText(text = copy.fill(copy.reportLoadFailedFormat, f), tone = EratwTextTone.NOTE, colorOverride = EratwInk.danger())
+    }
+    for (w in report.warnings) {
+        EratwText(text = copy.fill(copy.reportLoadWarningFormat, w), tone = EratwTextTone.NOTE, colorOverride = EratwInk.amber())
+    }
+    EratwText(
+        text = if (report.storedPatchFiles.isEmpty()) {
+            copy.reportNoStoredFiles
+        } else {
+            copy.fill(copy.reportStoredFilesFormat, report.storedPatchFiles.joinToString(copy.nameListSeparator))
+        },
+        tone = EratwTextTone.MUTED,
+    )
 }

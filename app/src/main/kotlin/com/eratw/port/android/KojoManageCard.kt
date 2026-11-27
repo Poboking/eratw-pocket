@@ -1,7 +1,6 @@
 package com.eratw.port.android
 
 import android.widget.Toast
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -14,7 +13,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -37,11 +35,14 @@ import com.eratw.port.android.ui.design.ShellAlertDialog
 import com.eratw.port.android.ui.design.ShellDialogActions
 import com.eratw.port.android.ui.design.ShellDisclosureSection
 import com.eratw.port.android.ui.design.ShellPress
+import com.eratw.port.android.ui.design.ShellProgress
+import com.eratw.port.android.ui.design.ShellSkeletonRow
 import com.eratw.port.android.ui.design.ShellRowHairline
 import com.eratw.port.android.ui.design.ShellMotion
 import com.eratw.port.android.ui.design.ShellRuleLabel
 import com.eratw.port.android.ui.design.ShellSpace
 import com.eratw.port.android.ui.design.ShellType
+import com.eratw.port.android.ui.design.ShellVisibility
 import com.eratw.port.platform.storage.GameStorage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -180,11 +181,14 @@ private fun KojoManageBody(
         )
         Spacer(Modifier.height(ShellSpace.CardGap))
         when {
-            importedList == null -> LinearProgressIndicator(
-                modifier = Modifier.fillMaxWidth().padding(top = ShellSpace.CardGap),
-                color = LocalZoneAccent.current,
-                trackColor = UiColors.CardAlt,
-            )
+            importedList == null -> {
+                // 读口上清单是一段真的等待：细进度带 + 两行呼吸占位，别让卡体空着像卡住。
+                ShellProgress(
+                    accent = LocalZoneAccent.current,
+                    modifier = Modifier.padding(top = ShellSpace.CardGap),
+                )
+                ShellSkeletonRow(lines = 2, modifier = Modifier.padding(top = ShellSpace.GroupGap))
+            }
             importedList.isEmpty() -> Text(
                 text = text.kojoManageEmpty,
                 color = EratwInk.textMuted(),
@@ -306,7 +310,7 @@ private fun KojoPackRow(
                 onCheckedChange = actions.onToggle,
             )
         }
-        AnimatedVisibility(
+        ShellVisibility(
             visible = expanded,
             enter = ShellMotion.rowEnter(),
             exit = ShellMotion.rowExit(),

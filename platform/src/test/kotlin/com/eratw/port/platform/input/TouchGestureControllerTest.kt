@@ -18,10 +18,11 @@ import org.junit.Test
  *   （`-Math.Sign(e.Delta) * SmallChange * ScrollHeight`）。
  * - 触屏不提交：`MainWindow.cs:507-512` 整段没有 `PressEnterKey`；
  *   `docs/golden-runbook.md:106`、`:125`。
- * - 长按 / 右键：原版右键就是「跳过」（`MainWindow.cs:814-816` 的 `mesSkip: true`），
- *   但触屏没有右键；C# 里**没有长按语义**，长按阈值为 Android `ViewConfiguration` 的
- *   500ms 缺省值，见 [TouchGestureController.Action.LongPress] 与主契约测试
- *   `InputAudioContractTest` 的手势用例。本文件其余用例都是 <500ms 的点击/滑动。
+ * - 双击 / 右键：原版右键就是「跳过」（`MainWindow.cs:814-816` 的 `mesSkip: true`），
+ *   触屏没有右键，双击是移植侧的映射；C# 里**没有长按语义**，长按阈值为 Android
+ *   `ViewConfiguration` 的 500ms 缺省值。长按只用于提示卡/取色，**不映射跳过**
+ *   （2026-11-26 移除「空白处长按跳过」，见 [TouchGestureController.Action.LongPress]
+ *   与主契约测试 `InputAudioContractTest` 的手势用例）。本文件其余用例都是 <500ms 的点击/滑动。
  *
  * 基准 `pc-golden-root.txt` 没有触摸手势行，故本文件只钉上述 C# 行与契约口径。
  */
@@ -310,16 +311,17 @@ class TouchGestureControllerTest {
     }
 
     // ------------------------------------------------------------------
-    // 长按（Action.LongPress）：2026-11-11「长按空白跳过」的上游判据。
+    // 长按（Action.LongPress）：提示卡 / 遮罩取色的手势形态。
     //
-    // 长按本身在 C# 里没有对应语义（原版是右键 `MainWindow.cs:814-816` / Esc），
-    // 阈值取 Android ViewConfiguration 的 500ms 缺省。这一组钉四件事：
+    // 长按本身在 C# 里没有对应语义（原版是鼠标 hover / 右键 `MainWindow.cs:814-816`），
+    // 阈值取 Android ViewConfiguration 的 500ms 缺省。2026-11-11 曾把「空白处长按抬手」
+    // 映射成跳过，2026-11-26 按玩家反馈移除（按住屏幕在手机上太容易误触）——手势层仍只
+    // 判形态，绑定层 [Action.LongPress] 不再产出任何输入。这一组钉四件事：
     // 1. 到阈值即 LongPress，**不再是单击**；
     // 2. 未到阈值仍是单击；
     // 3. 长按消费双击候选（它既不是第一击，也不能让下一击被当成第二击）；
     // 4. 滑动优先于长按（按住不放再拖 = 缓慢滚动，不是长按）。
-    // 注意：canSkip **不参与**长按判定（它只作用于双击配对）——跳过闸由绑定层
-    // （MainActivity.handleSkip）再守一次，这样执行期的长按不会额外提交一条 skip。
+    // 注意：canSkip **不参与**长按判定（它只作用于双击配对）。
     // ------------------------------------------------------------------
 
     @Test
@@ -371,11 +373,11 @@ class TouchGestureControllerTest {
     }
 
     @Test
-    fun `长按判定不看跳过闸`() {
+    fun `长按判定不受跳过闸影响`() {
         val controller = controller()
         controller.onDown(col = 0, y = 100f, timeMs = 0L)
         assertEquals(
-            "canSkip=false 也照样判 LongPress：跳过闸在绑定层，手势层只判形态",
+            "canSkip=false 也照样判 LongPress：canSkip 只作用于双击配对，手势层只判形态",
             Action.LongPress,
             controller.onUp(y = 100f, timeMs = 600L, canSkip = false),
         )

@@ -19,18 +19,20 @@ import com.eratw.port.core.entity.VirtualCharaNoRegistry
 import com.eratw.port.core.fn.ENTITY_RUNTIME_SLOT
 import com.eratw.port.core.fn.EntityRuntime
 import com.eratw.port.core.fn.NativeMethodRegistry
+import com.eratw.port.core.host.ConsoleSink
+import com.eratw.port.core.host.InputSink
 import com.eratw.port.core.data.csv.GameDataLoader
 import com.eratw.port.core.mod.ActionExecutionOutcome
 import com.eratw.port.core.mod.DecisionPipeline
 import com.eratw.port.core.mod.DecisionSeed
 import com.eratw.port.core.mod.DecisionState
 import com.eratw.port.core.mod.DecisionStateCodec
+import com.eratw.port.core.mod.DurableInteractionHost
 import com.eratw.port.core.mod.FunctionHookWiring
 import com.eratw.port.core.mod.ModEventWiring
 import com.eratw.port.core.mod.ModHandlerBudget
 import com.eratw.port.core.mod.ModSettingsSnapshot
 import com.eratw.port.core.mod.GameTickDriver
-import com.eratw.port.core.mod.JobInstance
 import com.eratw.port.core.mod.JobSchedulerSnapshot
 import com.eratw.port.core.mod.JobSchedulerStateCodec
 import com.eratw.port.core.mod.ModAudioWiring
@@ -42,11 +44,16 @@ import com.eratw.port.core.mod.ModRuntimeHost
 import com.eratw.port.core.mod.ModRuntimeState
 import com.eratw.port.core.mod.ModResourceStore
 import com.eratw.port.core.mod.ModStorageStore
+import com.eratw.port.core.mod.clearDurableInteractions
+import com.eratw.port.core.mod.globalSectionsSnapshot
+import com.eratw.port.core.mod.loadGlobal
+import com.eratw.port.core.mod.remapDurableContexts
 import com.eratw.port.core.mod.release
 import com.eratw.port.core.mod.putReservedKey
 import com.eratw.port.core.mod.ModTimingLedger
 import com.eratw.port.core.mod.TimePhaseKey
 import com.eratw.port.core.mod.TurnPhaseClock
+import com.eratw.port.core.save.CrossDeviceSidecarStoragePort
 import com.eratw.port.core.save.GlobalSidecarSaveWiring
 import com.eratw.port.core.save.GlobalSidecarStoragePort
 import com.eratw.port.core.save.ModCsvValueCodec
@@ -76,6 +83,7 @@ import com.eratw.port.core.vars.ModCsvCapacityLimitException
 import com.eratw.port.core.vars.ModCsvLoadContext
 import com.eratw.port.core.vars.ModCsvPlanLoader
 import com.eratw.port.core.vars.ModCsvValueBag
+import com.eratw.port.core.vars.ModCsvValueRestorer
 import com.eratw.port.core.vars.SystemLayout
 import com.eratw.port.core.vars.VarDef
 import com.eratw.port.core.vars.VarType
@@ -346,6 +354,8 @@ object ModRuntimeAssembly {
         decisionEntropyTail: () -> ByteArray = ::freshDecisionEntropyTail,
         newHost: (AssemblyInputs) -> ModRuntimeHost = ::defaultHost,
         dexCarriers: DexCarrierProvision? = null,
+        consoleSink: ConsoleSink? = null,
+        inputSink: InputSink? = null,
     ): ModRuntimeSession? {
         // 总闸第一查：关 = 装配链一次都不进（ModRuntimeHost 构造次数 == 0，反向证明①的判据）。
         if (!enabled) return null
@@ -452,6 +462,12 @@ object ModRuntimeAssembly {
             decisionPipeline = decisionPipeline,
         )
         val host = newHost(inputs)
+        if (consoleSink != null && inputSink != null) {
+            host.durableInteractionHost = object : DurableInteractionHost {
+                override val console: ConsoleSink = consoleSink
+                override val input: InputSink = inputSink
+            }
+        }
 
         // ---- 阶段二点六：per-mod 设置快照（RT2 per-mod 配置）----
         // 必须在 install 之前就位：作者的 onLoad 里就可能读 context.settings。
@@ -576,8 +592,8 @@ object ModRuntimeAssembly {
         }
 
         // ---- 阶段五：节拍驱动器（per-active-mod；install 报告 active=false 的包不建 driver） ----
-        // 注册落点就是各 mod context 自己的 phaseRegistry/jobScheduler（ModContextImpl 的
-        // 装配产物，宿主 dispatch 接线按其 KDoc 消费）；跨 mod 派发序 = install 序 = 链接序。
+        // 各 context 的相位注册表独立，任务调度器在 onLoad 前已共享；相位按 install 序派发，
+        // 页边界随后对共享任务调度器统一按全链 priority + 声明序派发一次。
         val drivers = ArrayList<GameTickDriver>(report.size)
         for (state in report) {
             if (!state.active) continue
@@ -603,6 +619,7 @@ object ModRuntimeAssembly {
             projector = projector,
             pkgRegistry = shortIdRegistry,
             virtualNoRegistry = virtualNos,
+            variableStore = store,
         )
         val activePackageIds = report.filter { it.active }.map { it.packageId }.toSet()
         val session = ModRuntimeSession(
@@ -679,9 +696,26 @@ object ModRuntimeAssembly {
         // M1-4 阶段二：注入计划与关键字查询面同源于装载相位上下文（裁定 3：不在这里派生第二份）。
         // 上下文缺席 ⇒ 计划 null / 查询面 null ⇒ 侧车「无 CSV 段」原路（阶段一既有零变化口径）。
         val csvPlan = csvContext?.plan
+        saveService.entityRefCsvPlan = csvPlan
         val csvKeywordIndex = if (csvPlan != null && !csvPlan.isEmpty) {
             { table: String, keyword: String ->
                 runCatching { store.registry.csvTable(table).keywordIndex(keyword) }.getOrNull()
+            }
+        } else {
+            null
+        }
+        port.entityRefDeclarations = { snapshot.entityRefDeclarations.filterKeys { it in session.activePackages } }
+        port.csvRestore = if (csvPlan != null && csvKeywordIndex != null) {
+            { bag, entityRefs, remapTable ->
+                ModCsvValueRestorer.prepare(
+                    store,
+                    csvPlan,
+                    csvKeywordIndex,
+                    bag,
+                    { logSink("mod.rt2 warn: $it") },
+                    entityRefs,
+                    remapTable,
+                )
             }
         } else {
             null
@@ -1120,9 +1154,9 @@ internal class ModDecisionJobState(
     fun decisionStatePayload(): ByteArray = DecisionStateCodec.encode(pipeline.snapshotState())
 
     /**
-     * 任务态段载荷（存档抓取路径调）：全活跃 mod 调度器快照的**会话并集**
-     * （静态键 / 序号表键自带 `packageId::` 前缀、实例自带 packageId，并集无撞键），
-     * `JobSchedulerStateCodec` VERSION 2 字节。无活跃 mod = 空表快照照编（确定性字节）。
+     * 任务态段载荷（存档抓取路径调）：会话共享调度器的单份快照，静态槽含全链声明，动态
+     * 实例与序号表只保留活跃包，`JobSchedulerStateCodec` VERSION 2 字节。无活跃 mod =
+     * 空表快照照编（确定性字节）。
      */
     fun jobStatePayload(): ByteArray = JobSchedulerStateCodec.encode(mergedJobSnapshot())
 
@@ -1148,6 +1182,29 @@ internal class ModDecisionJobState(
         logSink("mod.rt2 决策种子随档采纳 seed=$payloadSeed（原装配种子=$before）")
     }
 
+    /** 纯预检：档内种子可否采纳；不写管线与宿主随机流。 */
+    fun validateSeedFromSave(payloadSeed: Long) {
+        if (payloadSeed != pipeline.currentDecisionSeed) pipeline.validateSeedSupply(payloadSeed)
+    }
+
+    /** 纯预检：按提交后的目标种子验证决策态，不消费/不清空任何状态。 */
+    fun validateDecisionState(state: DecisionState) {
+        if (state.decisionSeed != pipeline.currentDecisionSeed) pipeline.validateSeedSupply(state.decisionSeed)
+        pipeline.validateRestoreState(
+            if (state.decisionSeed == pipeline.currentDecisionSeed) {
+                state
+            } else {
+                state.copy(decisionSeed = pipeline.currentDecisionSeed)
+            },
+        )
+    }
+
+    /** 纯预检共享任务调度器可恢复的活跃包任务态；无活跃包时不写调度器。 */
+    fun validateJobState(snapshot: JobSchedulerSnapshot) {
+        if (activePackages().isEmpty()) return
+        host.jobScheduler.validateRestore(activeJobSnapshot(snapshot))
+    }
+
     /**
      * 决策态回灌（读档缝调，判据 3）：陈旧预留按宿主谓词过滤并留痕（增补 B 口径——
      * 不静默）。种子不符 / 快照畸形 = fail-closed 原样抛（读档缝的既有 catch 收进警告，
@@ -1165,37 +1222,28 @@ internal class ModDecisionJobState(
     }
 
     /**
-     * 任务态回灌（读档缝调，判据 3/5）：会话并集快照按活跃包拆分，逐 mod 喷进各自
-     * 调度器（`JobScheduler.restore` 同款校验 fail-closed）。非活跃包的条目随拆分丢弃
-     * （mod 未安装 = 无宿主可回灌；与孤儿分片「原样保留」不同层：任务态是易失运行态，
-     * 无透传语义，回落「无实例」）。
+     * 任务态回灌（读档缝调）：全链静态槽保留，动态实例与序号表只采纳活跃包，一次覆盖共享
+     * 调度器。非活跃包没有可回灌的运行期宿主，其动态条目仍按既有语义丢弃。
      */
     fun restoreJobState(snapshot: JobSchedulerSnapshot) {
-        for (pkg in activePackages()) {
-            val scheduler = (host.contextOf(pkg) as? ModContextImpl)?.jobScheduler ?: continue
-            scheduler.restore(
-                JobSchedulerSnapshot(
-                    nextFireDays = snapshot.nextFireDays.filterKeys { it.startsWith("$pkg::") },
-                    instances = snapshot.instances.filter { it.packageId == pkg },
-                    nextSeqByTemplate = snapshot.nextSeqByTemplate.filterKeys { it.startsWith("$pkg::") },
-                ),
-            )
-        }
+        if (activePackages().isEmpty()) return
+        host.jobScheduler.restore(activeJobSnapshot(snapshot))
     }
 
-    /** 全活跃 mod 的任务态并集（确定性：snapshot 各自排序，并集按键无歧义）。 */
+    /** 共享任务态只保留活跃包的动态实例与序号，避免跨包重复或恢复已卸载包的实例。 */
+    private fun activeJobSnapshot(snapshot: JobSchedulerSnapshot): JobSchedulerSnapshot {
+        val active = activePackages()
+        return JobSchedulerSnapshot(
+            nextFireDays = snapshot.nextFireDays,
+            instances = snapshot.instances.filter { it.packageId in active },
+            nextSeqByTemplate = snapshot.nextSeqByTemplate.filterKeys { it.substringBefore("::") in active },
+        )
+    }
+
+    /** 会话只有一份共享任务态；静态槽含全链声明，动态实例按活跃包过滤。 */
     private fun mergedJobSnapshot(): JobSchedulerSnapshot {
-        val nextFire = HashMap<String, Long>()
-        val instances = ArrayList<JobInstance>()
-        val nextSeq = HashMap<String, Long>()
-        for (pkg in activePackages()) {
-            val scheduler = (host.contextOf(pkg) as? ModContextImpl)?.jobScheduler ?: continue
-            val snap = scheduler.snapshot()
-            nextFire.putAll(snap.nextFireDays)
-            instances.addAll(snap.instances)
-            nextSeq.putAll(snap.nextSeqByTemplate)
-        }
-        return JobSchedulerSnapshot(nextFire, instances, nextSeq)
+        if (activePackages().isEmpty()) return JobSchedulerSnapshot()
+        return activeJobSnapshot(host.jobScheduler.snapshot())
     }
 }
 
@@ -1739,6 +1787,7 @@ class ModRuntimeSession internal constructor(
         if (shutDown) return
         // 新局 = 新时间线：相位水位清零，下一个边界重新从日始开始。
         turnClock.reset()
+        storage.clearDurableInteractions()
         host.notifyNewGame()
         // ModDX2-A：新局记账当前包版本（首次 = 只记账不回调；旧记账覆写，见下）。
         ensurePackageVersionRecords()
@@ -1759,6 +1808,7 @@ class ModRuntimeSession internal constructor(
         host.notifySaveLoaded()
         // ModDX2-A：读档末尾逐包对账记账版本 vs 当前 manifest 版本（不等即派发迁移回调）。
         reconcilePackageUpgrades()
+        host.resumeDurableInteractions()
     }
 
     /**
@@ -1877,8 +1927,9 @@ class ModRuntimeSession internal constructor(
      * 顺序固定四步：① 兑现转移边界积压的提交（[VmBoundaryScheduler.drainPending]）；
      * ② 读 `DAY`（只读，写入次数必须为 0——ERB 脚本拥有时钟）并由 [TurnPhaseClock] 把
      * 「边界日怎么变」翻成内建相位计划（首边界/回退 = 日始；日变 = 日终 + 日始；同日 = 动作点），
-     * 逐 driver 推进 [GameTickDriver.tickTurn]（逐相位派发 + 空相位 `jobs.runDue`，per-mod
-     * 失败隔离在 core 内）；③ 回合粒度通知（[ModRuntimeHost.notifyTurnBoundary]，只达已启用
+     * 逐 driver 推进 [GameTickDriver.tickTurn]（仅逐相位派发，per-mod 失败隔离在 core 内），
+     * 所有包相位完成后再对全链共享任务调度器派发一次（空相位、仅活跃包）；③ 回合粒度通知
+     * （[ModRuntimeHost.notifyTurnBoundary]，只达已启用
      * mod，时间账本 scope 固定 `lifecycle.onTurnBoundary`）；④ 仲裁外轮（W2-ARDRV 判据 1，
      * [ModArbitrationRound.runOuterRound]）——每页边界**只跑一次**（2026-10-31 真机 OOM
      * 先例的频率纪律：不许每帧轮询），排在 driver 节拍之后（蓝图 §21.3「JobScheduler/相位
@@ -1923,34 +1974,13 @@ class ModRuntimeSession internal constructor(
             val time = GameTime(day = day, phase = "")
             // 主表 + 后期重装追加表：两者消费口径逐位相同（回滚态重装成功后新包也要过边界）。
             val tickDrivers = if (lateDrivers.isEmpty()) drivers else drivers + lateDrivers
-            for (driver in tickDrivers) {
-                val report = try {
-                    driver.tickTurn(day, phasePlan)
-                } catch (t: Throwable) {
-                    logSink("mod.tick driver 异常已隔离（本拍该 mod 旁路）：${t.javaClass.simpleName}: ${t.message}")
-                    continue
-                }
-                // 报告消费：失败逐条记诊断 + 上日志面（不静默）；有活动的拍留一行读数。
-                for (failure in report.phase.failures) {
-                    recordFailureDiagnostic(time, DiagnosticDomain.PHASE, failure.packageId, failure.phase, failure.cause)
-                    logSink(
-                        "mod.tick 相位处理器失败 pkg=${failure.packageId} phase=${failure.phase} " +
-                            "${failure.cause.javaClass.simpleName}: ${failure.cause.message}",
-                    )
-                }
-                for (failure in report.jobs.failures) {
-                    recordFailureDiagnostic(time, DiagnosticDomain.JOB, failure.packageId, failure.jobId, failure.cause)
-                    logSink(
-                        "mod.tick 任务处理器失败 pkg=${failure.packageId} job=${failure.jobId} " +
-                            "${failure.cause.javaClass.simpleName}: ${failure.cause.message}",
-                    )
-                }
-                if (report.firedPhaseHandlers > 0 || report.firedJobs > 0) {
-                    logSink(
-                        "mod.tick day=$day phaseHandlers=${report.firedPhaseHandlers} jobs=${report.firedJobs} " +
-                            "phases=${report.plannedPhases.joinToString(",")}",
-                    )
-                }
+            val ticks = dispatchPhaseTicks(tickDrivers, day, phasePlan, time)
+            val firedJobs = if (tickDrivers.isEmpty()) 0 else dispatchSharedJobs(time)
+            if (ticks.firedHandlers > 0 || firedJobs > 0) {
+                logSink(
+                    "mod.tick day=$day phaseHandlers=${ticks.firedHandlers} jobs=$firedJobs " +
+                        "phases=${ticks.plannedPhases.joinToString(",")}",
+                )
             }
             // ③ 回合粒度通知：相位派发之后、仲裁之前（mod 看到本边界推进后的世界状态）。
             host.notifyTurnBoundary()
@@ -1975,6 +2005,74 @@ class ModRuntimeSession internal constructor(
             // 兜底隔离：节拍绝不把异常抛回页边界；留痕即不静默。
             logSink("mod.tick 边界异常已隔离：${t.javaClass.simpleName}: ${t.message}")
         }
+    }
+
+    /** 页边界相位派发的汇总读数（宿主日志面共用；纯值容器，无状态）。 */
+    private class PhaseTickSummary {
+        var firedHandlers: Int = 0
+        val plannedPhases: MutableSet<String> = LinkedHashSet()
+    }
+
+    /**
+     * 逐 driver 派发本边界相位（runJobs = false：任务态改由共享调度器在全部相位之后统一推进）。
+     *
+     * 失败隔离口径：单个 driver 抛异常只旁路该包的相位，不中断其余包；处理器失败照旧逐条记
+     * PHASE 域诊断并上日志面（P2-1：不静默）。
+     */
+    private fun dispatchPhaseTicks(
+        tickDrivers: List<GameTickDriver>,
+        day: Long,
+        phasePlan: List<String>,
+        time: GameTime,
+    ): PhaseTickSummary {
+        val summary = PhaseTickSummary()
+        for (driver in tickDrivers) {
+            val report = try {
+                driver.tickTurn(day, phasePlan, runJobs = false)
+            } catch (t: Throwable) {
+                logSink("mod.tick driver 异常已隔离（本拍该 mod 相位旁路）：${t.javaClass.simpleName}: ${t.message}")
+                continue
+            }
+            summary.firedHandlers += report.firedPhaseHandlers
+            summary.plannedPhases += report.plannedPhases
+            for (failure in report.phase.failures) {
+                recordFailureDiagnostic(
+                    time,
+                    DiagnosticDomain.PHASE,
+                    failure.packageId,
+                    failure.phase,
+                    failure.cause,
+                )
+                logSink(
+                    "mod.tick 相位处理器失败 pkg=${failure.packageId} phase=${failure.phase} " +
+                        "${failure.cause.javaClass.simpleName}: ${failure.cause.message}",
+                )
+            }
+        }
+        return summary
+    }
+
+    /**
+     * 共享调度器在本边界的**唯一**一次推进（全部相位派发之后）。
+     *
+     * 只推进活跃包；无 driver = 无 mod 会话，整拍旁路（golden 零变化）。调度器异常与处理器
+     * 失败都只留在本拍，不抛回页边界。
+     */
+    private fun dispatchSharedJobs(time: GameTime): Int {
+        val jobReport = try {
+            host.jobScheduler.runDue(time, activePackages)
+        } catch (t: Throwable) {
+            logSink("mod.tick 共享任务调度异常已隔离：${t.javaClass.simpleName}: ${t.message}")
+            return 0
+        }
+        for (failure in jobReport.failures) {
+            recordFailureDiagnostic(time, DiagnosticDomain.JOB, failure.packageId, failure.jobId, failure.cause)
+            logSink(
+                "mod.tick 任务处理器失败 pkg=${failure.packageId} job=${failure.jobId} " +
+                    "${failure.cause.javaClass.simpleName}: ${failure.cause.message}",
+            )
+        }
+        return jobReport.fired.size
     }
 
     /**
@@ -2126,10 +2224,10 @@ class ModRuntimeSession internal constructor(
  *
  * 槽档与 global 两个面共用同一份分片源（会话 ModStorageStore）与同一份 SaveService：
  * GLOBAL 域的 Mod 载体（PersistenceDomains.routeOf：Mod + GLOBAL → GLOBAL_RT2）今天
- * 物理上就是会话级 ModStorageStore 本身，SAVEGLOBAL 抓的分片与 SAVEGAME 抓的分片
- * 是同一次 `sectionsSnapshot` 的同一批段；差别只在容器与恢复语义——global 走
- * [SaveService.captureGlobalBundle]（实体载荷恒空）+ [SaveService.restoreGlobalBundle]
- * （只交还分片，不并注册表、不灌内核），槽档走 captureBundle + restoreBundle。
+ * 物理上就是会话级 ModStorageStore 本身，SAVEGLOBAL 与 SAVEGAME 都从它取段；但 durable
+ * 剧情 checkpoint 只属槽档，global 抓取排除它、恢复保留当前槽值，不被旧 global 覆盖。
+ * 容器与恢复语义仍分别走 [SaveService.captureGlobalBundle] / [SaveService.restoreGlobalBundle]
+ * （global 实体载荷恒空、不灌内核）与槽档 captureBundle + restoreBundle。
  *
  * 绑定失配 / 容器损坏都只上日志面 + 返回 false（fail-closed 不静默），不外抛打中断读档。
  */
@@ -2144,7 +2242,7 @@ internal class ModSidecarStoragePort(
     /** 决策/任务态缝（W1-DSTATE 判据 1/3；抓取与回灌都经它，null = 未装配 = 无状态段）。 */
     private val decisionStateProvider: () -> ModDecisionJobState?,
     private val logSink: (String) -> Unit,
-) : SidecarStoragePort, GlobalSidecarStoragePort {
+) : SidecarStoragePort, CrossDeviceSidecarStoragePort, GlobalSidecarStoragePort {
 
     /**
      * 抓取时的**跳过集**（task-134 ②）：显式卸载过的包，其分段不再随新存档写出
@@ -2157,13 +2255,30 @@ internal class ModSidecarStoragePort(
      */
     internal var reclaimedPackages: () -> Set<String> = { emptySet() }
 
-    override fun captureChunks(csv: ModCsvValueBag): SidecarChunkGroups {
+    /** 当前 freeze 的激活包声明；空外层 = 旧装配/纯测试的 v2 零变化路径。 */
+    internal var entityRefDeclarations: () -> Map<String, Map<String, com.eratw.port.core.patch.EntityRefScope>> =
+        { emptyMap() }
+
+    /** CSV 写回与侧车其余状态同一提交序列；null = 保持 FileSystemOps 的旧回落路径。 */
+    internal var csvRestore: ((
+        ModCsvValueBag,
+        Map<String, Map<String, com.eratw.port.core.patch.EntityRefScope>>,
+        com.eratw.port.core.entity.EntityIdRemapTable,
+    ) -> ModCsvValueRestorer.Prepared)? = null
+
+    override fun captureChunks(csv: ModCsvValueBag): SidecarChunkGroups =
+        captureChunks(storageProvider().sectionsSnapshot(), csv)
+
+    private fun captureChunks(
+        sections: List<com.eratw.port.core.mod.ModStorageSection>,
+        csv: ModCsvValueBag = ModCsvValueBag.EMPTY,
+    ): SidecarChunkGroups {
         val byPackage = csv.byPackage()
         val active = ArrayList<PackageChunk>()
         val orphan = ArrayList<PackageChunk>()
         val reclaimed = reclaimedPackages()
         var skipped = 0
-        for (section in storageProvider().sectionsSnapshot()) {
+        for (section in sections) {
             // 显式卸载回收（task-134）：已释放包的段整段不写。孤儿段与激活段同口径——
             // 卸载后重启读档会把这个段读回容器（读侧不舍弃历史档），靠这里让它减在下次存档。
             if (section.packageId in reclaimed) {
@@ -2191,7 +2306,12 @@ internal class ModSidecarStoragePort(
         activeChunks: List<PackageChunk>,
         orphanChunks: List<PackageChunk>,
     ): ByteArray {
-        val base = saveService.captureBundle(binding, activeChunks, orphanChunks)
+        val base = saveService.captureBundle(
+            binding,
+            activeChunks,
+            orphanChunks,
+            activeEntityRefs = entityRefDeclarations(),
+        )
         // W1-DSTATE 判据 1/3：SaveService 组装的分段原样保留，追加决策态段 + 任务态段
         // （载荷取自会话缝快照；缝缺席/载荷空 = 旧档同形，SidecarSaveBundle 的
         // 「都写或都不写」纪律）。段口径与 global 档共用 [stateSegmentsForSave]。
@@ -2202,6 +2322,7 @@ internal class ModSidecarStoragePort(
             chunks = base.chunks,
             virtualNoSnapshot = base.virtualNoSnapshot,
             stateSegments = stateSegmentsForSave(),
+            entityRefDeclarationPayload = base.entityRefDeclarationPayload,
         ).encode()
     }
 
@@ -2216,67 +2337,85 @@ internal class ModSidecarStoragePort(
         return SidecarStateSegments(state.decisionStatePayload(), state.jobStatePayload())
     }
 
-    override fun restoreRt2(bytes: ByteArray, binding: SidecarBinding): SidecarRestoreResult {
+    override fun restoreRt2(bytes: ByteArray, binding: SidecarBinding): SidecarRestoreResult =
+        restoreRt2(bytes, binding, crossDevice = false)
+
+    override fun restoreRt2(
+        bytes: ByteArray,
+        binding: SidecarBinding,
+        crossDevice: Boolean,
+    ): SidecarRestoreResult {
         val bundle = SidecarSaveBundle.decode(bytes)
-        return when (val outcome = saveService.restoreBundle(bundle, binding)) {
-            is SaveService.RestoreOutcome.Applied -> {
-                val sections = bundle.chunks.flatMap { chunk ->
-                    com.eratw.port.core.mod.ModStorageSectionCodec.decode(
-                        ModCsvValueCodec.decode(chunk.payload).storage,
-                        activePackages(),
-                    )
-                }
-                val rebuilt = ModStorageStore.load(
-                    com.eratw.port.core.mod.ModStorageSectionCodec.encode(sections),
-                    knownPackages = activePackages(),
-                )
-                adoptStorage(rebuilt)
-                // W1-DSTATE 判据 3：决策态/任务态回灌。旧档无段 = 空载荷跳过（回落口径）；
-                // 缝未装配 = 状态段无处可回灌（fail-closed 上日志面，不静默丢）；
-                // 坏段/种子不符 = codec 或 restoreState fail-closed 原样抛（读档缝的既有
-                // catch 收警告，「恢复中途失败」不吞、不新造放宽）。
-                val decisionState = decisionStateProvider()
-                if (decisionState == null) {
-                    if (bundle.decisionStatePayload.isNotEmpty() || bundle.jobStatePayload.isNotEmpty()) {
-                        logSink("mod.rt2 warn 容器带决策/任务态段但本会话未装配决策缝，状态段未回灌")
-                    }
-                } else {
-                    if (bundle.decisionStatePayload.isNotEmpty()) {
-                        val decoded = DecisionStateCodec.decode(bundle.decisionStatePayload)
-                        // W2-SEED 判据 2：档内种子先采纳（相等 = no-op 走原闸；不等 =
-                        // supplySeed fail-closed），相等闸语义不动、只补供给序。
-                        decisionState.adoptSeedFromSave(decoded.decisionSeed)
-                        decisionState.restoreDecisionState(decoded)
-                    }
-                    if (bundle.jobStatePayload.isNotEmpty()) {
-                        decisionState.restoreJobState(
-                            JobSchedulerStateCodec.decode(bundle.jobStatePayload),
-                        )
-                    }
-                }
-                // CSV 值只并激活包：孤儿片的注入值不写回变量池（禁用期间不覆盖当前档）。
-                val csv = ModCsvValueCodec.mergeApplied(bundle.chunks, activePackages())
-                logSink(
-                    "mod.rt2 restore ok chunks=${bundle.chunks.size} " +
-                        "packages=${rebuilt.packages().size} active=${activePackages().size} csv=${csv.size}",
-                )
-                SidecarRestoreResult(true, csv)
-            }
-            is SaveService.RestoreOutcome.BindingMismatch -> {
-                logSink(
-                    "mod.rt2 绑定失配，扩展状态未应用（期望=$binding 实际=${outcome.actual}）；" +
-                        "以 Base 状态继续运行",
-                )
-                SidecarRestoreResult(false)
-            }
+        val prepared = saveService.prepareSlotRestore(
+            bundle,
+            binding,
+            activeEntityRefs = entityRefDeclarations(),
+            crossDevice = crossDevice,
+        )
+        if (prepared is SaveService.SlotRestorePreparation.BindingMismatch) {
+            logSink(
+                "mod.rt2 绑定失配，扩展状态未应用（期望=$binding 实际=${prepared.actual}）；" +
+                    "以 Base 状态继续运行",
+            )
+            return SidecarRestoreResult(false)
         }
+        val ready = prepared as SaveService.SlotRestorePreparation.Ready
+        val active = activePackages()
+        val sections = bundle.chunks.flatMap { chunk ->
+            com.eratw.port.core.mod.ModStorageSectionCodec.decode(
+                ModCsvValueCodec.decode(chunk.payload).storage,
+                active,
+            )
+        }
+        val rebuilt = ModStorageStore.load(
+            com.eratw.port.core.mod.ModStorageSectionCodec.encode(sections),
+            knownPackages = active,
+        ).remapDurableContexts(ready.remapTable)
+        val decisionState = decisionStateProvider()
+        val hasState = bundle.decisionStatePayload.isNotEmpty() || bundle.jobStatePayload.isNotEmpty()
+        if (hasState && decisionState == null) {
+            throw IllegalStateException("容器带决策/任务态段但本会话未装配决策缝，拒绝提交半恢复状态")
+        }
+        val decodedDecision = if (bundle.decisionStatePayload.isEmpty()) {
+            null
+        } else {
+            DecisionStateCodec.decode(bundle.decisionStatePayload)
+        }
+        val decodedJob = if (bundle.jobStatePayload.isEmpty()) {
+            null
+        } else {
+            JobSchedulerStateCodec.decode(bundle.jobStatePayload)
+        }
+        decodedDecision?.let { state ->
+            decisionState!!.validateSeedFromSave(state.decisionSeed)
+            decisionState.validateDecisionState(state)
+        }
+        decodedJob?.let { decisionState!!.validateJobState(it) }
+        val csv = ModCsvValueCodec.mergeApplied(bundle.chunks, active)
+        val csvPrepared = csvRestore?.invoke(csv, ready.entityRefDeclarations, ready.remapTable)
+
+        // 全部可失败校验已在上方完成；这才进入唯一提交序列。
+        ready.commit()
+        adoptStorage(rebuilt)
+        decodedDecision?.let { state ->
+            decisionState!!.adoptSeedFromSave(state.decisionSeed)
+            decisionState.restoreDecisionState(state)
+        }
+        decodedJob?.let { decisionState!!.restoreJobState(it) }
+        csvPrepared?.commit()
+        logSink(
+            "mod.rt2 restore ok chunks=${bundle.chunks.size} " +
+                "packages=${rebuilt.packages().size} active=${active.size} csv=${csv.size}",
+        )
+        return SidecarRestoreResult(true, csv, csvApplied = csvPrepared != null)
     }
 
     /**
-     * global.rt2 分片抓取：与槽档 [captureChunks] 同源同构（同一份 sectionsSnapshot、
-     * 同一种 MST1 片载荷）——GLOBAL 域 Mod 载体的物理位就是会话 ModStorageStore 本身。
+     * global.rt2 分片抓取与槽档同构，但排除只属于 saveNN.rt2 的 durable 剧情 checkpoint。
+     * GLOBAL 恢复因此不能覆盖当前槽尚未走完的剧情。
      */
-    override fun captureGlobalChunks(): SidecarChunkGroups = captureChunks()
+    override fun captureGlobalChunks(): SidecarChunkGroups =
+        captureChunks(storageProvider().globalSectionsSnapshot())
 
     /**
      * global.rt2 容器：走 [SaveService.captureGlobalBundle]（实体载荷恒空、虚拟 NO 恒空），
@@ -2296,7 +2435,12 @@ internal class ModSidecarStoragePort(
         activeChunks: List<PackageChunk>,
         orphanChunks: List<PackageChunk>,
     ): ByteArray {
-        val base = saveService.captureGlobalBundle(binding, activeChunks, orphanChunks)
+        val base = saveService.captureGlobalBundle(
+            binding,
+            activeChunks,
+            orphanChunks,
+            activeEntityRefs = entityRefDeclarations(),
+        )
         return SidecarSaveBundle(
             binding = base.binding,
             registrySnapshot = base.registrySnapshot,
@@ -2304,6 +2448,7 @@ internal class ModSidecarStoragePort(
             chunks = base.chunks,
             virtualNoSnapshot = base.virtualNoSnapshot,
             stateSegments = stateSegmentsForSave(),
+            entityRefDeclarationPayload = base.entityRefDeclarationPayload,
         ).encode()
     }
 
@@ -2330,51 +2475,51 @@ internal class ModSidecarStoragePort(
      */
     override fun restoreGlobalRt2(bytes: ByteArray, binding: SidecarBinding): Boolean {
         val bundle = SidecarSaveBundle.decode(bytes)
-        return when (val outcome = saveService.restoreGlobalBundle(bundle, binding)) {
-            is SaveService.GlobalRestoreOutcome.Applied -> {
-                val sections = outcome.chunks.flatMap { chunk ->
-                    com.eratw.port.core.mod.ModStorageSectionCodec.decode(
-                        ModCsvValueCodec.decode(chunk.payload).storage,
-                        activePackages(),
-                    )
-                }
-                val rebuilt = ModStorageStore.load(
-                    com.eratw.port.core.mod.ModStorageSectionCodec.encode(sections),
-                    knownPackages = activePackages(),
-                )
-                adoptStorage(rebuilt)
-                // W2-SEED 的 global 对齐面：段内决策种子按槽档同一采纳序恢复（复用
-                // adoptSeedFromSave 的「相等 = no-op」短路）。旧档无段 = 空载荷 = 无种子可
-                // 采纳，与增补前行为逐位相同。
-                if (bundle.decisionStatePayload.isNotEmpty()) {
-                    val decisionState = decisionStateProvider()
-                    if (decisionState == null) {
-                        logSink(
-                            "mod.global.rt2 warn 容器带决策种子段但本会话未装配决策缝，种子段未采纳",
-                        )
-                    } else {
-                        decisionState.adoptSeedFromSave(
-                            DecisionStateCodec.decode(bundle.decisionStatePayload).decisionSeed,
-                        )
-                    }
-                }
-                logSink(
-                    "mod.global.rt2 restore ok chunks=${outcome.chunks.size} " +
-                        "packages=${rebuilt.packages().size} active=${activePackages().size}",
-                )
-                // 恢复完成安全点（ModDX-4 RT2）：成功路径最后一个语句——此后才可读恢复态；
-                // 失败 / 中断路径（失配返回 false、异常上抛）到不了这里，fail-closed。
-                markGlobalRestoreComplete(rebuilt, outcome.chunks.size)
-                true
-            }
-            is SaveService.GlobalRestoreOutcome.BindingMismatch -> {
-                logSink(
-                    "mod.global.rt2 绑定失配，全局扩展状态未应用（期望=$binding 实际=${outcome.actual}）；" +
-                        "以 Base 状态继续运行",
-                )
-                false
-            }
+        val prepared = saveService.prepareGlobalRestore(
+            bundle,
+            binding,
+            activeEntityRefs = entityRefDeclarations(),
+        )
+        if (prepared is SaveService.GlobalRestorePreparation.BindingMismatch) {
+            logSink(
+                "mod.global.rt2 绑定失配，全局扩展状态未应用（期望=$binding 实际=${prepared.actual}）；" +
+                    "以 Base 状态继续运行",
+            )
+            return false
         }
+        val ready = prepared as SaveService.GlobalRestorePreparation.Ready
+        val active = activePackages()
+        val sections = ready.chunks.flatMap { chunk ->
+            com.eratw.port.core.mod.ModStorageSectionCodec.decode(
+                ModCsvValueCodec.decode(chunk.payload).storage,
+                active,
+            )
+        }
+        val rebuilt = ModStorageStore.loadGlobal(
+            com.eratw.port.core.mod.ModStorageSectionCodec.encode(sections),
+            knownPackages = active,
+            slotStore = storageProvider(),
+        )
+        val decisionState = decisionStateProvider()
+        val decodedDecision = if (bundle.decisionStatePayload.isEmpty()) {
+            null
+        } else {
+            DecisionStateCodec.decode(bundle.decisionStatePayload)
+        }
+        if (decodedDecision != null && decisionState == null) {
+            throw IllegalStateException("global.rt2 带决策种子段但本会话未装配决策缝，拒绝提交半恢复状态")
+        }
+        decodedDecision?.let { decisionState!!.validateSeedFromSave(it.decisionSeed) }
+
+        ready.commit()
+        adoptStorage(rebuilt)
+        decodedDecision?.let { decisionState!!.adoptSeedFromSave(it.decisionSeed) }
+        logSink(
+            "mod.global.rt2 restore ok chunks=${ready.chunks.size} " +
+                "packages=${rebuilt.packages().size} active=${active.size}",
+        )
+        markGlobalRestoreComplete(rebuilt, ready.chunks.size)
+        return true
     }
 
     /**

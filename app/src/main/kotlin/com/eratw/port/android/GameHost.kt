@@ -1436,6 +1436,9 @@ class GameHost(
 
         trace.forceGc("meta")
         val metadata = metaTask?.await() ?: BootMetadata.read(metaFile.toPath())
+        // 导入链性能波：把本会话已算好的产物借给导入链（侧车解析 2.9s + mmap 1.6s 不再重付）。
+        // 按文件身份戳借用，换包自动失效；详见 BaseArtifactCache。
+        BaseArtifactCache.publish(programFile, metaFile, program, metadata)
         trace.mark("meta")
         if (closed) return null
         // 侧车装载警告捕获（DBG-TOOLING 波）：erbcc 编译期告警随 program.meta 落盘（file/line/
@@ -1582,6 +1585,8 @@ class GameHost(
             // （HAS_SUPER 判据源随链走；旁路 modChain == null 时为 null = 未装配语义）。
             catalog = modChain?.catalog,
             dexCarriers = dexCarriers,
+            consoleSink = fresh.console,
+            inputSink = fresh.inputSink,
         )
         // 作者面语言码：壳层这里已按唯一单路取好语言（`:244` settingsLanguage），装配层拿不到
         // Android Context、也不许自判 Locale，故由壳层注入给宿主，供 `context.strings.of()` 用。
@@ -2298,6 +2303,13 @@ class GameHost(
         session?.console?.isCurrentGeneration(value) ?: false
 
     fun awaitingAnyKey(): Boolean = session?.inputSink?.awaitingAnyKey == true
+
+    /** 当前任意键等待是否禁止跳过（`FORCEWAIT` 的 `stopMesSkip`）；取值等待/无等待 = false。 */
+    fun awaitingAnyKeyStopsSkip(): Boolean =
+        session?.inputSink?.awaitingAnyKeyStopSkip == true
+
+    /** 等待点序号（单调）：跳过开关用它给「同一等待只补一次 skip」去重。 */
+    fun inputWaitGeneration(): Long = session?.inputSink?.waitGeneration ?: 0L
 
     fun textBoxHost(): TextBoxHost? = session?.builtinHost?.textBox
 

@@ -23,7 +23,7 @@ import java.nio.file.Files
  * 3. **源变重编**：源更新后重编走**导入链同一条**编译链（`ModImportController.compileToModule`），
  *    原子替换 `.erbm`/`.manifest` 并刷新内容指纹，**packageId 不变**（包身份 = 源名集合，
  *    不随内容变）。
- * 4. **失败保留旧件**：编译失败（I6 全局 #DIM 被拒）返回 [RecompileResult.Failed]，盘上
+ * 4. **失败保留旧件**：编译失败（函数内 GLOBAL #DIM 被拒）返回 [RecompileResult.Failed]，盘上
  *    `.erbm`/`.manifest` 字节逐字不变（半成品不落盘）。
  * 5. **坏 `.sources`**：名单为空/不可解析 ⇒ [RecompileResult.Skipped]（与「up-to-date」两种
  *    Skipped 用 reason 分开，页面上文案不同）。
@@ -86,8 +86,8 @@ class ModRecompileTest {
         RETURN 0
     """.trimIndent() + "\n"
 
-    /** 导入链会拒绝的坏源（全局 #DIM 走 I6 拒载，`ModImportControllerTest` 同源夹具）。 */
-    private val rejectedSource = "#DIM GLOBAL_COUNT = 5\n\n@B_GLOBAL\nRETURN 0\n"
+    /** 导入链会拒绝的坏源（函数内 GLOBAL #DIM 原版装载错误，`ModImportControllerTest` 同源夹具）。 */
+    private val rejectedSource = "@B_GLOBAL\n#DIM GLOBAL G_SIDE, 1\nRETURN 0\n"
 
     private fun contextOf(): BaseCompileContext =
         BaseCompileContext(miniMetadata(), miniBaseCounts(), BASE_SHA, csvDir = null)

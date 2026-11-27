@@ -74,6 +74,14 @@ object ShellMotion {
     const val PAGE_IN_MILLIS = 220
     const val PAGE_OUT_MILLIS = 140
 
+    /**
+     * 页内换档（设置页 PORT / ENGINE / MOD / ABOUT 换内容）：比通用内容切换短一档。
+     *
+     * 换档是「同一块面板换内容」，不是整页翻：玩家手还在屏上，拖太长会像卡了一下。
+     * 只配 alpha / 轻微位移这类便宜动作，别在换档里做整块高度动画。
+     */
+    const val ZONE_MILLIS = 180
+
     /** 翻页横移的除数：页宽的 1/12 就够读出「往哪边翻」，整屏滑会晕。 */
     private const val PAGE_SLIDE_DIVISOR = 12
 
@@ -168,6 +176,9 @@ object ShellMotion {
 
     /** 分段选择器指示块规格。 */
     fun <T> segment(): TweenSpec<T> = tween(durationMillis = SEGMENT_MILLIS, easing = Standard)
+
+    /** 页内换档规格（设置页四档换内容的整块淡入）。 */
+    fun <T> zone(): TweenSpec<T> = tween(durationMillis = ZONE_MILLIS, easing = Standard)
 
     /** 持续态 180° 旋转规格（螺旋展开、齿轮转身）。 */
     val Turn: TweenSpec<Float> = tween(durationMillis = TURN_MILLIS, easing = Emphasized)

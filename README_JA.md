@@ -39,7 +39,7 @@
 | `tools/apkpack/` | APK 内容の自己検査：マニフェスト / シャード / STORED / 圧縮口径の照合 |
 | `tools/report-endpoint/` | エラーレポート用 Cloudflare Worker テンプレート（ドメインと KV id はプレースホルダ） |
 | `docs/` | 設計ドキュメント、golden 取得手順、操作可能なプロトタイプ。索引は [docs/README.md](docs/README.md) |
-| `badges/` | プレイヤー数 / アクティブ数バッジのフォールバック用スナップショット（README は Worker の shields 端点を直読みするため反映は数分遅れ。CI がこの JSON を定期更新し、端点の障害・移転時はバッジ 2 行を raw.githubusercontent に戻せる） |
+| `badges/` | プレイヤー数 / アクティブ数 / ダウンロード数バッジのリポジトリ内 SVG（README はこの 3 枚の SVG を直読みし、CI が定期的に再生成する。shields の動的エンドポイントがプロキシ越しにタイムアウトする問題を回避するため）。同ディレクトリの JSON は SVG のデータソース |
 | `gradle/libs.versions.toml` | 依存座標と Android / Kotlin バージョンの単一ソース |
 
 ## ビルド

@@ -19,6 +19,14 @@ internal data class ModImportRequest(
     val copy: ModImportCopy,
     val modRuntimeEnabled: Boolean,
     val codeGateEnabled: Boolean,
+    /**
+     * 加密 zip 的解压密码；null = 本次没密码（碰到加密包就停在
+     * [ModImportFailureKind.PASSWORD] 面上，等壳层问玩家要）。
+     *
+     * 只有「上一次导入报了 PASSWORD」的**重试**才会带值：普通导入永远是 null，
+     * 不做任何猜测性尝试。
+     */
+    val password: String? = null,
 )
 
 /**
@@ -44,6 +52,7 @@ internal fun modImportEventFor(
             request.picked,
             copy,
             modRuntimeEnabled = request.modRuntimeEnabled,
+            password = request.password,
         )
         val readFailure = if (request.readErrors.isEmpty()) {
             null
@@ -60,7 +69,12 @@ internal fun modImportEventFor(
             copy.fill(copy.allReadsFailedFormat, request.readErrors.joinToString("\n")),
         )
     } else {
-        controller.import(request.picked, copy, modRuntimeEnabled = request.modRuntimeEnabled)
+        controller.import(
+            request.picked,
+            copy,
+            modRuntimeEnabled = request.modRuntimeEnabled,
+            password = request.password,
+        )
     }
     return when (outcome) {
         is ModImportOutcome.Imported -> ModImportEvent.ImportSucceeded(outcome.detail, report)

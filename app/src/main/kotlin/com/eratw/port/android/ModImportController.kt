@@ -82,7 +82,17 @@ class PickedModFile(
 class BaseCompileContext(
     val metadata: BootMetadata,
     val baseCounts: PatchCompiler.BaseCounts,
-    val baseSha256: String,
+    /**
+     * base `program.erbc` 的 SHA-256 提供口（**按需计算**）。
+     *
+     * 2026-11-27 导入性能波：该摘要唯一消费者是 `.patch` 补丁头的 `base-sha256` 字段，
+     * 而 RT2 导入链（`.erbm` + `.manifest`）从不写补丁头、也从不读这个字段 —— 生产面
+     * 一次都没有读过它。旧实现却在**每次导入**开头对 364 MiB 产物做一遍流式 SHA-256
+     * （真机实测 1.4 s 量级，占整链 11%）。改成惰性后：没人读 = 一次都不算。
+     *
+     * 保留字段与语义（谁要写 `.patch` 头就现取现算），只是不再替所有人预付这笔钱。
+     */
+    private val baseSha256Provider: () -> String,
     val csvDir: File?,
     /**
      * base 侧车签名段查询口（大写归一函数键 → 规范指纹串；无该键或无签名段 ⇒ 空串）。
@@ -92,7 +102,19 @@ class BaseCompileContext(
      * （spec: SymbolCatalog.kt:213-237），届时的报错是启动砖化而不是导入页文案。
      */
     val baseSignatures: (String) -> String = { "" },
-)
+) {
+    /** 惰性摘要（导入链单线程使用，不需要同步开销）。 */
+    val baseSha256: String by lazy(LazyThreadSafetyMode.NONE) { baseSha256Provider() }
+
+    /** 既有调用形态（直接给摘要串）：单测与合成上下文走这条，行为逐字不变。 */
+    constructor(
+        metadata: BootMetadata,
+        baseCounts: PatchCompiler.BaseCounts,
+        baseSha256: String,
+        csvDir: File?,
+        baseSignatures: (String) -> String = { "" },
+    ) : this(metadata, baseCounts, { baseSha256 }, csvDir, baseSignatures)
+}
 
 /**
  * base 编译上下文的读取口。抽象成接口只为单测：端到端单测注入手工构造的
@@ -133,9 +155,11 @@ object ProductionBaseCompileContextSource : BaseCompileContextSource {
         if (!metaFile.isFile) {
             throw IOException("侧车缺失：${metaFile.absolutePath}（program.meta 必须与 program.erbc 配对存在）")
         }
-        // 流式摘要：program.erbc 量级 328 MB，绝不整份读进堆再 digest。
-        val sha = fileSha256Hex(programFile)
-        val program = ProgramLoader.loadMapped(programFile.toPath())
+        // 产物 364 MiB：只做 mmap 取六计数，摘要改成惰性（见下方构造点的注释）。
+        // 会话已装载过同一份产物时直接借用（BaseArtifactCache）：导入链不再重付
+        // 「mmap 解包 1.6s + 侧车解析 2.9s」，文件戳不符则照旧现读。
+        val borrowed = BaseArtifactCache.borrow(programFile, metaFile)
+        val program = borrowed?.first ?: ProgramLoader.loadMapped(programFile.toPath())
         val counts = PatchCompiler.BaseCounts(
             instructionCount = program.instructionCount,
             functionCount = program.functions.size,
@@ -144,11 +168,13 @@ object ProductionBaseCompileContextSource : BaseCompileContextSource {
             longCount = program.constantCount,
             exprCount = program.exprCount,
         )
-        val metadata = BootMetadata.read(metaFile.toPath())
+        val metadata = borrowed?.second ?: BootMetadata.read(metaFile.toPath())
         return BaseCompileContext(
             metadata,
             counts,
-            sha,
+            // 惰性摘要：导入链一次都不读它（见 BaseCompileContext.baseSha256Provider），
+            // 这里只把「怎么算」交进去，不再替所有人先算 364 MiB。
+            { fileSha256Hex(programFile) },
             File(gameRoot, "CSV"),
             // 覆盖声明的签名来源：侧车尾段的大写归一指纹查询口（读不到 ⇒ 恒空串 ⇒
             // 撞名维持 I6-② 硬拒，绝不产出装配期必被签名闸炸掉的半成品覆盖）。
@@ -191,6 +217,22 @@ enum class ModImportFailureKind {
 
     /** 存储面失败（ModStore 拒收 / 目录建不出 / 落盘失败 / SAF 读取失败）。 */
     STORAGE,
+
+    /**
+     * 加密 zip 需要解压密码（或密码不对）。
+     *
+     * 单列一类的理由：这是**玩家可修复**的失败（输入密码即可），与「包坏了 / 盘满了」
+     * 不同处置；壳层据此弹密码框重试，而不是只把一句报错丢给玩家。
+     */
+    PASSWORD,
+
+    /**
+     * 选中的是 RAR / 7z / tar.gz 这类**纯 JVM 解不开**的容器（[ModArchiveFormats]）。
+     *
+     * 与 [PASSWORD] 同属「玩家可修复」，但修法不同：那条是输密码，这条是先解压 / 重打成
+     * zip。混进 [STORAGE] 会让玩家去查剩余空间，方向就错了。
+     */
+    ARCHIVE,
 
     /** 未预期异常（防御兜底；文案带异常类名，绝不静默吞）。 */
     UNEXPECTED,
@@ -511,6 +553,14 @@ class ModImportController(
      * 不改那条已入 detekt baseline 的长签名（改签名会让整条存量违例重新上闸）。
      */
     private val codeGateEnabled: Boolean = true,
+    /**
+     * 进度出口（UI 线程外的唯一回传口）：每进入一个相位 / 推进一项就发一发
+     * [ModImportProgress]。null = 不需要进度（重编路径，以及既有单测）——整条链零开销。
+     *
+     * 放在构造器而不是 [import] 形参，是为了不把那条已入 detekt baseline 的长签名再拉长
+     * （与 [codeGateEnabled] 同一条口径）。
+     */
+    private val onProgress: ((ModImportProgress) -> Unit)? = null,
 ) {
 
     /**
@@ -542,10 +592,20 @@ class ModImportController(
          * [PatchImportTranscoder.OverrideInputs] 的 `allowList`。
          */
         declaredOverrides: List<String>? = null,
+        /**
+         * 加密 zip 的解压密码（壳层在「上次导入返回 [ModImportFailureKind.PASSWORD]」后
+         * 让玩家输入再重试）。null = 没密码：碰到加密包直接返回 PASSWORD 失败面，
+         * 不做任何猜测性尝试（ZipCrypto 的 1/256 校验字节碰巧命中会解出垃圾）。
+         */
+        password: String? = null,
     ): ModImportOutcome {
         if (files.isEmpty()) {
             return ModImportOutcome.Failed(ModImportFailureKind.STORAGE, copy.noFilesPicked)
         }
+        // 进度出口（UI 进度条的唯一来源）：相位推进只在本函数与 [compileToModule] 两处发生，
+        // 每一处都对应真实工作量——不为「让进度条动起来」插假步。
+        val progress = ModImportProgressTracker(onProgress)
+        progress.enter(ModImportStage.UNPACK, files.size)
         // ---- ⓪ zip 整包展开（2026-11：SAF 现在也收口上 zip 包，解出 .ERB/.ERH 条目当普通源）----
         // 条目 displayName 保留 zip 内相对路径（排序与编译报错定位都用它），落盘留档时才切主名。
         // 原始 zip 字节同时留一份：编译产出 packageId 之后，资源面（[ModImportAssets]）还要
@@ -560,12 +620,24 @@ class ModImportController(
         // 也可能与口上源混合选择（`.assets/` 条目作本包资源贡献者）。立刻失败会堵死这两条路，
         // 所以先记下、等整个选择的源面定型后再判（失败面逐字不变，见 [emptyUnpackFailure]）。
         val emptyUnpackZips = ArrayList<PickedModFile>()
-        for (f in files) {
+        // 非 zip 容器（RAR / 7z / tar.gz …）：纯 JVM 解不开（见 [ModArchiveFormats]），
+        // 既不进 `flat`（不是 ERB 源）也不静默丢——有可编译源时出告警，整批都是它们时失败。
+        val unsupportedArchives = ArrayList<Pair<String, ModArchiveFormats.Format>>()
+        for ((pickedIndex, f) in files.withIndex()) {
+            progress.advanceTo(pickedIndex)
             if (!ModZip.isZipName(f.displayName)) {
+                val format = ModArchiveFormats.of(f.displayName)
+                if (format != null) {
+                    unsupportedArchives += f.displayName to format
+                    continue
+                }
                 flat.add(f)
                 continue
             }
-            archiveZips += f.bytes
+            // 解包结果 + 「这只 zip 实际以哪份字节参与后续资源面」：
+            // 普通包就是原件；加密包换成**解密后的明文 zip**（否则 `.assets/` 条目读不出，
+            // 资源面会静默少一块——同一份字节喂两处，不留这种缝）。
+            var plainZip: ByteArray? = null
             val unpacked = try {
                 ModZip.unpack(f.bytes)
             } catch (e: ModZipGuard.Rejected) {
@@ -575,14 +647,52 @@ class ModImportController(
                 return failed(ModImportFailureKind.STORAGE, ModZipGuard.rejectMessage(copy, f.displayName, e), e)
             } catch (e: Exception) {
                 // 闸门之外的解包失败：加密条目（zip 标准加密位，JDK 不解密）与坏/截断的
-                // deflate 流都在读取期抛 ZipException；非 zip 字节在 nextEntry 即抛。统一
-                // 归「解包失败」面（文案本就写着「可能已加密或文件损坏」）。
-                return failed(
-                    ModImportFailureKind.STORAGE,
-                    copy.fill(copy.zipUnpackFailedFormat, f.displayName, detailText(e)),
-                    e,
-                )
+                // deflate 流都在读取期抛 ZipException；非 zip 字节在 nextEntry 即抛。
+                // 先判是不是**能救的加密包**（WinZip AES / 传统 ZipCrypto，见 [ModZipCrypto]）：
+                // 能救且玩家给了密码就解开再走同一条解包闸；救不了/没密码才回到失败面。
+                val info = ModZipCrypto.inspect(f.bytes)
+                    ?: return failed(
+                        ModImportFailureKind.STORAGE,
+                        copy.fill(copy.zipUnpackFailedFormat, f.displayName, detailText(e)),
+                        e,
+                    )
+                val pwd = password
+                    ?: return failed(
+                        ModImportFailureKind.PASSWORD,
+                        copy.fill(copy.zipNeedPasswordFormat, f.displayName),
+                    )
+                val decrypted = try {
+                    ModZipCrypto.decryptToPlainZip(f.bytes, pwd)
+                } catch (e2: ModZipCrypto.WrongPassword) {
+                    return failed(
+                        ModImportFailureKind.PASSWORD,
+                        copy.fill(copy.zipWrongPasswordFormat, f.displayName, info.schemeLabel),
+                        e2,
+                    )
+                } catch (e2: ModZipGuard.Rejected) {
+                    // 解密阶段就按同一把尺早退（炸弹不等打完包才炸堆）。
+                    return failed(ModImportFailureKind.STORAGE, ModZipGuard.rejectMessage(copy, f.displayName, e2), e2)
+                } catch (e2: Exception) {
+                    return failed(
+                        ModImportFailureKind.STORAGE,
+                        copy.fill(copy.zipUnpackFailedFormat, f.displayName, detailText(e2)),
+                        e2,
+                    )
+                }
+                plainZip = decrypted
+                try {
+                    ModZip.unpack(decrypted)
+                } catch (e2: ModZipGuard.Rejected) {
+                    return failed(ModImportFailureKind.STORAGE, ModZipGuard.rejectMessage(copy, f.displayName, e2), e2)
+                } catch (e2: Exception) {
+                    return failed(
+                        ModImportFailureKind.STORAGE,
+                        copy.fill(copy.zipUnpackFailedFormat, f.displayName, detailText(e2)),
+                        e2,
+                    )
+                }
             }
+            archiveZips += (plainZip ?: f.bytes)
             // unpack 已把 ERB/ERH 与 `Chara*.csv` 一起收进来（共用同一趟闸扫描），这里
             // 按 fail-closed 谓词再分一次流：模板进 charaTemplates，只有 ERB/ERH 进 flat。
             // 「空解包」判定仍只看 ERB/ERH（A3 纯资源包载体逻辑的调用前提，逐字不变）。
@@ -595,6 +705,17 @@ class ModImportController(
                 continue
             }
             for (entry in erbEntries) flat.add(PickedModFile(entry.name, entry.bytes, fromArchive = true))
+        }
+        // ---- ⓪‴ 非 zip 容器：整批都解不开 ⇒ ARCHIVE 面（点名容器族，不冒充编译/空包失败）----
+        // 只要还有一个可编译源（`flat` 非空）就照常导入，这些文件走下面的告警通道留痕；
+        // 一个都没有时才是失败——此时玩家真正需要的是「先解压 / 重打成 zip」这句指路。
+        if (flat.isEmpty() && unsupportedArchives.isNotEmpty()) {
+            val (name, format) = unsupportedArchives.first()
+            return failed(ModImportFailureKind.ARCHIVE, copy.fill(copy.archiveUnsupportedFormat, name, format.label))
+        }
+        // 「不静默少一块」：混合选择里被跳过的容器必须上屏（与 ⓪′ 去重告警同一条通道）。
+        val archiveWarnings = unsupportedArchives.map { (name, format) ->
+            copy.fill(copy.archiveSkippedWarningFormat, name, format.label)
         }
         // MODDX3-A3：消费 ⓪ 延后处置的空解包 zip（0 条 .ERB/.ERH）。
         // - flat 非空（本次有真实口上源）：这些 zip 的 `.assets/` 资源已随 archiveZips 进入
@@ -657,8 +778,12 @@ class ModImportController(
         }
 
         // ---- ① 源 .ERB/.ERH 留档（契约顺序：save 在 compile 前；扩展名/大小校验在 ModStore）----
+        progress.enter(ModImportStage.SAVE_SOURCES, deduped.size)
         try {
-            for (f in deduped) modStore.save(f.diskName, f.bytes)
+            for ((savedIndex, f) in deduped.withIndex()) {
+                progress.advanceTo(savedIndex)
+                modStore.save(f.diskName, f.bytes)
+            }
         } catch (e: Exception) {
             return failed(ModImportFailureKind.STORAGE, copy.fill(copy.saveSourceFailedFormat, detailText(e)), e)
         }
@@ -683,7 +808,14 @@ class ModImportController(
         // （[ModRecompiler] 原位原子替换）走同一条编译/转码/编码链，不另写编译器调用。
         // 失败种类经 [ModCompileException] 折回这里的收口（kind → 文案表条目）。
         val built = try {
-            compileToModule(deduped, copy, declaredOverrides, packMeta.version, minApi = packMeta.minApi)
+            compileToModule(
+                files = deduped,
+                copy = copy,
+                // 作者声明面三件套一次收口：谁「没说」由 ModuleDeclarations 的回落口径裁决，
+                // 编译链只认「声明 + 盘上旧产物」合成后的有效值。
+                declared = ModuleDeclarations(declaredOverrides, packMeta.version, packMeta.minApi),
+                progress = progress,
+            )
         } catch (e: ModCompileException) {
             return failed(e.kind, e.message, e)
         }
@@ -710,6 +842,7 @@ class ModImportController(
             installedManifestOf(rt2Dir, packageId)?.version,
             importedDescriptor.version,
         )
+        progress?.enter(ModImportStage.STAGE_ASSETS, STAGE_ASSET_FACES)
         val assetPlan = try {
             ModImportAssets.stageSafely(archiveZips, packageId, rt2Dir, copy)
         } catch (e: ModImportAssets.AssetConflictException) {
@@ -777,6 +910,7 @@ class ModImportController(
         // 未采信声明的取证行并入 assetWarnings。
         val assetMapBytes = deriveAssetMapBytes(firstPackJson(archiveZips), packageId, assetWarnings)
         val assetMapName = packageId + ModDx3AssetMap.SIDECAR_EXTENSION
+        progress?.enter(ModImportStage.WRITE)
         try {
             // 写序（RT2 MODGC 裁定 4）：provenance 先 ⇒ 任一步崩溃时 GC 拿到的是「已声明
             // 源名单」，半成品判据（缺容器/manifest）仍成立，不会因缺 provenance 而漏清。
@@ -791,6 +925,7 @@ class ModImportController(
             codeArtifactPlan?.discard()
             return failed(ModImportFailureKind.STORAGE, copy.fill(copy.artifactSaveFailedFormat, detailText(e)), e)
         }
+        progress?.enter(ModImportStage.VERIFY)
         try {
             verifyWrittenPackage(rt2Dir, built.packageId, sourcesBytes, fingerprintBytes)
         } catch (e: Exception) {
@@ -870,6 +1005,7 @@ class ModImportController(
         // 产出独立 packageId 的同形三件套——零第二份编译/转码实现。无存量 .patch ⇒ NoLegacy，
         // 本段完全零副作用（逐字节零变化）。失败告警并入 parseWarnings，不拦截本次导入。
         val migrationWarnings = if (legacyMigrationEnabled) {
+            progress?.enter(ModImportStage.MIGRATE)
             migrateLegacyPatches(
                 modsDir = modStore.modsDir,
                 importDiskNames = deduped.map { it.diskName }.toHashSet(),
@@ -892,6 +1028,8 @@ class ModImportController(
             codeGateHintFor(rt2Dir, built.packageId, codeGateEnabled)
         }
 
+        // 打满 100%：正常路径此时已到 99.6%+，这一发只兜住权重四舍五入的尾巴。
+        progress.complete()
         return ModImportOutcome.Imported(
             ImportedPatchDetail(
                 patchFileName = erbmName,
@@ -900,7 +1038,7 @@ class ModImportController(
                 instructionCount = built.report.instructionCount,
                 entryFunction = built.report.entryFunction,
                 sourceFileNames = deduped.map { it.displayName },
-                parseWarnings = built.report.parseWarnings + dedupWarnings + packMetaWarnings +
+                parseWarnings = built.report.parseWarnings + dedupWarnings + archiveWarnings + packMetaWarnings +
                     listOfNotNull(engineApiWarning) + assetWarnings + mediaWarnings + migrationWarnings,
                 modRuntimeOffHint = if (modRuntimeEnabled) null else copy.modRuntimeOffHint,
                 resourceEntryCount = resourceEntryCount,
@@ -944,6 +1082,8 @@ class ModImportController(
         modRuntimeEnabled: Boolean = true,
         legacyMigrationEnabled: Boolean = true,
         declaredOverrides: List<String>? = null,
+        /** 加密 zip 的解压密码（逐项同一份；null = 没密码，见 [import] 的同名参数）。 */
+        password: String? = null,
     ): ModImportBatchOutcome {
         if (files.isEmpty()) {
             return ModImportBatchOutcome(
@@ -955,7 +1095,7 @@ class ModImportController(
             groups = ModImportBatchRunner.groupsOf(files),
             copy = copy,
             importOne = { group ->
-                import(group, copy, modRuntimeEnabled, legacyMigrationEnabled, declaredOverrides)
+                import(group, copy, modRuntimeEnabled, legacyMigrationEnabled, declaredOverrides, password)
             },
             unexpected = { unexpectedFailure(copy, it) },
         )
@@ -1511,8 +1651,12 @@ class ModImportController(
     }
 
     /** 失败的统一收口：消息上屏（I7 可定位），异常只进日志面（由调用方决定是否记 logcat）。 */
-    private fun failed(kind: ModImportFailureKind, message: String, cause: Throwable): ModImportOutcome.Failed {
-        cause.printStackTrace()
+    /**
+     * 折成失败面。[cause] 可空：**预期内**的失败（加密包还没给密码）不发散栈——
+     * 那是正常玩家流程，不是异常；其余一律带 cause 给取证。
+     */
+    private fun failed(kind: ModImportFailureKind, message: String, cause: Throwable? = null): ModImportOutcome.Failed {
+        cause?.printStackTrace()
         return ModImportOutcome.Failed(kind, message)
     }
 
@@ -1535,44 +1679,41 @@ class ModImportController(
         files: List<PickedModFile>,
         copy: ModImportCopy = ModImportCopy.ZH,
         /**
-         * 包清单的可选收窄声明（见 [import] 的同名参数）；重编路径（[ModRecompiler]）
-         * 恒缺省 `null`——盘上产物已定型，重编不再获取新的作者声明。
+         * 作者声明面（覆盖收窄 / 版本号 / 引擎下限）。三者的「没说」各有回落口径，见
+         * [ModuleDeclarations]；缺省 `ModuleDeclarations()` = 三样都没说（重编路径）。
          */
-        declaredOverrides: List<String>? = null,
+        declared: ModuleDeclarations = ModuleDeclarations(),
         /**
-         * 产物 manifest 的版本号。`null` = 调用方没有作者自述版本（重编路径）：回落到**盘上
-         * 旧产物的 version**，再回落到 [PACK_META_FALLBACK_VERSION]——重编不该把已导入的
-         * v2 降级成 v1（下一次导入会因此误报「v2 → v1」）。导入路径恒传非空值（[packMetaOf]
-         * 的结果，缺元数据时本身就是回落值 `"1"`），老包行为与改造前逐字相同。
+         * 进度出口（导入路径传控制器的 tracker，重编路径缺省 null = 零开销）。
+         * 只做相位播报，不参与任何判定：**[progress] 为 null 与不为 null 的产物必须逐字节相同**。
          */
-        version: String? = null,
-        /**
-         * 产物 manifest 的 `min-api` 段（作者声明的引擎下限；0 = 不设闸，见 `ModuleDescriptor.minApi`）。
-         * `null` = 调用方没有作者声明（重编路径）：回落到**盘上旧 manifest 的 `minApi`**——重编不该把
-         * 已声明的引擎下限悄悄抹掉（作者改源重编后包会突然在旧引擎上通过装配）。导入路径恒传非空值
-         * （[packMetaOf] 的 `minApi`，缺元数据时本身就是 0），老包行为与改造前逐字相同
-         * （`/6` 段只在 `minApi != 0` 时写，见 `ManifestCodec`）。
-         */
-        minApi: Int? = null,
+        progress: ModImportProgressTracker? = null,
     ): CompiledModuleArtifacts {
+        progress?.enter(ModImportStage.BASE_CONTEXT)
         val base = runCatching { baseSource.read(gameRoot) }.getOrElse { e ->
             failCompile(ModImportFailureKind.STORAGE, copy.fill(copy.readBaseFailedFormat, detailText(e)), e)
         }
-        val compiled = runCatching { compilePatch(base, files, gameRoot, copy) }
+        progress?.enter(ModImportStage.SYMBOL_TABLE)
+        val compiled = runCatching { compilePatch(base, files, gameRoot, copy, progress) }
             .getOrElse { e -> e.rethrowCompileFailureOr(copy) }
         // 两个回落共用一次旧 manifest 读点：导入路径作者声明齐全（不读盘），重编路径两者皆空
         // （读一次旧 descriptor 同时拿 version 与 minApi，与 BU 的版本回落同口径）。
         val rt2Dir = File(modStore.modsDir, ModRuntimeAssembly.RT2_MANIFEST_DIR_NAME)
         val packageId = packageIdFor(files.map { it.diskName })
-        val installed = if (version == null || minApi == null) installedManifestOf(rt2Dir, packageId) else null
-        val effectiveVersion = version ?: installed?.version ?: PACK_META_FALLBACK_VERSION
-        val effectiveMinApi = minApi ?: installed?.minApi ?: 0
+        val installed = if (declared.version == null || declared.minApi == null) {
+            installedManifestOf(rt2Dir, packageId)
+        } else {
+            null
+        }
+        val effectiveVersion = declared.version ?: installed?.version ?: PACK_META_FALLBACK_VERSION
+        val effectiveMinApi = declared.minApi ?: installed?.minApi ?: 0
         // ModDX4-B1：write-grants 的重编保真（口径与 version / minApi 同形）——重编不该把已
         // 声明的授权悄悄抹掉（作者改源重编后包会突然全部未授权）。导入路径恒空表（v1 无
         // 导入端声明载体：ERB 转码描述符不带 grants，pack.json 亦无该键）。
         val effectiveWriteGrants = installed?.writeGrants ?: emptyList()
-        val spec = ArtifactSpec(declaredOverrides, effectiveVersion, effectiveMinApi, effectiveWriteGrants)
-        return encodeArtifacts(base, files, compiled, copy, spec)
+        val spec = ArtifactSpec(declared.overrides, effectiveVersion, effectiveMinApi, effectiveWriteGrants)
+        progress?.enter(ModImportStage.ENCODE)
+        return encodeArtifacts(base, files, compiled, copy, spec).also { progress?.finishStage() }
     }
 
     companion object {
@@ -2210,6 +2351,7 @@ private fun ModImportController.compilePatch(
     importSources: List<PickedModFile>,
     gameRoot: File,
     copy: ModImportCopy,
+    progress: ModImportProgressTracker? = null,
 ): PatchCompileOutput {
     // entry 跨源回退（B4，2026-11 整包导入实测）：排序第一的文件可能整文件在
     // [SKIPSTART] 块内（群友整合包的 M_KOJO_K16_5_IMAGE.ERB 排最前、全文件被跳过，
@@ -2264,8 +2406,7 @@ private fun ModImportController.compilePatch(
             base.metadata,
             base.baseCounts,
             symbolBuild.table,
-            renameDic = renameDic,
-            // 常量关键字下标解析期折成整数（原版装载期 Restructure 同相位）；
+            renameDic = renameDic,            // 常量关键字下标解析期折成整数（原版装载期 Restructure 同相位）；
             // 不喂则补丁里 `M_CFLAG:LOCAL:…` 退回运行期按名查盘上 CSV。
             constantKeywordLookup = symbolBuild.keywordLookup,
             // 同名非事件函数重复定义告警按玩家配置门控（出厂 YES ⇒ 行为不变）。
@@ -2276,7 +2417,9 @@ private fun ModImportController.compilePatch(
             // 装载 + 告警（原版语义 = 后装载者胜出，spec: LabelDictionary.cs:107-113、
             // ErbLoader.cs:466-475），缺指纹键的 ABI 未校验告警由转码降级清单汇进导入告警面。
         )
+            .also { progress?.enter(ModImportStage.COMPILE, importSources.size) }
             .compile(sources, entry)
+            .also { progress?.finishStage() }
     } catch (e: PatchCompiler.PatchCompileException) {
         failCompile(ModImportFailureKind.COMPILE, e.message ?: copy.compileFailedFallback, e)
     } catch (e: IllegalArgumentException) {

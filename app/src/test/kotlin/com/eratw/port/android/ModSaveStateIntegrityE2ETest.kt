@@ -3,12 +3,20 @@ package com.eratw.port.android
 import com.eratw.port.core.code.CodeBuilder
 import com.eratw.port.core.code.Opcode
 import com.eratw.port.core.code.Program
+import com.eratw.port.core.entity.EntityIdCodec
+import com.eratw.port.core.entity.PackageShortIdRegistry
 import com.eratw.port.core.fn.NativeMethodRegistry
+import com.eratw.port.core.host.ConsoleSink
+import com.eratw.port.core.host.InputOutcome
+import com.eratw.port.core.host.InputRequest
+import com.eratw.port.core.host.InputSink
+import com.eratw.port.core.host.NoopConsoleSink
 import com.eratw.port.core.loader.BootMetadata
 import com.eratw.port.core.mod.FunctionHookWiring
 import com.eratw.port.core.mod.JobState
 import com.eratw.port.core.mod.ModContextImpl
 import com.eratw.port.core.mod.ModDeclarationAdapter
+import com.eratw.port.core.mod.putReservedKey
 import com.eratw.port.core.mod.registeredFacesOf
 import com.eratw.port.core.patch.ManifestCodec
 import com.eratw.port.core.proc.FuncMeta
@@ -19,20 +27,24 @@ import com.eratw.port.core.save.RootedSaveFileIo
 import com.eratw.port.core.save.SaveConfig
 import com.eratw.port.core.vars.VariableStore
 import com.eratw.port.modapi.ArchetypeDecl
+import com.eratw.port.modapi.DurableStory
+import com.eratw.port.modapi.EntityId
 import com.eratw.port.modapi.EraMod
 import com.eratw.port.modapi.EventBucket
 import com.eratw.port.modapi.EventResult
 import com.eratw.port.modapi.HookDecl
 import com.eratw.port.modapi.HookPhase
 import com.eratw.port.modapi.HookResult
+import com.eratw.port.modapi.InteractionContext
 import com.eratw.port.modapi.InteractionHookDecl
 import com.eratw.port.modapi.InteractionPhase
 import com.eratw.port.modapi.InteractionResult
 import com.eratw.port.modapi.JobDecl
-import com.eratw.port.modapi.ModValue
 import com.eratw.port.modapi.JobTemplateDecl
 import com.eratw.port.modapi.ModContext
 import com.eratw.port.modapi.ModManifest
+import com.eratw.port.modapi.ModValue
+import com.eratw.port.modapi.durableStory
 import java.nio.file.Files
 import java.nio.file.Path
 import org.junit.Assert.assertEquals
@@ -42,6 +54,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.Assert.assertThrows
 
 /**
  * 多 mod 会话存档 → 读档后的**跨面一致性** e2e（task-110）。
@@ -128,7 +141,10 @@ class ModSaveStateIntegrityE2ETest {
         packageId = packageId,
         archetypes = listOf(ArchetypeDecl("$packageId.trait")),
         hooks = listOf(HookDecl(targetKey = HOOK_TARGET, phase = HookPhase.PREFIX)),
-        interactionHooks = listOf(InteractionHookDecl(InteractionPhase.PRE)),
+        interactionHooks = listOf(
+            InteractionHookDecl(InteractionPhase.PRE),
+            InteractionHookDecl(InteractionPhase.MAIN),
+        ),
         jobs = listOf(JobDecl(jobId = JOB_ID, everyDays = 1L, firstDay = 0L)),
         jobTemplates = listOf(JobTemplateDecl(templateKey = TEMPLATE_KEY)),
     )
@@ -147,6 +163,8 @@ class ModSaveStateIntegrityE2ETest {
         root: Path,
         providers: List<Pair<String, EraMod>>,
         tailOffset: Int = 0,
+        consoleSink: ConsoleSink? = null,
+        inputSink: InputSink? = null,
     ): ModRuntimeSession {
         val game = newSession(root)
         for ((packageId, _) in providers) writeManifest(root, packageId)
@@ -163,6 +181,8 @@ class ModSaveStateIntegrityE2ETest {
             },
             modProviders = providers,
             decisionEntropyTail = { tail(tailOffset) },
+            consoleSink = consoleSink,
+            inputSink = inputSink,
         )
         assertNotNull("开态装配必须返回会话（enabled=true）", attached)
         gamesByMod[attached!!] = game
@@ -189,6 +209,19 @@ class ModSaveStateIntegrityE2ETest {
 
     private fun loadSlot(store: VariableStore, root: Path) {
         slotOps(store, root).loadData(SLOT_NO)
+    }
+
+    private fun conflictingTargetRoot(): Path = tempGameRoot().also { root ->
+        val registry = PackageShortIdRegistry().apply { allocate("local.mod") }
+        Files.write(root.resolve(ModRuntimeAssembly.REGISTRY_BIN_NAME), registry.encode())
+    }
+
+    private fun copySlot(source: Path, target: Path) {
+        val relative = SaveConfig.ERATW.normalPath(SLOT_NO)
+        val destination = target.resolve(relative)
+        Files.createDirectories(destination.parent)
+        Files.copy(source.resolve(relative), destination)
+        Files.copy(source.resolve("$relative.rt2"), destination.resolveSibling("${destination.fileName}.rt2"))
     }
 
     private fun contextOf(session: ModRuntimeSession, packageId: String): ModContext =
@@ -235,6 +268,242 @@ class ModSaveStateIntegrityE2ETest {
         override fun onDisable() = Unit
 
         override fun onUnload() = Unit
+    }
+
+    private class PauseForSave : RuntimeException()
+
+    private class RecordingConsole : ConsoleSink by NoopConsoleSink {
+        val lines = mutableListOf<String>()
+        val buttons = mutableListOf<Pair<String, Long>>()
+
+        override fun printLine(text: String) { lines += text }
+        override fun printButton(text: String, value: Long) { buttons += text to value }
+    }
+
+    private class RecordingInput : InputSink {
+        private val values = ArrayDeque<Long>()
+
+        fun feed(vararg input: Long) {
+            input.forEach(values::addLast)
+        }
+
+        override fun readAnyKey(anyKey: Boolean, stopMesSkip: Boolean) = Unit
+
+        override fun waitInput(request: InputRequest): InputOutcome {
+            if (values.isEmpty()) throw PauseForSave()
+            return InputOutcome(intValue = values.removeFirst())
+        }
+    }
+
+    private class DurableMod(private val archetype: String? = null) : EraMod {
+        val story: DurableStory = durableStory {
+            say("opening")
+            choose("first.prompt", listOf("left", "right")) { choice ->
+                if (choice == 0) say("chosen.left") else say("chosen.right")
+                choose("second.prompt", listOf("a", "b")) { nested -> say("nested.$nested") }
+            }
+            say("after")
+        }
+        var createdActor: EntityId? = null
+            private set
+        var resumedContext: InteractionContext? = null
+            private set
+
+        override fun onLoad(context: ModContext) {
+            listOf(
+                "opening", "first.prompt", "left", "right", "chosen.left", "chosen.right",
+                "second.prompt", "a", "b", "nested.0", "nested.1", "after",
+            ).forEach { context.strings.declare(it, it, it, it) }
+            context.interactions.registerHook(InteractionPhase.MAIN) {
+                resumedContext = it.interaction
+                InteractionResult.CONTINUE
+            }
+            archetype?.let { createdActor = context.entities.create(it) }
+        }
+
+        fun run(context: ModContext) {
+            val actor = createdActor ?: EntityId.NULL
+            context.interactions.runDurable(
+                InteractionContext("durable.e2e", actor, listOf(actor), actor, emptyMap()),
+                story,
+            )
+        }
+
+        override fun onEnable() = Unit
+        override fun onDisable() = Unit
+        override fun onUnload() = Unit
+    }
+
+    @Test
+    fun `真实sav与rt2读档末尾自动恢复两次选择且新局不续旧剧情`() {
+        val root = tempGameRoot()
+        val modA = DurableMod()
+        val consoleA = RecordingConsole()
+        val sessionA = attach(
+            root,
+            listOf(PA to modA),
+            consoleSink = consoleA,
+            inputSink = RecordingInput(),
+        )
+        assertThrows(PauseForSave::class.java) { modA.run(contextOf(sessionA, PA)) }
+        assertEquals(listOf("opening", "first.prompt"), consoleA.lines)
+        saveSlot(storeOf(sessionA), root)
+        sessionA.shutdown()
+
+        val modB = DurableMod()
+        val consoleB = RecordingConsole()
+        val inputB = RecordingInput().apply { feed(1L, 1L) }
+        val sessionB = attach(
+            root,
+            listOf(PA to modB),
+            tailOffset = 1,
+            consoleSink = consoleB,
+            inputSink = inputB,
+        )
+        loadSlot(storeOf(sessionB), root)
+        sessionB.notifySaveLoaded()
+        assertEquals(
+            listOf("first.prompt", "chosen.right", "second.prompt", "nested.1", "after"),
+            consoleB.lines,
+        )
+        assertEquals("", sessionB.storage.apiFor(PA).get("__eratw.durable-story.v1"))
+        sessionB.shutdown()
+
+        val consoleC = RecordingConsole()
+        val sessionC = attach(
+            root,
+            listOf(PA to DurableMod()),
+            tailOffset = 2,
+            consoleSink = consoleC,
+            inputSink = RecordingInput(),
+        )
+        loadSlot(storeOf(sessionC), root)
+        sessionC.notifyNewGame()
+        sessionC.notifySaveLoaded()
+        assertTrue("新局不得恢复旧档剧情", consoleC.lines.isEmpty())
+        assertEquals("", sessionC.storage.apiFor(PA).get("__eratw.durable-story.v1"))
+        sessionC.shutdown()
+    }
+
+    @Test
+    fun `生产跨设备读档允许已清空剧情续体且不恢复`() {
+        val sourceRoot = tempGameRoot()
+        val modA = DurableMod()
+        val sessionA = attach(
+            sourceRoot,
+            listOf(PA to modA),
+            consoleSink = RecordingConsole(),
+            inputSink = RecordingInput().apply { feed(0L, 0L) },
+        )
+        modA.run(contextOf(sessionA, PA))
+        assertEquals("", sessionA.storage.apiFor(PA).get("__eratw.durable-story.v1"))
+        saveSlot(storeOf(sessionA), sourceRoot)
+        sessionA.shutdown()
+
+        val targetRoot = conflictingTargetRoot()
+        copySlot(sourceRoot, targetRoot)
+        val consoleB = RecordingConsole()
+        val sessionB = attach(
+            targetRoot,
+            listOf(PA to DurableMod()),
+            tailOffset = 1,
+            consoleSink = consoleB,
+            inputSink = RecordingInput(),
+        )
+        slotOps(storeOf(sessionB), targetRoot).loadDataCrossDevice(SLOT_NO)
+        sessionB.notifySaveLoaded()
+        assertTrue(consoleB.lines.isEmpty())
+        assertEquals("", sessionB.storage.apiFor(PA).get("__eratw.durable-story.v1"))
+        sessionB.shutdown()
+    }
+
+    @Test
+    fun `生产跨设备读档用实体同一重映射表恢复剧情三类引用`() {
+        val sourceRoot = tempGameRoot()
+        val modA = DurableMod("$PA.trait")
+        val sessionA = attach(
+            sourceRoot,
+            listOf(PA to modA),
+            consoleSink = RecordingConsole(),
+            inputSink = RecordingInput(),
+        )
+        val sourceActor = requireNotNull(modA.createdActor)
+        assertEquals(EntityIdCodec.encode(2, 0, 0), sourceActor.raw)
+        assertThrows(PauseForSave::class.java) { modA.run(contextOf(sessionA, PA)) }
+        saveSlot(storeOf(sessionA), sourceRoot)
+        sessionA.shutdown()
+
+        val targetRoot = conflictingTargetRoot()
+        copySlot(sourceRoot, targetRoot)
+        val modB = DurableMod("$PA.trait")
+        val consoleB = RecordingConsole()
+        val sessionB = attach(
+            targetRoot,
+            listOf(PA to modB),
+            tailOffset = 1,
+            consoleSink = consoleB,
+            inputSink = RecordingInput().apply { feed(1L, 1L) },
+        )
+        val targetActor = requireNotNull(modB.createdActor)
+        assertEquals(EntityIdCodec.encode(3, 0, 0), targetActor.raw)
+        slotOps(storeOf(sessionB), targetRoot).loadDataCrossDevice(SLOT_NO)
+        sessionB.notifySaveLoaded()
+
+        val remappedActor = EntityIdCodec.encode(4, 0, 0)
+        val resumed = requireNotNull(modB.resumedContext)
+        assertEquals(remappedActor, resumed.actor.raw)
+        assertEquals(listOf(remappedActor), resumed.targets.map { it.raw })
+        assertEquals(remappedActor, resumed.primaryTarget?.raw)
+        assertTrue(contextOf(sessionB, PA).entities.exists(EntityId(remappedActor)))
+        assertFalse(contextOf(sessionB, PA).entities.exists(targetActor))
+        assertFalse(contextOf(sessionB, PA).entities.exists(sourceActor))
+        assertEquals(
+            listOf("first.prompt", "chosen.right", "second.prompt", "nested.1", "after"),
+            consoleB.lines,
+        )
+        sessionB.shutdown()
+    }
+
+    @Test
+    fun `生产跨设备读档遇损坏续体在提交前失败且实体与存储不变`() {
+        val sourceRoot = tempGameRoot()
+        val modA = DurableMod("$PA.trait")
+        val sessionA = attach(
+            sourceRoot,
+            listOf(PA to modA),
+            consoleSink = RecordingConsole(),
+            inputSink = RecordingInput(),
+        )
+        val sourceActor = requireNotNull(modA.createdActor)
+        assertThrows(PauseForSave::class.java) { modA.run(contextOf(sessionA, PA)) }
+        sessionA.storage.putReservedKey(PA, "__eratw.durable-story.v1", "00")
+        saveSlot(storeOf(sessionA), sourceRoot)
+        sessionA.shutdown()
+
+        val targetRoot = conflictingTargetRoot()
+        copySlot(sourceRoot, targetRoot)
+        val modB = DurableMod("$PA.trait")
+        val sessionB = attach(
+            targetRoot,
+            listOf(PA to modB),
+            tailOffset = 1,
+            consoleSink = RecordingConsole(),
+            inputSink = RecordingInput(),
+        )
+        val targetActor = requireNotNull(modB.createdActor)
+        val storageBefore = sessionB.storage.encode()
+        val registryPath = targetRoot.resolve(ModRuntimeAssembly.REGISTRY_BIN_NAME)
+        val registryBefore = Files.readAllBytes(registryPath)
+        val logStart = logs.size
+
+        slotOps(storeOf(sessionB), targetRoot).loadDataCrossDevice(SLOT_NO)
+
+        assertTrue("损坏续体必须留痕", logs.drop(logStart).any { "剧情续体" in it })
+        assertTrue("提交前失败不得替换目标实体", contextOf(sessionB, PA).entities.exists(targetActor))
+        assertFalse("源实体不得提前写入", contextOf(sessionB, PA).entities.exists(sourceActor))
+        assertTrue("提交前失败不得替换存储", storageBefore.contentEquals(sessionB.storage.encode()))
+        assertTrue("提交前失败不得改写注册表", registryBefore.contentEquals(Files.readAllBytes(registryPath)))
+        sessionB.shutdown()
     }
 
     // ------------------------------------------------------------------
@@ -320,6 +589,7 @@ class ModSaveStateIntegrityE2ETest {
         val sessionB = attach(root, listOf(PA to modB, PB to IntegrityMod()), 1)
         loadSlot(storeOf(sessionB), root)
         val restored = (contextOf(sessionB, PA) as ModContextImpl).jobScheduler.snapshot().instances
+            .filter { it.packageId == PA }
         assertEquals("动态实例必须随档恢复（一条）", 1, restored.size)
         assertEquals("实例键必须与计划一致", "$PA::$TEMPLATE_KEY#0", restored.single().instanceKey)
         assertEquals("实例仍在原计划日", JOB_AT_DAY, restored.single().atDay)
@@ -332,6 +602,7 @@ class ModSaveStateIntegrityE2ETest {
         assertEquals("动态实例跨存读档后仍按原计划触发一次", 1, modB.jobFired)
         assertEquals("静态任务槽照常触发", 1, modB.staticFired)
         val after = (contextOf(sessionB, PA) as ModContextImpl).jobScheduler.snapshot().instances
+            .filter { it.packageId == PA }
         assertEquals("触发后实例转 DONE（不复活）", JobState.DONE, after.single().state)
 
         // 重复读档：实例不得回到 PENDING、不得再触发一次。
@@ -405,14 +676,15 @@ class ModSaveStateIntegrityE2ETest {
         val sessionB = attach(root, listOf(PA to modA2, PB to IntegrityMod()), 1)
         loadSlot(storeOf(sessionB), root)
         // 生产漏斗：ProcessRuntime.doCall 包的就是这一入口（FunctionHookWiring.kt:16-19）。
+        // 在册测试债的最小机械对齐（KI-GLOBAL-DIM 波登记）：dispatchCall 已加 strRet 且返回 ModValue。
         val returned = FunctionHookWiring.dispatchCall(
             store = storeOf(sessionB),
             key = HOOK_TARGET,
             intArgs = longArrayOf(),
             strArgs = arrayOf(),
             strRet = false,
-        ) { _, _ -> ModValue.of(222L) }
-        assertEquals("hook 链必须放行原函数并折回原返回值", 222L, (returned as ModValue.IntValue).value)
+        ) { _, _ -> ModValue.IntValue(222L) }
+        assertEquals("hook 链必须放行原函数并折回原返回值", ModValue.IntValue(222L), returned)
         assertEquals("读档后 A 的 hook 命中一次", 1, modA2.hookHits)
         assertTrue("读档后 hook 槽必须仍挂在本会话的共享管线上", sessionB.host.hookPipeline.hasHooks(HOOK_TARGET))
         sessionB.shutdown()

@@ -1,13 +1,11 @@
 package com.eratw.port.android.ui.design
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -76,12 +74,12 @@ fun ShellDisclosureSection(
             badge = style.badge,
         )
         if (style.hint != null) ShellCaption(style.hint)
-        AnimatedVisibility(
+        ShellVisibility(
             visible = expanded,
             enter = ShellMotion.disclosureEnter(),
             exit = ShellMotion.disclosureExit(),
         ) {
-            Column { content() }
+            content()
         }
     }
 }

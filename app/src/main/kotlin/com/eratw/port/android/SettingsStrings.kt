@@ -1567,15 +1567,17 @@ class SettingsStrings private constructor(
     )
 
     // ---- 分区标签页（移植版 / 原版引擎 / Mod 与素材 / 关于） ----
+    // 档名按「小节标签」长度收：分段控四档等宽平分整行，320dp 屏上每档内宽约 56-66dp，
+    // 放不下「移植版功能 / 原版エンジン」这类长档名会截字；完整语义由分区标题与卡片正文承担。
     val zonePortTab: String = tr(
-        zh = "移植版功能",
-        en = "Port features",
-        ja = "移植版機能",
+        zh = "移植版",
+        en = "Features",
+        ja = "移植版",
     )
     val zoneEngineTab: String = tr(
         zh = "原版引擎",
-        en = "Original engine",
-        ja = "原版エンジン",
+        en = "Engine",
+        ja = "原版",
     )
     val zoneModTab: String = tr(
         zh = "Mod",
@@ -1944,12 +1946,23 @@ class SettingsStrings private constructor(
         ja = "Mod ランタイム概要",
     )
 
-    /** 概览卡说明：只读、关态隐藏、不改设置。 */
+    /** 概览卡说明：只读、默认收起、展开才出技术读数（玩家面只留「谁在跑 / 谁没起来」）。 */
     val modRuntimeOverviewHint: String = tr(
-        zh = "只读：本局每个 Mod 的装载结果与耗时明细。Mod 运行时总闸关掉时这里不显示。",
-        en = "Read-only: load results and time breakdown for each mod. Hidden while the mod runtime is off.",
-        ja = "読み取り専用：今回の各 Mod の読み込み結果と所要時間の内訳です。Mod ランタイムがオフのときは表示されません。",
+        zh = "只读读数，默认收起：展开可看每个 Mod 的耗时、存储与注册面。",
+        en = "Read-only, collapsed by default. Expand for each mod's timing, storage and registered faces.",
+        ja = "読み取り専用・既定は折りたたみ。展開すると各 Mod の所要時間・ストレージ・登録面を表示します。",
     )
+
+    /** 标题行计数徽标：运行中 / 已装（收起态也一眼知道有几个 Mod 真在跑）。 */
+    private val modRuntimeOverviewBadgeFormat: String = tr(
+        zh = "运行中 {0}/{1}",
+        en = "Running {0}/{1}",
+        ja = "稼働 {0}/{1}",
+    )
+
+    /** 标题行计数徽标（[active] = 本局真在跑的包数，[total] = 已装包数）。 */
+    fun modRuntimeOverviewBadge(active: Int, total: Int): String =
+        fill(modRuntimeOverviewBadgeFormat, active, total)
 
     /** 单行状态：本次会话运行中。 */
     val modRuntimeOverviewActive: String = tr(

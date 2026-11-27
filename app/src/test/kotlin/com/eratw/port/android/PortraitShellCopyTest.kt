@@ -9,7 +9,7 @@ import org.junit.Test
  * 竖屏壳内联文案收口（A-8 / T-2b）的三语形状闸，模式照 [UpdateNotifyCopyTest] 的第 1 组
  * 「三语表形状」收窄而来：那边的源码面防扩散、接线纪律两组合由更新车道的用例管，本表只钉：
  *
- * 1. **三档形状**：56 条三档各自非空、两两不同、[PortraitShellCopy.EN] 零汉字（日文档的
+ * 1. **三档形状**：64 条三档各自非空、两两不同、[PortraitShellCopy.EN] 零汉字（日文档的
  *    汉字正常）、换行数与槽位数一致——谁往某一档手工多塞/漏改一句，这里红；
  * 2. **中文零漂移对拍右轴**：[PortraitShellCopy.ZH] 的每一条都逐字等于收口前的内联字面量
  *    （全角括号、全角空格、省略号字符、`▾`/`▸`/`▲`/`▼`、「执行中:」的半角冒号都在钉面上），
@@ -27,7 +27,7 @@ class PortraitShellCopyTest {
     private val placeholder = Regex("(?i)TODO|FIXME|TBD|placeholder|待补|占位")
 
     /**
-     * 本表全部 56 条：键名、属性引用、以及**收口前内联字面量的中文原话**（对拍右轴）。
+     * 本表全部 64 条：键名、属性引用、以及**收口前内联字面量的中文原话**（对拍右轴）。
      * 新增键必须三档一起加并在这份清单登记——漏登记的键不进形状闸也不进中文钉扎。
      */
     private val table: List<Triple<String, kotlin.reflect.KProperty1<PortraitShellCopy, String>, String>> = listOf(
@@ -78,6 +78,8 @@ class PortraitShellCopyTest {
         Triple("railToggleCollapsed", PortraitShellCopy::railToggleCollapsed, "选项栏(已收起)"),
         Triple("orientationLocked", PortraitShellCopy::orientationLocked, "屏幕方向(已锁定)"),
         Triple("orientationUnlocked", PortraitShellCopy::orientationUnlocked, "屏幕方向(未锁定)"),
+        Triple("skipToggleOn", PortraitShellCopy::skipToggleOn, "跳过(已开启)"),
+        Triple("skipToggleOff", PortraitShellCopy::skipToggleOff, "跳过(已关闭)"),
         // 报告卡（脏退出 + 失败屏共用词）
         Triple("dirtyExitTitle", PortraitShellCopy::dirtyExitTitle, "上次异常退出"),
         Triple("dirtyExitBody1", PortraitShellCopy::dirtyExitBody1, "上一次游戏在运行中异常结束（闪退或被系统强制结束）。"),
@@ -121,12 +123,17 @@ class PortraitShellCopyTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `三档条目数相等（62 条加语言档自身）`() {
-        // data class 的 toString 是「key=value」按声明序：等号数 = 62 条文案 + lang 一档。
+    fun `三档条目数相等（64 条加语言档自身）`() {
+        // data class 的 toString 是「key=value」按声明序：等号数 = 64 条文案 + lang 一档。
         // 少补一档词在编译期就过不去，这条钉的是有人往某一档手工多塞一句。
         // 对账走共享形状闸（T-3 抽取）；本表的逐键点名清单（table）由下面几条共用。
-        assertEquals("本表的键数变了（现有 62 条，加键要三档一起加并登记进本清单）", 62, table.size)
-        CopyShapeGate.assertKeyCount("PortraitShellCopy", copies, table.associate { it.first to it.second }, expectedPerCopy = 63)
+        assertEquals("本表的键数变了（现有 64 条，加键要三档一起加并登记进本清单）", 64, table.size)
+        CopyShapeGate.assertKeyCount(
+            "PortraitShellCopy",
+            copies,
+            table.associate { it.first to it.second },
+            expectedPerCopy = 65,
+        )
     }
 
     @Test
@@ -138,7 +145,7 @@ class PortraitShellCopyTest {
     }
 
     @Test
-    fun `62 条在三语各自非空并且两两不同`() {
+    fun `64 条在三语各自非空并且两两不同`() {
         CopyShapeGate.assertNonEmptyAndDistinct(copies, table.associate { it.first to it.second })
     }
 

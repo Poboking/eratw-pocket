@@ -14,7 +14,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -25,14 +24,12 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -68,12 +65,10 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -104,6 +99,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -122,14 +118,24 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.eratw.port.android.ui.design.ShellGroupHeader
 import com.eratw.port.android.ui.design.ShellAlertDialog
+import com.eratw.port.android.ui.design.ShellButton
 import com.eratw.port.android.ui.design.ShellDialogActions
+import com.eratw.port.android.ui.design.ShellEdgeFades
+import com.eratw.port.android.ui.design.ShellAmbientGlow
+import com.eratw.port.android.ui.design.glassRule
+import com.eratw.port.android.ui.design.shellHalo
+import com.eratw.port.android.ui.design.ShellGlassCard
 import com.eratw.port.android.ui.design.ShellField
 import com.eratw.port.android.ui.design.ShellMotion
 import com.eratw.port.android.ui.design.ShellPress
+import com.eratw.port.android.ui.design.ShellProgress
 import com.eratw.port.android.ui.design.ShellShape
+import com.eratw.port.android.ui.design.ShellSkeletonRow
 import com.eratw.port.android.ui.design.ShellSpace
 import com.eratw.port.android.ui.design.ShellType
 import com.eratw.port.android.ui.design.ShellTag
+import com.eratw.port.android.ui.design.ShellVisibility
+import com.eratw.port.android.ui.design.rememberShellFade
 import com.eratw.port.core.config.ConfigClampLabels
 import com.eratw.port.core.config.ConfigClampNotice
 import com.eratw.port.core.config.ConfigGroup
@@ -162,6 +168,8 @@ import com.eratw.port.platform.storage.MaterialSource
 import com.eratw.port.platform.storage.MaterialTarget
 import com.eratw.port.platform.storage.ModStore
 import com.eratw.port.platform.storage.ResourcePackCleanup
+import com.eratw.port.platform.storage.ResourcePackPhase
+import com.eratw.port.platform.storage.ResourcePackProgress
 import com.eratw.port.platform.storage.ResourcePackReport
 import com.eratw.port.platform.storage.ResourcePackStatus
 import com.eratw.port.platform.storage.ResourcePackStore
@@ -680,6 +688,8 @@ class SettingsActivity : ComponentActivity() {
                             onCopyText = { payload ->
                                 copyTextToClipboard(this, payload, ModImportCopy.of(lang).copyDoneToast)
                             },
+                            // 加密包补救：玩家在覆盖层里输密码后原样重跑（快照在宿主侧）。
+                            onRetryWithPassword = ::retryModImportWithPassword,
                         ),
                         text = ModImportChromeText(
                             intro = strings.modImportIntro,
@@ -1195,6 +1205,17 @@ class SettingsActivity : ComponentActivity() {
     private val modImportBusy = AtomicBoolean(false)
 
     /**
+     * 上一次导入的入参快照，**仅在一次导入报出 [ModImportFailureKind.PASSWORD] 后保留**：
+     * 加密口上包解不开时，玩家在覆盖层里输入密码，宿主拿这份快照原样重跑一次
+     * （不必让玩家重新选文件、重新确认预览）。
+     *
+     * 为什么其余结局立刻清空：[ModImportRequest.picked] 里是整包字节（口上包可达数十 MB），
+     * 常驻字段白占堆 —— 本项目 OOM 取证的结论就是「别留账外载荷」，所以这条只在
+     * 「有密码可补」的窗口里活着。
+     */
+    private var pendingPasswordImport: ModImportRequest? = null
+
+    /**
      * 预览喂入状态机（选完文件 → 只读预览上屏 → 玩家确认 → 才进导入事务）。
      * 转移唯一入口 = [ModImportFeedReducer.reduce]；导入的放行口只有
      * [ModImportFeedReducer.importBatchOf]（预览**先于**导入的判据所在）。
@@ -1375,6 +1396,23 @@ class SettingsActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 一条导入进度回 UI 线程（只落到发起那一槽）。
+     *
+     * 与 [postPackEvent] 分开：进度是高频读数（约 8 次/秒），不该顺手给另外两槽推
+     * `StatusRefreshed`（那会让三张卡每 120ms 各重组一次）；读数在收尾结果里带齐。
+     * 界面已结束时直接丢掉，别让迟到的回调摸到已销毁的 View 树。
+     */
+    private fun postPackProgress(slot: PackSlot, progress: ResourcePackProgress) {
+        runOnUiThread {
+            if (isFinishing) return@runOnUiThread
+            setPackState(
+                slot,
+                ResourcePackUiReducer.reduce(packStateOf(slot), ResourcePackEvent.ImportProgressed(progress)),
+            )
+        }
+    }
+
     /** 打开覆盖层：顺手刷新一次报告快照（I7 读数口 + mods 静态清单）。 */
     private fun openModImport() {
         modImportVisible = true
@@ -1388,6 +1426,8 @@ class SettingsActivity : ComponentActivity() {
     private fun dismissModImport() {
         modImportVisible = false
         cancelModImportPreview()
+        // 关页即释放待补密码的入参快照（里面是整包字节）；下次要导入就重新选文件。
+        pendingPasswordImport = null
     }
 
     /**
@@ -1422,13 +1462,49 @@ class SettingsActivity : ComponentActivity() {
      *
      * [codeGateEnabled] 是第三方代码装载总闸快照（task-179）：调用方在 UI 线程读好再传进来，
      * 后台线程不碰 prefs（照 `modRuntimeEnabled` 的口径）。
+     *
+     * [onProgress] 只在导入动作那一侧传：进度读数从导入线程回 UI 线程的唯一出口
+     * （[postImportProgress] 里做节流，不让每文件一发把主线程淹了）。
      */
-    private fun modImportController(codeGateEnabled: Boolean = true): ModImportController = ModImportController(
+    private fun modImportController(
+        codeGateEnabled: Boolean = true,
+        onProgress: ((ModImportProgress) -> Unit)? = null,
+    ): ModImportController = ModImportController(
         modStore = ModStore(ModStore.modsDirFor(gameRootFile)),
         baseSource = ProductionBaseCompileContextSource,
         gameRoot = gameRootFile,
         codeGateEnabled = codeGateEnabled,
+        onProgress = onProgress,
     )
+
+    /**
+     * 进度回 UI 线程（**节流到「阶段变化 或 百分比 +1」**）。
+     *
+     * 为什么必须节流：解包/留档按文件推进，一次 32 发；每发都 `runOnUiThread` 会让主线程
+     * 在导入期间持续被唤醒，玩家滚动报错全文时掉帧。节流只丢「视觉上看不出差」的读数，
+     * **不丢阶段切换与 100%**（这两类强制投递）。
+     */
+    @Volatile
+    private var lastProgressPercent: Int = -1
+
+    @Volatile
+    private var lastProgressStage: ModImportStage? = null
+
+    private fun postImportProgress(progress: ModImportProgress) {
+        val stageChanged = progress.stage != lastProgressStage
+        val percentAdvanced = progress.percent != lastProgressPercent
+        if (!stageChanged && !percentAdvanced) return
+        lastProgressStage = progress.stage
+        lastProgressPercent = progress.percent
+        runOnUiThread {
+            if (isFinishing) return@runOnUiThread
+            modImportState = ModImportUiReducer.reduce(
+                modImportState,
+                ModImportEvent.ImportProgressChanged(progress),
+                ModImportCopy.of(language),
+            )
+        }
+    }
 
     // -----------------------------------------------------------------
     // 口上市场的响应链（MKM-W1）：两段式刷新（stale-while-revalidate）、装/卸（后台 Thread
@@ -1950,7 +2026,12 @@ class SettingsActivity : ComponentActivity() {
      * [copy] 与总闸状态由确认动作（UI 线程）取好传入，本段不再碰 prefs；读失败的清单
      * [readErrors] 照旧附在结果后面一起上屏。导入结束把预览喂入状态机复位成 Idle。
      */
-    private fun runModImport(picked: List<PickedModFile>, readErrors: List<String>, copy: ModImportCopy) {
+    private fun runModImport(
+        picked: List<PickedModFile>,
+        readErrors: List<String>,
+        copy: ModImportCopy,
+        password: String? = null,
+    ) {
         if (!modImportBusy.compareAndSet(false, true)) {
             Log.w(TAG, "补丁导入请求被忽略：上一次导入还在进行")
             return
@@ -1958,14 +2039,21 @@ class SettingsActivity : ComponentActivity() {
         val modRuntimeOn = UiPrefs.modRuntime(this)
         // task-179：代码装载总闸的快照同拍读好传进导入线程（后台线程不碰 prefs，照 modRuntimeOn 口径）。
         val codeGateOn = UiPrefs.modDexLoaderEnabled(this)
+        val request = ModImportRequest(picked, readErrors, copy, modRuntimeOn, codeGateOn, password)
+        // 记下本次入参：万一这只包是加密的，玩家输密码后要能原样重跑（见 retryModImportWithPassword）。
+        // 只在「报 PASSWORD」时留着，其余结局立刻清（picked 里带着整包字节，不留账外载荷）。
+        pendingPasswordImport = request
         modImportState = ModImportUiReducer.reduce(modImportState, ModImportEvent.ImportStarted(picked.size), copy)
+        // 新一次导入：节流基线清空，第一发读数必定投递（进度条不会沿用上一次的 100%）。
+        lastProgressPercent = -1
+        lastProgressStage = null
         Thread({
             try {
                 // 入口判定与事件拼装全在 [modImportEventFor]（纯函数、可单测）：多选走批导入
                 // （逐项复用单包 import(...)），单包/空选走单包链；两条都带同一发总闸快照。
                 val event = modImportEventFor(
-                    ModImportRequest(picked, readErrors, copy, modRuntimeOn, codeGateOn),
-                    modImportController(codeGateEnabled = codeGateOn),
+                    request,
+                    modImportController(codeGateEnabled = codeGateOn, onProgress = ::postImportProgress),
                     modImportReportSnapshot(copy),
                 )
                 postModImportEvent(event, copy)
@@ -2009,10 +2097,31 @@ class SettingsActivity : ComponentActivity() {
             ) {
                 UiPrefs.setModRestartPending(this)
             }
+            // 只有「要密码」这一种结局值得留着入参等玩家补密码，其余立刻清（含成功、
+            // 编译失败、批级失败与兜底异常）——不留整包字节在堆上。
+            val passwordPending = event is ModImportEvent.ImportFailed &&
+                event.kind == ModImportFailureKind.PASSWORD
+            if (!passwordPending) pendingPasswordImport = null
             if (isFinishing) return@runOnUiThread
             modImportFeed = ModImportFeedState.Idle
             modImportState = ModImportUiReducer.reduce(modImportState, event, copy)
         }
+    }
+
+    /**
+     * 加密口上包的密码重试（[ModImportChromeActions.onRetryWithPassword] 的落点）：
+     * 用上一次失败那次的入参快照 + 玩家输入的密码，原样重跑一遍导入。
+     *
+     * 快照不在（成功 / 换包 / 已清理）就静默不动作：此时屏幕上没有密码框，理论上点不到；
+     * 真点到也不该瞎导一个空请求。密码只在这一层过一手，不写 prefs、不进报告。
+     */
+    private fun retryModImportWithPassword(password: String) {
+        val request = pendingPasswordImport
+        if (request == null) {
+            Log.w(TAG, "密码重试被忽略：没有待补密码的导入请求")
+            return
+        }
+        runModImport(request.picked, request.readErrors, request.copy, password)
     }
 
     /**
@@ -2166,16 +2275,22 @@ class SettingsActivity : ComponentActivity() {
     }
 
     private fun importMaterial(slot: PackSlot, target: MaterialTarget, source: () -> MaterialSource) {
+        val copy = ResourcePackCopy.of(language)
         if (!resourcePackBusy.compareAndSet(false, true)) {
-            Log.w(TAG, "素材直投请求被忽略：上一次导入还在进行")
+            // 单飞闸拒绝 = 这次一个字节都没动。以前这里只有一行 Log.w，玩家点了没反应，
+            // 分不清「点了没生效」和「卡死」；现在卡上直说没开始（Blocked 态，不顶掉别张卡的进行态）。
+            postPackEvent(slot, ResourcePackEvent.ImportBlocked(copy.importBlockedText, packStateOf(slot).status))
             return
         }
-        val copy = ResourcePackCopy.of(language)
         setPackState(slot, ResourcePackUiReducer.reduce(packStateOf(slot), ResourcePackEvent.ImportStarted(1)))
         Thread({
             try {
                 val material = source()
-                val report = ResourcePackStore(gameRootFile).installSource(material, target)
+                // 进度回调在 write 循环里按 120ms 节流（阶段与收尾强制放行），逐块字节也报，
+                // 大单文件写上一分钟时读数一直在爬，不会出现一条不动的杠。
+                val report = ResourcePackStore(gameRootFile).installSource(material, target) { progress ->
+                    postPackProgress(slot, progress)
+                }
                 postMaterialReport(slot, copy, material.label, report)
             } catch (t: Throwable) {
                 Log.e(TAG, "素材直投未预期异常", t)
@@ -2215,11 +2330,11 @@ class SettingsActivity : ComponentActivity() {
      */
     private fun clearImportedMaterials(target: MaterialTarget) {
         val slot = if (target == MaterialTarget.BGM) PackSlot.BGM else PackSlot.BACKGROUND
+        val copy = ResourcePackCopy.of(language)
         if (!resourcePackBusy.compareAndSet(false, true)) {
-            Log.w(TAG, "清理请求被忽略：上一次导入或清理还在进行")
+            postPackEvent(slot, ResourcePackEvent.ImportBlocked(copy.importBlockedText, packStateOf(slot).status))
             return
         }
-        val copy = ResourcePackCopy.of(language)
         val base = AndroidAssetTree(assets)
         setPackState(slot, ResourcePackUiReducer.reduce(packStateOf(slot), ResourcePackEvent.ClearStarted))
         Thread({
@@ -2966,6 +3081,14 @@ private fun SettingsScreen(
             )
             ZoneTabs(zone = zone, onZone = { zone = it }, text = text)
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                // 关于档的底子：深空 + 顶部一团极淡的分区光晕。玻璃卡要「后面有东西可透」才有
+                // 玻璃感；没有这层光，半透明的卡面只会读成「变暗的灰块」。其余档不加（功能页要实底扫读）。
+                if (zone == SettingsZone.ABOUT) {
+                    ShellAmbientGlow(accent = UiColors.ZoneAbout, modifier = Modifier.matchParentSize())
+                }
+                // 换档补一段整块淡入：同一个列表瞬间替换内容会闪一下，读起来像页面重开。
+                // 只动 alpha（不碰布局、不动滚动位置），换档时玩家刚滚到哪就还在哪。
+                val zoneFade = rememberShellFade(zone)
                 CompositionLocalProvider(LocalZoneAccent provides zone.accent) {
                     LazyVerticalStaggeredGrid(
                         state = gridState,
@@ -2974,9 +3097,12 @@ private fun SettingsScreen(
                             .align(Alignment.TopCenter)
                             .fillMaxHeight()
                             .widthIn(max = layout.contentMaxWidthDp.dp)
-                            .fillMaxWidth(),
+                            .fillMaxWidth()
+                            .graphicsLayer { alpha = zoneFade },
                         contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 16.dp),
-                        verticalItemSpacing = 10.dp,
+                        // 关于档的卡是半透明玻璃，卡间留白比功能页多一档：玻璃片之间要能看见底气，
+                        // 贴太近会连成一整块灰面。
+                        verticalItemSpacing = if (zone == SettingsZone.ABOUT) 16.dp else 10.dp,
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         // 读取/夹取提示跟着当前档走：它说的是 emuera.config 这一份文件，
@@ -3560,14 +3686,30 @@ private fun SettingsScreen(
                         // 列表最底部：恢复默认设置。刻意不进顶栏 —— 顶栏「重置 / 全部重置」覆盖设置页
                         // 所有功能（含清应用偏好）且不写盘；本卡片只恢复原版 emuera.config 项并立即写盘。
                         item(key = "restore-defaults", span = StaggeredGridItemSpan.FullLine) {
-                            RestoreDefaultsCard(text = text, onRestore = { confirmRestore = true })
+                            RestoreDefaultsCard(
+                                text = text,
+                                onRestore = { confirmRestore = true },
+                                glass = zone == SettingsZone.ABOUT,
+                            )
                         }
                     }
                 }
+                // 边缘渐隐：滚到顶/底就把那一侧的遮罩慢慢撤掉 —— 长列表的边界读成淡出，
+                // 而不是在卡片中间一刀切。翻到顶/底时遮罩自己退场，所以不会盖住最新内容。
+                ShellEdgeFades(
+                    top = gridState.canScrollBackward,
+                    bottom = gridState.canScrollForward,
+                )
             }
             // 保存条只在「这一档真的会写 emuera.config」或「确实有没写回去的改动」时出现：
             // 移植版那一档随改随存，摆两个保存按钮只会让人以为不点就丢。
-            if (!layout.actionsInTopBar && saveActionsVisible) {
+            // 出场走浮条节奏（从底部托上来、离场更快）：这条是「原版档 / 有脏改动」的临时行动区，
+            // 硬切进硬切出会像页面抖了一下。
+            ShellVisibility(
+                visible = !layout.actionsInTopBar && saveActionsVisible,
+                enter = ShellMotion.PanelEnter,
+                exit = ShellMotion.PanelExit,
+            ) {
                 BottomBar(text = text, onSave = onSave, onSaveAndRestart = onSaveAndRestart)
             }
         }
@@ -3686,11 +3828,11 @@ private fun TopBar(
             TextButton(
                 onClick = onBack,
                 contentPadding = PaddingValues(horizontal = if (actionsInTopBar) 8.dp else 10.dp),
+                colors = ShellButton.text(),
                 modifier = Modifier.semantics { contentDescription = text.back },
             ) {
                 Text(
                     text = if (actionsInTopBar) "←" else text.back,
-                    color = UiColors.Text,
                     // 紧凑档里只剩一个箭头，放大到标题档才点得准、看得清。
                     style = if (actionsInTopBar) ShellType.Title else ShellType.Body,
                 )
@@ -3702,10 +3844,13 @@ private fun TopBar(
                 maxLines = 1,
             )
             Spacer(Modifier.weight(1f))
-            TextButton(onClick = onResetAll, contentPadding = PaddingValues(horizontal = 8.dp)) {
+            TextButton(
+                onClick = onResetAll,
+                contentPadding = PaddingValues(horizontal = 8.dp),
+                colors = ShellButton.text(UiColors.Accent),
+            ) {
                 Text(
                     text = if (actionsInTopBar) text.reset else text.resetAll,
-                    color = UiColors.Accent,
                     style = ShellType.Tab,
                     maxLines = 1,
                 )
@@ -3713,8 +3858,10 @@ private fun TopBar(
             if (actionsInTopBar && saveActionsVisible) {
                 OutlinedButton(
                     onClick = onSaveAndRestart,
-                    modifier = Modifier.height(36.dp),
+                    modifier = Modifier.heightIn(min = ShellSpace.RowMinHeight),
                     shape = ShellShape.Chip,
+                    colors = ShellButton.outlined(),
+                    border = ShellButton.border(),
                     contentPadding = PaddingValues(horizontal = 12.dp),
                 ) {
                     Text(text.saveAndRestart, style = ShellType.Caption, maxLines = 1)
@@ -3722,13 +3869,10 @@ private fun TopBar(
                 Spacer(Modifier.width(8.dp))
                 Button(
                     onClick = onSave,
-                    modifier = Modifier.height(36.dp),
+                    modifier = Modifier.heightIn(min = ShellSpace.RowMinHeight),
                     shape = ShellShape.Chip,
+                    colors = ShellButton.filled(),
                     contentPadding = PaddingValues(horizontal = 14.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = UiColors.PrimaryButton,
-                        contentColor = UiColors.Text,
-                    ),
                 ) {
                     Text(text.save, style = ShellType.Tab, maxLines = 1)
                 }
@@ -3761,13 +3905,20 @@ private const val SEGMENT_FILL_ALPHA = 0.16f
  * 选中的那一档亮底 + 同色描边，未选中透明 —— 旧版每档各自一块浮底，四个档看着像四颗互不相
  * 干的按钮，扫不出「这是一个分段选择器」。容器内边距 3dp，让选中块与容器边留一线，避免贴边
  * 发黑；换档仍是 200ms 颜色补间（走 `ShellMotion.content()`），不做硬切。
+ *
+ * 2026-11-27 收口**等宽铺满**：四档一律 `weight(1f)` 平分整行，宽度不再随档名长短伸缩（旧版
+ * 是按内容包宽 + 横向滚动，短档「Mod」与长档「移植版功能」并排时一窄一宽，右边还空一截）；
+ * 每档撑到 [ShellSpace.RowMinHeight] 保证四块等高、热区不低于 44dp；档名 `maxLines = 1` +
+ * 居中 + 省略号，窄屏也不换行撑破。为让四档在 320dp 上仍不截字，档名收成小节标签长度
+ * （「移植版 / 原版引擎 / Mod / 关于」），完整语义仍由分区标题与卡片正文承担 —— 分段控的
+ * 标签本来就该短，长句留给内容区。
  */
 @Composable
 private fun ZoneTabs(zone: SettingsZone, onZone: (SettingsZone) -> Unit, text: SettingsStrings) {
     Column(modifier = Modifier.fillMaxWidth().background(UiColors.CardAlt)) {
         Row(
             modifier = Modifier
-                .horizontalScroll(rememberScrollState())
+                .fillMaxWidth()
                 .clip(ShellShape.Chip)
                 .border(1.dp, UiColors.Border, ShellShape.Chip)
                 .padding(SEGMENT_CONTAINER_PADDING),
@@ -3791,19 +3942,29 @@ private fun ZoneTabs(zone: SettingsZone, onZone: (SettingsZone) -> Unit, text: S
                     animationSpec = ShellMotion.content(),
                     label = "zone-tab-border",
                 )
-                Text(
-                    text = text.zoneTabLabel(option),
-                    color = tabColor,
-                    style = ShellType.Tab,
-                    fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
-                    maxLines = 1,
+                // 等宽 + 等高：宽度由整行四等分决定，不随档名长短伸缩；高度一律撑到触控下限。
+                Box(
                     modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = ShellSpace.RowMinHeight)
                         .clip(ShellShape.Chip)
                         .background(tabBg)
                         .border(1.dp, tabBorder, ShellShape.Chip)
-                        .selectable(selected = selected, role = Role.Tab, onClick = { onZone(option) })
-                        .padding(horizontal = 12.dp, vertical = 7.dp),
-                )
+                        .selectable(selected = selected, role = Role.Tab, onClick = { onZone(option) }),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = text.zoneTabLabel(option),
+                        color = tabColor,
+                        style = ShellType.Tab,
+                        fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
+                    )
+                }
             }
         }
         HorizontalDivider(color = UiColors.Border)
@@ -3878,12 +4039,9 @@ private fun SaveExportCard(
         Button(
             onClick = onExport,
             enabled = !busy,
-            modifier = Modifier.fillMaxWidth().height(42.dp),
+            modifier = Modifier.fillMaxWidth().heightIn(min = ShellSpace.RowMinHeight),
             shape = ShellShape.Inset,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = UiColors.PrimaryButton,
-                contentColor = UiColors.Text,
-            ),
+            colors = ShellButton.filled(),
         ) {
             Text(if (exporting) text.exportBusy else text.exportButton, style = ShellType.Body)
         }
@@ -3917,23 +4075,30 @@ private fun ModImportCard(
     copy: ModImportCopy,
 ) {
     SettingsCard {
-        SectionTitle(copy.cardTitle)
+        // 标题行 + 状态签：卡面上就能看出「上回成没成 / 现在在不在跑」，
+        // 不必先点开覆盖层再退出来确认。
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.weight(1f)) { SectionTitle(copy.cardTitle) }
+            ImportStateTag(state, copy)
+        }
         Text(
             text = text.modImportIntro,
             color = UiColors.TextMuted,
             style = ShellType.Label,
         )
         Spacer(Modifier.height(6.dp))
+        // 进行中：入口卡上直接给进度（关掉覆盖层也不至于「不知道还要等多久」）。
+        if (state is ModImportUiState.Importing) {
+            ModImportProgressLine(state, copy)
+            Spacer(Modifier.height(8.dp))
+        }
         Button(
             onClick = onOpenModImport,
             // 进行中不放行第二次（与覆盖层内「选择口上文件」按钮同一判据）。
             enabled = state !is ModImportUiState.Importing,
-            modifier = Modifier.height(40.dp),
+            modifier = Modifier.heightIn(min = ShellSpace.TouchMin),
             shape = ShellShape.Chip,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = UiColors.PrimaryButton,
-                contentColor = UiColors.Text,
-            ),
+            colors = ShellButton.filled(),
         ) {
             Text(copy.cardOpenButton, style = ShellType.Body)
         }
@@ -3943,7 +4108,7 @@ private fun ModImportCard(
                 text = summary,
                 color = if (state is ModImportUiState.Failed) UiColors.Warn else UiColors.TextDim,
                 style = ShellType.Caption,
-                modifier = Modifier.padding(top = 2.dp),
+                modifier = Modifier.padding(top = 4.dp),
             )
         }
     }
@@ -4017,12 +4182,9 @@ private fun MarketEntryCard(
         Spacer(Modifier.height(8.dp))
         Button(
             onClick = onOpenMarket,
-            modifier = Modifier.height(40.dp),
+            modifier = Modifier.heightIn(min = ShellSpace.RowMinHeight),
             shape = ShellShape.Chip,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = UiColors.PrimaryButton,
-                contentColor = UiColors.Text,
-            ),
+            colors = ShellButton.filled(),
         ) {
             Text(copy.cardOpenButton, style = ShellType.Body)
         }
@@ -4106,6 +4268,9 @@ private fun ResourcePackBackgroundCard(
             onPickFiles = onPickFiles,
             onPickFolder = onPickFolder,
         )
+        if (state is ResourcePackUiState.Importing) {
+            MaterialImportProgress(progress = state.progress, copy = copy)
+        }
         MaterialClearButton(
             text = if (state is ResourcePackUiState.Clearing) copy.clearRunningText else copy.clearBackgroundButton,
             enabled = !busy,
@@ -4179,6 +4344,9 @@ private fun ResourcePackBgmCard(
             onPickFiles = onPickFiles,
             onPickFolder = onPickFolder,
         )
+        if (state is ResourcePackUiState.Importing) {
+            MaterialImportProgress(progress = state.progress, copy = copy)
+        }
         MaterialClearButton(
             text = if (state is ResourcePackUiState.Clearing) copy.clearRunningText else copy.clearBgmButton,
             enabled = !busy,
@@ -4253,6 +4421,110 @@ private fun MaterialImportCard(
         Spacer(Modifier.height(ShellSpace.CardGap))
         content()
     }
+}
+
+/**
+ * 素材导入的进度块（背景图 / BGM 两张直投卡共用）：阶段句 + 细进度带 + 已写读数 + 当前文件。
+ *
+ * ## 为什么要有这一块
+ *
+ * 玩家原话是「导入时间太长，一度以为卡了」。此前 [ResourcePackUiState.Importing] 在结果区
+ * 什么都不画，卡上只剩按钮变成一句「正在导入素材…」—— 几百 MB 的图夹写上一两分钟，屏幕上
+ * 没有一处变化。这块把平台层的读数（阶段 / 已写文件 / 已写字节 / 正在写哪一条）直接铺开。
+ *
+ * ## 两种情况都不许静止
+ *
+ * 1. [progress] 为 null（线程刚起、第一条读数还没到）或总量不可知：画**不定态扫描带**
+ *    （[ShellProgress] 的 null 档），并保留既有那句进行态；
+ * 2. 有确定总量：画比例 + 百分比，`animateFloatAsState` 在 [ShellProgress] 内部把跳变磨平。
+ *
+ * 字节数只作「已写入」的真实量（平台层按实际落盘字节累加），不展示估算剩余时间：
+ * 手机上 SAF 的读取速度不可预测，报一个猜的时间比不报更伤信任。
+ */
+@Composable
+private fun MaterialImportProgress(progress: ResourcePackProgress?, copy: ResourcePackCopy) {
+    val phase = progress?.phase
+    val headline = when (phase) {
+        null, ResourcePackPhase.SCANNING -> copy.progressScanningText
+        ResourcePackPhase.WRITING -> copy.progressWritingText
+        // 收尾与收尾完成共用「生成索引」那句：这一档只闪一帧，结果态马上接手。
+        ResourcePackPhase.INDEXING, ResourcePackPhase.FINISHED -> copy.progressIndexingText
+    }
+    val fraction = progress?.fraction
+    val details = ArrayList<String>(MATERIAL_PROGRESS_DETAIL_LINES)
+    if (progress != null) {
+        val countLine = copy.fill(
+            copy.progressCountFormat,
+            progress.doneFiles,
+            progress.totalFiles,
+            formatMaterialBytes(progress.doneBytes),
+        )
+        when (progress.phase) {
+            ResourcePackPhase.SCANNING -> if (progress.discovered > 0) {
+                details += copy.fill(copy.progressScanningCountFormat, progress.discovered)
+            }
+            ResourcePackPhase.WRITING -> {
+                // 计划数为 0（来源里没有可投放的文件）：不摆「已写入 0/0 个文件」这种糊弄人的行。
+                if (progress.totalFiles > 0) details += countLine
+                progress.currentName?.let { details += copy.fill(copy.progressCurrentFormat, it) }
+            }
+            ResourcePackPhase.INDEXING, ResourcePackPhase.FINISHED ->
+                if (progress.totalFiles > 0) details += countLine
+        }
+    }
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(top = ShellSpace.CardGap),
+        verticalArrangement = Arrangement.spacedBy(MATERIAL_PROGRESS_GAP),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = headline,
+                color = UiColors.TextDim,
+                style = ShellType.Caption,
+                modifier = Modifier.weight(1f),
+            )
+            if (fraction != null) {
+                Text(
+                    text = "${(fraction * MATERIAL_PERCENT).toInt()}%",
+                    color = UiColors.TextMuted,
+                    style = ShellType.Caption,
+                )
+            }
+        }
+        ShellProgress(accent = UiColors.Accent, progress = fraction, modifier = Modifier.fillMaxWidth())
+        details.forEach { line ->
+            Text(
+                text = line,
+                color = UiColors.TextMuted,
+                style = ShellType.Label,
+                // 「当前：」那条常是长相对路径：一行省略，别把卡片撑成两行。
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/** 进度块的读数行最多两条（计数 + 当前文件）：再多就盖过卡片本身的读数。 */
+private const val MATERIAL_PROGRESS_DETAIL_LINES = 2
+
+/** 进度块内距：标题与带、带与读数之间同一档 6dp，不做两种间距。 */
+private val MATERIAL_PROGRESS_GAP = 6.dp
+
+/** 百分比换算（整数档即可，小数百分比在这一档没有信息量）。 */
+private const val MATERIAL_PERCENT = 100f
+
+/** 字节刻度的进制与单位名（技术单位，三语同一串，不进文案表）。 */
+private const val MATERIAL_BYTES_KB = 1024L
+private const val MATERIAL_BYTES_MB = 1024L * 1024L
+private const val MATERIAL_BYTES_GB = 1024L * 1024L * 1024L
+
+/** 进度块里的字节串：0 B / 12.3 KB / 456.7 MB / 1.2 GB（最多一位小数）。 */
+private fun formatMaterialBytes(bytes: Long): String = when {
+    bytes < MATERIAL_BYTES_KB -> "$bytes B"
+    bytes < MATERIAL_BYTES_MB -> String.format(java.util.Locale.ROOT, "%.1f KB", bytes.toDouble() / MATERIAL_BYTES_KB)
+    bytes < MATERIAL_BYTES_GB -> String.format(java.util.Locale.ROOT, "%.1f MB", bytes.toDouble() / MATERIAL_BYTES_MB)
+    else -> String.format(java.util.Locale.ROOT, "%.1f GB", bytes.toDouble() / MATERIAL_BYTES_GB)
 }
 
 /**
@@ -4366,6 +4638,14 @@ private fun ResourcePackOutcome(
         )
 
         is ResourcePackUiState.Cleared -> ResourcePackCleanupArea(state.summary, copy, onRestart)
+
+        // 这次请求没开始（单飞闸拒绝）：照实说一句，别留一个「点了没反应」的卡面。
+        is ResourcePackUiState.Blocked -> Text(
+            text = state.message,
+            color = UiColors.Warn,
+            style = ShellType.Caption,
+            modifier = Modifier.padding(top = 2.dp),
+        )
 
         is ResourcePackUiState.Importing, is ResourcePackUiState.Idle -> Unit
     }
@@ -4483,12 +4763,9 @@ private fun SaveImportCard(
         Button(
             onClick = onPickSaveFiles,
             enabled = !busy,
-            modifier = Modifier.fillMaxWidth().height(42.dp),
+            modifier = Modifier.fillMaxWidth().heightIn(min = ShellSpace.RowMinHeight),
             shape = ShellShape.Inset,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = UiColors.PrimaryButton,
-                contentColor = UiColors.Text,
-            ),
+            colors = ShellButton.filled(),
         ) {
             Text(if (importing) text.importBusy else text.importButton, style = ShellType.Body)
         }
@@ -4581,21 +4858,19 @@ private fun DiagnosticsCard(
             Button(
                 onClick = actions.onShare,
                 enabled = !busy,
-                modifier = Modifier.height(40.dp),
+                modifier = Modifier.heightIn(min = ShellSpace.RowMinHeight),
                 shape = ShellShape.Chip,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = UiColors.PrimaryButton,
-                    contentColor = UiColors.Text,
-                ),
+                colors = ShellButton.filled(),
             ) {
                 Text(if (busy) text.diagBusy else text.diagShareButton, style = ShellType.Body)
             }
             OutlinedButton(
                 onClick = actions.onCopy,
                 enabled = !busy,
-                modifier = Modifier.height(40.dp),
+                modifier = Modifier.heightIn(min = ShellSpace.RowMinHeight),
                 shape = ShellShape.Chip,
-                border = BorderStroke(1.dp, UiColors.Border),
+                colors = ShellButton.outlined(),
+                border = ShellButton.border(),
             ) {
                 Text(text.diagCopyButton, style = ShellType.Body)
             }
@@ -4622,31 +4897,51 @@ private fun DiagnosticsCard(
 @Composable
 private fun AboutCard(text: SettingsStrings) {
     val context = LocalContext.current
-    SettingsCard {
+    GlassSettingsCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Image(
-                painter = painterResource(id = R.drawable.dev_avatar),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
+            // 头像外发光：一圈极淡的分区色光晕，让 64dp 的圆在深底上「浮」起来，
+            // 而不是被一圈实线描边框住。
+            Box(
                 modifier = Modifier
-                    .size(56.dp)
-                    .clip(CircleShape)
-                    .border(1.dp, LocalZoneAccent.current.copy(alpha = 0.45f), CircleShape),
-            )
-            Spacer(Modifier.width(12.dp))
+                    .size(72.dp)
+                    .shellHalo(LocalZoneAccent.current),
+                contentAlignment = Alignment.Center,
+            ) {
+                Image(
+                    painter = painterResource(id = R.drawable.dev_avatar),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(60.dp)
+                        .clip(CircleShape)
+                        .border(1.dp, LocalZoneAccent.current.copy(alpha = 0.30f), CircleShape),
+                )
+            }
+            Spacer(Modifier.width(14.dp))
             Column {
                 Text(text.aboutDeveloperCaption, color = UiColors.TextMuted, style = ShellType.Label)
-                Text(text.aboutDeveloperName, color = LocalZoneAccent.current, style = ShellType.Title)
-                Spacer(Modifier.height(3.dp))
                 Text(
+                    text = text.aboutDeveloperName,
+                    color = LocalZoneAccent.current,
+                    style = ShellType.Title,
+                    letterSpacing = 0.4.sp,
+                )
+                // 名字下面一条 24dp 的短线：这是整页唯一的「签名」，也是视觉锚点。
+                Box(
+                    modifier = Modifier
+                        .padding(top = 6.dp, bottom = 6.dp)
+                        .width(24.dp)
+                        .height(1.dp)
+                        .background(LocalZoneAccent.current.copy(alpha = 0.45f)),
+                )
+                ShellTag(
                     text = text.aboutVersion(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE),
-                    color = UiColors.Text,
-                    style = ShellType.Caption,
+                    tone = LocalZoneAccent.current,
                 )
             }
         }
-        Spacer(Modifier.height(8.dp))
-        HorizontalDivider(color = UiColors.Border)
+        Spacer(Modifier.height(12.dp))
+        HorizontalDivider(color = glassRule(LocalZoneAccent.current))
         AboutContactRow(
             caption = text.aboutRepoCaption,
             value = text.aboutRepoUrl,
@@ -4660,7 +4955,7 @@ private fun AboutCard(text: SettingsStrings) {
                 }
             },
         )
-        HorizontalDivider(color = UiColors.Border)
+        HorizontalDivider(color = glassRule(LocalZoneAccent.current))
         AboutContactRow(
             caption = text.aboutFeedbackCaption,
             value = text.aboutGroupId,
@@ -4706,9 +5001,10 @@ private fun AboutContactRow(
             )
             OutlinedButton(
                 onClick = onClick,
-                modifier = Modifier.height(36.dp),
+                modifier = Modifier.heightIn(min = ShellSpace.RowMinHeight),
                 shape = ShellShape.Chip,
-                border = BorderStroke(1.dp, UiColors.Border),
+                colors = ShellButton.outlined(),
+                border = ShellButton.border(),
                 contentPadding = PaddingValues(horizontal = 12.dp),
             ) {
                 Text(button, style = ShellType.Caption, maxLines = 1)
@@ -4731,7 +5027,7 @@ private fun PlayerStatsCard(
     onCheckedChange: (Boolean) -> Unit,
 ) {
     val copy = PlayerStatsCopy.of(text.lang)
-    SettingsCard {
+    GlassSettingsCard {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -4752,7 +5048,7 @@ private fun PlayerStatsCard(
             }
             Switch(checked = checked, onCheckedChange = null)
         }
-        HorizontalDivider(color = UiColors.Border, modifier = Modifier.padding(vertical = 8.dp))
+        HorizontalDivider(color = glassRule(LocalZoneAccent.current), modifier = Modifier.padding(vertical = 8.dp))
         Text(
             text = copy.detailTitle,
             color = LocalZoneAccent.current,
@@ -4775,7 +5071,7 @@ private fun PlayerStatsCard(
 @Composable
 private fun TutorialRevisitCard(language: SettingsLanguage, onOpen: () -> Unit) {
     val copy = TutorialCopy.of(LocalContext.current, language)
-    SettingsCard {
+    GlassSettingsCard {
         SectionTitle(copy.revisitTitle)
         Text(
             text = copy.revisitHint,
@@ -4786,9 +5082,10 @@ private fun TutorialRevisitCard(language: SettingsLanguage, onOpen: () -> Unit) 
         Spacer(Modifier.height(6.dp))
         OutlinedButton(
             onClick = onOpen,
-            modifier = Modifier.height(40.dp),
+            modifier = Modifier.heightIn(min = ShellSpace.RowMinHeight),
             shape = ShellShape.Chip,
-            border = BorderStroke(1.dp, UiColors.Border),
+            colors = ShellButton.outlined(),
+            border = ShellButton.border(),
         ) {
             Text(copy.revisitButton, color = UiColors.Accent, style = ShellType.Body)
         }
@@ -4806,7 +5103,7 @@ private fun TutorialRevisitCard(language: SettingsLanguage, onOpen: () -> Unit) 
  */
 @Composable
 private fun CreditsCard(text: SettingsStrings) {
-    SettingsCard {
+    GlassSettingsCard {
         SectionTitle(text.creditsTitle)
         CreditsSection(text.creditsHeadGame, text.creditsGameBody, first = true)
         CreditsSection(text.creditsHeadScope, text.creditsScopeBody)
@@ -4889,7 +5186,11 @@ private fun CreditsFooter(line: String) {
 
 @Composable
 private fun CreditsRule() {
-    HorizontalDivider(color = UiColors.Border, modifier = Modifier.padding(vertical = 10.dp))
+    // 玻璃面上不用实心 Border（会读成一道硬折痕）：同色 16% 的发丝线，分割还在但不打断整块面。
+    HorizontalDivider(
+        color = glassRule(LocalZoneAccent.current),
+        modifier = Modifier.padding(vertical = 10.dp),
+    )
 }
 
 /** 打开页面时的读取诊断（结构化保存，切换语言时按当前语言重新上屏）。 */
@@ -5316,43 +5617,38 @@ private fun ModManageCard(
             expanded = expanded,
             onToggle = { expanded = !expanded },
         )
-        AnimatedVisibility(
+        // 正文交 ShellVisibility：它内部固定套一列，不可能再出现「多个子项叠在同一行」。
+        ShellVisibility(
             visible = expanded,
             enter = ShellMotion.disclosureEnter(),
             exit = ShellMotion.disclosureExit(),
         ) {
-            // 必须自己套一层 Column：`AnimatedVisibility` 的 content 是**叠放**布局（多个子项
-            // 全部落脚在同一原点），直接并列写正文会变成「说明句与每一行 Mod 重叠在一行上」。
-            // 揭示式卡（ShellDisclosureSection）里那层 Column 就是干这个的，本卡手写的这一处
-            // 漏了 —— 玩家看到的就是文字互相压住。
-            Column(modifier = Modifier.fillMaxWidth()) {
-                ModManageIntro(
+            ModManageIntro(
+                text = text,
+                scan = scan,
+                filter = filter,
+                visibleCount = visibleMods.size,
+                scanning = readouts.scanning,
+            )
+            for (mod in visibleMods) {
+                ModManageRow(
                     text = text,
-                    scan = scan,
-                    filter = filter,
-                    visibleCount = visibleMods.size,
-                    scanning = readouts.scanning,
-                )
-                for (mod in visibleMods) {
-                    ModManageRow(
-                        text = text,
-                        mod = mod,
-                        failure = readouts.failures[mod.packageId],
-                        version = versionsById[mod.packageId],
-                        actions = actions,
-                    )
-                }
-                // 装载失败读数按**整张已装清单**渲染：它是本会话的诊断面，不该被搜索框藏起来。
-                ModManageFailures(text, readouts.failures, scan.mods)
-                ModManageBrokenLine(text, scan.skipped)
-                ModHeirSection(text, scan)
-                Text(
-                    text = text.modManageHint,
-                    color = UiColors.TextMuted,
-                    style = ShellType.Label,
-                    modifier = Modifier.padding(top = 6.dp),
+                    mod = mod,
+                    failure = readouts.failures[mod.packageId],
+                    version = versionsById[mod.packageId],
+                    actions = actions,
                 )
             }
+            // 装载失败读数按**整张已装清单**渲染：它是本会话的诊断面，不该被搜索框藏起来。
+            ModManageFailures(text, readouts.failures, scan.mods)
+            ModManageBrokenLine(text, scan.skipped)
+            ModHeirSection(text, scan)
+            Text(
+                text = text.modManageHint,
+                color = UiColors.TextMuted,
+                style = ShellType.Label,
+                modifier = Modifier.padding(top = 6.dp),
+            )
         }
     }
 }
@@ -5381,13 +5677,14 @@ private fun ModManageIntro(
         modifier = Modifier.padding(top = 2.dp),
     )
     Text(text.modManageExpandHint, color = UiColors.TextMuted, style = ShellType.Label)
-    // 首扫未完：只出细进度条，不出「还没有安装任何 Mod」的空态（避免先空后满的闪烁）。
+    // 首扫未完：只出细进度带 + 几行呼吸占位，不出「还没有安装任何 Mod」的空态（避免先空后满的闪烁）。
     if (scanning && scan.mods.isEmpty()) {
-        LinearProgressIndicator(
-            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-            color = LocalZoneAccent.current,
-            trackColor = UiColors.CardAlt,
+        ShellProgress(
+            accent = LocalZoneAccent.current,
+            modifier = Modifier.padding(top = 6.dp),
         )
+        // 占位条给出「正在读出来」的体感：只转一条进度带时卡体上空着一大片，像卡住了。
+        ShellSkeletonRow(lines = 2, modifier = Modifier.padding(top = 10.dp))
     }
     if (scan.mods.isEmpty()) {
         // 一个都没装：只报「还没装」，不出搜索/筛选控件（没东西可筛，控件只会误导）。
@@ -5634,17 +5931,15 @@ private fun ModHeirActionRow(
     onClear: () -> Unit,
 ) {
     Row(modifier = Modifier.padding(top = 4.dp)) {
-        TextButton(onClick = onChoose, enabled = enabled) {
+        TextButton(onClick = onChoose, enabled = enabled, colors = ShellButton.text()) {
             Text(
                 text = text.modHeirChooseButton,
-                color = if (enabled) UiColors.Text else UiColors.TextMuted,
                 style = ShellType.Tab,
             )
         }
-        TextButton(onClick = onClear, enabled = enabled) {
+        TextButton(onClick = onClear, enabled = enabled, colors = ShellButton.text(UiColors.Warn)) {
             Text(
                 text = text.modHeirClearButton,
-                color = if (enabled) UiColors.Warn else UiColors.TextMuted,
                 style = ShellType.Tab,
             )
         }
@@ -5794,12 +6089,12 @@ private fun ModTrustRowView(
         // 身份坏档（侧车损坏）：信任 / 撤销两个方向都不能写盘，不给按钮；状态行已说明只能重新导入。
         if (row.blockedReason == null) {
             if (row.trusted) {
-                TextButton(onClick = onRevoke) {
-                    Text(text.modTrustRevokeButton, color = UiColors.Warn, style = ShellType.Tab)
+                TextButton(onClick = onRevoke, colors = ShellButton.text(UiColors.Warn)) {
+                    Text(text.modTrustRevokeButton, style = ShellType.Tab)
                 }
             } else {
-                TextButton(onClick = onRequestTrust) {
-                    Text(text.modTrustGrantButton, color = UiColors.Accent, style = ShellType.Tab)
+                TextButton(onClick = onRequestTrust, colors = ShellButton.text(UiColors.Accent)) {
+                    Text(text.modTrustGrantButton, style = ShellType.Tab)
                 }
             }
         }
@@ -6169,18 +6464,16 @@ private fun ModManageRow(
                 colors = SwitchDefaults.colors(uncheckedTrackColor = UiColors.CardAlt),
             )
         }
-        AnimatedVisibility(
+        ShellVisibility(
             visible = expanded,
             enter = ShellMotion.rowEnter(),
             exit = ShellMotion.rowExit(),
         ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                HorizontalDivider(
-                    color = UiColors.Border,
-                    modifier = Modifier.padding(vertical = 6.dp),
-                )
-                ModManageDetails(text, mod, actions)
-            }
+            HorizontalDivider(
+                color = UiColors.Border,
+                modifier = Modifier.padding(vertical = 6.dp),
+            )
+            ModManageDetails(text, mod, actions)
         }
     }
 }
@@ -6265,9 +6558,10 @@ private fun ModManageFailureLine(text: SettingsStrings, modName: String, failure
 private fun ModReinstallRetryButton(text: SettingsStrings, onClick: () -> Unit) {
     TextButton(
         onClick = onClick,
+        colors = ShellButton.text(UiColors.Accent),
         modifier = Modifier.heightIn(min = ShellSpace.RowMinHeight),
     ) {
-        Text(text.modManageRetryInstall, color = UiColors.Accent, style = ShellType.Caption)
+        Text(text.modManageRetryInstall, style = ShellType.Caption)
     }
 }
 
@@ -6324,8 +6618,8 @@ private fun ModManageDetails(
             modifier = Modifier.padding(top = 6.dp),
         )
     } else {
-        TextButton(onClick = { confirmingUninstall = true }) {
-            Text(text.modManageUninstall, color = UiColors.Warn, style = ShellType.Tab)
+        TextButton(onClick = { confirmingUninstall = true }, colors = ShellButton.text(UiColors.Warn)) {
+            Text(text.modManageUninstall, style = ShellType.Tab)
         }
     }
     if (confirmingUninstall) {
@@ -6364,11 +6658,14 @@ private fun ModLogViewerSection(mod: InstalledMod) {
     val copy = ModUiCopy.of(UiPrefs.settingsLanguage(context))
     var expanded by remember(mod.packageId) { mutableStateOf(false) }
     var revision by remember(mod.packageId) { mutableIntStateOf(0) }
-    TextButton(onClick = {
-        expanded = !expanded
-        revision++
-    }) {
-        Text(copy.logViewerLabel, color = UiColors.Accent, style = ShellType.Tab)
+    TextButton(
+        onClick = {
+            expanded = !expanded
+            revision++
+        },
+        colors = ShellButton.text(UiColors.Accent),
+    ) {
+        Text(copy.logViewerLabel, style = ShellType.Tab)
     }
     if (!expanded) return
     val lines = remember(mod.packageId, revision) { ModRuntimeLogViewerEntry.read(mod.packageId) }
@@ -6386,8 +6683,8 @@ private fun ModLogViewerSection(mod: InstalledMod) {
                 .verticalScroll(rememberScrollState())
                 .padding(top = 2.dp),
         )
-        TextButton(onClick = { copyModLogs(context, copy, lines) }) {
-            Text(copy.logViewerCopy, color = UiColors.Accent, style = ShellType.Tab)
+        TextButton(onClick = { copyModLogs(context, copy, lines) }, colors = ShellButton.text(UiColors.Accent)) {
+            Text(copy.logViewerCopy, style = ShellType.Tab)
         }
     }
 }
@@ -6457,6 +6754,7 @@ private fun ModRecompileSection(text: SettingsStrings, mod: InstalledMod, copy: 
     var notice by remember(mod.packageId) { mutableStateOf<String?>(null) }
     TextButton(
         enabled = !busy,
+        colors = ShellButton.text(),
         onClick = {
             busy = true
             notice = null
@@ -6480,7 +6778,6 @@ private fun ModRecompileSection(text: SettingsStrings, mod: InstalledMod, copy: 
     ) {
         Text(
             text = if (busy) text.modManageRecompileBusy else text.modManageRecompile,
-            color = UiColors.Text,
             style = ShellType.Tab,
         )
     }
@@ -6776,11 +7073,14 @@ private fun ModSettingEnumChoices(
     onRawChange: (String) -> Unit,
 ) {
     for (candidate in decl.candidates) {
-        TextButton(onClick = { onRawChange(candidate) }) {
+        // 选中项用正文色、其余次级色；选中同时回填输入框，读屏侧不只有颜色一条路。
+        // 两档色交给共享文本钮档承载，内部 Text 只留字阶。
+        TextButton(
+            onClick = { onRawChange(candidate) },
+            colors = ShellButton.text(if (candidate == raw) EratwInk.text() else EratwInk.textMuted()),
+        ) {
             Text(
                 text = candidate,
-                // 选中项用正文色、其余次级色；选中同时回填输入框，读屏侧不只有颜色一条路。
-                color = if (candidate == raw) EratwInk.text() else EratwInk.textMuted(),
                 style = ShellType.Tab,
             )
         }
@@ -6948,7 +7248,8 @@ private fun ModDiagnosticsCard(
         OutlinedButton(
             onClick = onCopy,
             shape = ShellShape.Chip,
-            border = BorderStroke(1.dp, UiColors.Border),
+            colors = ShellButton.outlined(),
+            border = ShellButton.border(),
             modifier = Modifier
                 .padding(top = 8.dp)
                 .heightIn(min = ShellSpace.TouchMin),
@@ -7028,8 +7329,9 @@ private fun ModDiagnosticExportCard(
                 val input = collectModDiagnosticSnapshot(context, scan, failures)
                 report = buildModDiagnosticReport(input)
             },
+            colors = ShellButton.text(UiColors.Accent),
         ) {
-            Text(text.modDiagnosticExport, color = UiColors.Accent, style = ShellType.Tab)
+            Text(text.modDiagnosticExport, style = ShellType.Tab)
         }
     }
     val snapshot = report
@@ -7288,8 +7590,11 @@ private fun ModPackageOrderCard(
                 onRemove = { onValueChange(ModManageOrder.toRaw(unknown - staleId, chosen)) },
             )
         }
-        TextButton(onClick = { onValueChange("") }) {
-            Text(text.modPackageOrderReset, color = LocalZoneAccent.current, style = ShellType.Tab)
+        TextButton(
+            onClick = { onValueChange("") },
+            colors = ShellButton.text(LocalZoneAccent.current),
+        ) {
+            Text(text.modPackageOrderReset, style = ShellType.Tab)
         }
         OutlinedTextField(
             value = value,
@@ -7334,12 +7639,14 @@ private fun ModPackageOrderKnownRow(
         TextButton(
             onClick = { onCommit(ModManageOrder.move(chosen, packageId, -1)) },
             enabled = picked && position > 0,
+            colors = ShellButton.text(),
         ) {
             Text(text.modPackageOrderMoveUp, style = ShellType.Caption)
         }
         TextButton(
             onClick = { onCommit(ModManageOrder.move(chosen, packageId, 1)) },
             enabled = picked && position >= 0 && position < chosen.lastIndex,
+            colors = ShellButton.text(),
         ) {
             Text(text.modPackageOrderMoveDown, style = ShellType.Caption)
         }
@@ -7361,7 +7668,7 @@ private fun ModPackageOrderUnknownRow(
             Text(text.modPackageOrderUnknownTag, color = UiColors.Text, style = ShellType.Tab)
             Text(staleId, color = UiColors.TextMuted, style = ShellType.Overline)
         }
-        TextButton(onClick = onRemove) {
+        TextButton(onClick = onRemove, colors = ShellButton.text()) {
             Text(text.modPackageOrderUnknownRemove, style = ShellType.Caption)
         }
     }
@@ -7442,7 +7749,9 @@ private fun LaunchCard(
             onClick = onCheckUpdate,
             enabled = !updateChecking,
             shape = ShellShape.Chip,
-            modifier = Modifier.height(40.dp),
+            colors = ShellButton.outlined(),
+            border = ShellButton.border(),
+            modifier = Modifier.heightIn(min = ShellSpace.RowMinHeight),
         ) {
             val label = UpdateUiText.checkButtonLabel(text.checkUpdateButton, updateChecking)
             Text(label, color = if (updateChecking) UiColors.TextMuted else UiColors.Text, style = ShellType.Body)
@@ -7457,11 +7766,12 @@ private fun LaunchCard(
             OutlinedButton(
                 onClick = onCancelDownload,
                 shape = ShellShape.Chip,
-                border = BorderStroke(1.dp, UiColors.Border),
+                colors = ShellButton.outlined(),
+                border = ShellButton.border(),
                 modifier = Modifier
                     .padding(top = 6.dp)
-                    .height(36.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    .heightIn(min = ShellSpace.RowMinHeight),
+                contentPadding = ShellButton.CompactPadding,
             ) {
                 Text(updateCopy.cancelNotifyAction, color = UiColors.Accent, style = ShellType.Tab)
             }
@@ -7473,9 +7783,11 @@ private fun LaunchCard(
             OutlinedButton(
                 onClick = onInstallStagedApk,
                 shape = ShellShape.Chip,
+                colors = ShellButton.outlined(),
+                border = ShellButton.border(),
                 modifier = Modifier
                     .padding(top = 6.dp)
-                    .height(40.dp),
+                    .heightIn(min = ShellSpace.RowMinHeight),
             ) {
                 Text(updateCopy.installStagedApk, color = UiColors.Accent, style = ShellType.Body)
             }
@@ -7524,9 +7836,10 @@ private fun LaunchCard(
             OutlinedButton(
                 onClick = onRetryFailedDownload,
                 shape = ShellShape.Chip,
-                border = BorderStroke(1.dp, UiColors.Border),
-                modifier = Modifier.height(36.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                colors = ShellButton.outlined(),
+                border = ShellButton.border(),
+                modifier = Modifier.heightIn(min = ShellSpace.RowMinHeight),
+                contentPadding = ShellButton.CompactPadding,
             ) {
                 Text(
                     text = UpdateProgressText.settingsRetryLabel(updateCopy, kind),
@@ -7547,9 +7860,10 @@ private fun LaunchCard(
             OutlinedButton(
                 onClick = onRestoreUpdateReminder,
                 shape = ShellShape.Chip,
-                border = BorderStroke(1.dp, UiColors.Border),
-                modifier = Modifier.height(36.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                colors = ShellButton.outlined(),
+                border = ShellButton.border(),
+                modifier = Modifier.heightIn(min = ShellSpace.RowMinHeight),
+                contentPadding = ShellButton.CompactPadding,
             ) {
                 Text(text.updateRestoreButton, color = UiColors.Accent, style = ShellType.Tab)
             }
@@ -7697,6 +8011,19 @@ private fun AdvancedCard(
 }
 
 /**
+ * **关于档专用**的玻璃壳：与 [SettingsCard] 同一副骨架，卡面换成半透明的一层，
+ * 透出页面顶部的氛围光，色带换成 1dp 同色发丝 + 顶部反光。
+ *
+ * 刻意留在这个文件里（不进 `SettingsCardKit`）：它只服务关于页这一档，而卡片套件
+ * 已经贴着 detekt 的「单文件函数数」上限；功能卡也不该跟着换 —— 半透明会压低长名单的
+ * 正文对比度。
+ */
+@Composable
+private fun GlassSettingsCard(content: @Composable ColumnScope.() -> Unit) {
+    ShellGlassCard(accent = LocalZoneAccent.current, content = content)
+}
+
+/**
  * 列表底部的「恢复默认设置」卡片：只负责开二次确认，真正的动作在 Activity 的
  * `restoreDefaults()`。用警示色而不是主按钮色 —— 它会立刻覆盖写好的 emuera.config，不可撤销。
  *
@@ -7705,19 +8032,29 @@ private fun AdvancedCard(
  * 两个动作挨在一起最容易被误点。
  */
 @Composable
-private fun RestoreDefaultsCard(text: SettingsStrings, onRestore: () -> Unit) {
-    SettingsCard {
-        SectionTitle(text.restoreDefaultsTitle)
-        Text(text = text.restoreDefaultsHint, color = UiColors.TextMuted, style = ShellType.Label)
-        Spacer(Modifier.height(8.dp))
-        OutlinedButton(
-            onClick = onRestore,
-            modifier = Modifier.height(40.dp),
-            shape = ShellShape.Chip,
-            border = BorderStroke(1.dp, UiColors.Warn),
-        ) {
-            Text(text.restoreDefaultsButton, color = UiColors.Warn, style = ShellType.Body)
-        }
+private fun RestoreDefaultsCard(text: SettingsStrings, onRestore: () -> Unit, glass: Boolean = false) {
+    // 关于档把这张也做成玻璃：整页只有它一块实心砖，视线会先落到这张「最不该点的卡」上。
+    if (glass) {
+        GlassSettingsCard { RestoreDefaultsBody(text = text, onRestore = onRestore) }
+    } else {
+        SettingsCard { RestoreDefaultsBody(text = text, onRestore = onRestore) }
+    }
+}
+
+/** 恢复默认卡的正文（玻璃/实心两壳共用同一份排版）。 */
+@Composable
+private fun RestoreDefaultsBody(text: SettingsStrings, onRestore: () -> Unit) {
+    SectionTitle(text.restoreDefaultsTitle)
+    Text(text = text.restoreDefaultsHint, color = UiColors.TextMuted, style = ShellType.Label)
+    Spacer(Modifier.height(8.dp))
+    OutlinedButton(
+        onClick = onRestore,
+        modifier = Modifier.heightIn(min = ShellSpace.RowMinHeight),
+        shape = ShellShape.Chip,
+        colors = ShellButton.outlined(),
+        border = ShellButton.border(UiColors.Warn),
+    ) {
+        Text(text.restoreDefaultsButton, color = UiColors.Warn, style = ShellType.Body)
     }
 }
 
@@ -7953,6 +8290,8 @@ private fun EditableEntryRow(
                 else -> OutlinedButton(
                     onClick = { onEdit(entry) },
                     shape = ShellShape.Chip,
+                    colors = ShellButton.outlined(),
+                    border = ShellButton.border(),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                 ) {
                     Text(
@@ -8049,19 +8388,18 @@ private fun BottomBar(text: SettingsStrings, onSave: () -> Unit, onSaveAndRestar
         ) {
             OutlinedButton(
                 onClick = onSaveAndRestart,
-                modifier = Modifier.weight(1f).height(40.dp),
+                modifier = Modifier.weight(1f).heightIn(min = ShellSpace.RowMinHeight),
                 shape = ShellShape.Chip,
+                colors = ShellButton.outlined(),
+                border = ShellButton.border(),
             ) {
                 Text(text.saveAndRestart, style = ShellType.Tab)
             }
             Button(
                 onClick = onSave,
-                modifier = Modifier.weight(1f).height(40.dp),
+                modifier = Modifier.weight(1f).heightIn(min = ShellSpace.RowMinHeight),
                 shape = ShellShape.Chip,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = UiColors.PrimaryButton,
-                    contentColor = UiColors.Text,
-                ),
+                colors = ShellButton.filled(),
             ) {
                 Text(text.save, style = ShellType.Section)
             }
@@ -8484,4 +8822,3 @@ private fun parseOpenDocumentUris(resultCode: Int, intent: Intent?): List<Uri> {
     }
     return intent?.data?.let { listOf(it) } ?: emptyList()
 }
-

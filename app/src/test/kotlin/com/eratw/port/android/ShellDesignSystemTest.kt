@@ -25,6 +25,62 @@ import org.junit.Test
  */
 class ShellDesignSystemTest {
 
+    @Test
+    fun `按钮样式只有一份`() {
+        // 设置页二十来处 Button / OutlinedButton 原来各自写 `ButtonDefaults.buttonColors(…)`、
+        // 各自给不给描边、定高在 36 / 40 / 42dp 三种之间摆。这里钉住三件事：配色、描边、最小高度
+        // 都只能从 `ShellButton` 与 `ShellSpace` 取，否则换墨色又得改十几处。
+        val kit = sourceOf("ui/design/ShellButton.kt")
+        assertTrue("按钮配色必须由设计件提供", kit.contains("object ShellButton"))
+        assertTrue("实心按钮要有自己的档", kit.contains("fun filled("))
+        assertTrue("描边按钮要有自己的档", kit.contains("fun outlined("))
+        assertTrue("描边宽度必须取 token", kit.contains("ShellSpace.Hairline"))
+        val settings = sourceOf("SettingsActivity.kt")
+        assertEquals(
+            "设置页不许再自建按钮配色",
+            0,
+            Regex("ButtonDefaults\\.").findAll(settings).count(),
+        )
+        assertEquals(
+            "设置页不许再自建按钮描边",
+            0,
+            Regex("BorderStroke\\(").findAll(settings).count(),
+        )
+        assertEquals(
+            "每个 OutlinedButton 都要接 ShellButton.outlined()",
+            Regex("OutlinedButton\\(").findAll(settings).count(),
+            Regex("ShellButton\\.outlined\\(").findAll(settings).count(),
+        )
+        assertEquals(
+            "每个 OutlinedButton 都要接 ShellButton.border()（警示档传 tone）",
+            Regex("OutlinedButton\\(").findAll(settings).count(),
+            Regex("ShellButton\\.border\\(").findAll(settings).count(),
+        )
+        assertEquals(
+            "每个实心 Button 都要接 ShellButton.filled()",
+            Regex("\\bButton\\(").findAll(settings).count(),
+            Regex("ShellButton\\.filled\\(\\)").findAll(settings).count(),
+        )
+        assertEquals(
+            "按钮不许再写死 36 / 40 / 42dp（跌破 44dp 触控下限）",
+            0,
+            Regex("height\\((36|40|42)\\.dp\\)").findAll(settings).count(),
+        )
+        // 对话框是两个按钮族的落点（`EratwFilledButton` / `EratwGhostButton` / 共享确认框），
+        // 它们同样是壳层按钮，不许再各写一份就地配色与描边。
+        for (name in listOf("ui/EratwDialog.kt", "ui/design/ShellAlertDialog.kt")) {
+            val src = sourceOf(name)
+            assertEquals("$name 不许再自建按钮配色", 0, Regex("ButtonDefaults\\.").findAll(src).count())
+            assertEquals("$name 不许再自建按钮描边", 0, Regex("BorderStroke\\(").findAll(src).count())
+            assertEquals(
+                "$name 的按钮不许再写死 36 / 40 / 42dp",
+                0,
+                Regex("height\\((36|40|42)\\.dp\\)").findAll(src).count(),
+            )
+            assertTrue("$name 的按钮必须走 ShellButton", src.contains("ShellButton."))
+        }
+    }
+
     private fun sourceOf(relative: String): String {
         val candidates = listOf(
             File("src/main/kotlin/com/eratw/port/android/$relative"),
@@ -173,25 +229,6 @@ class ShellDesignSystemTest {
         val modImport = sourceOf("ModImportUi.kt")
         assertTrue("导入块小节标签必须走共享件", modImport.contains("ShellRuleLabel("))
         assertTrue("失败块容器圆角必须取 token", modImport.contains("clip(ShellShape.Inset)"))
-    }
-
-    @Test
-    fun `分区标签条是共享容器分段控`() {
-        val settings = sourceOf("SettingsActivity.kt")
-        assertTrue(
-            "标签条四档必须装进同一个描边容器",
-            settings.contains(
-                ".clip(ShellShape.Chip)\n                .border(1.dp, UiColors.Border, ShellShape.Chip)",
-            ),
-        )
-        assertTrue(
-            "选中档必须有描边（不只靠底色传意）",
-            settings.contains(".border(1.dp, tabBorder, ShellShape.Chip)"),
-        )
-        assertTrue(
-            "档位文字必须取字阶 token（不许再内联 fontSize 13.sp）",
-            settings.contains("style = ShellType.Tab"),
-        )
     }
 
     @Test
@@ -581,6 +618,7 @@ class ShellDesignSystemTest {
             "KojoManageCard.kt",
             "ShellUi.kt",
             "ui/design/ShellDisclosure.kt",
+            "ui/design/ShellVisibility.kt",
         )
         var sites = 0
         for (name in files) {

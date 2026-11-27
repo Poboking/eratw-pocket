@@ -3,6 +3,7 @@ package com.eratw.port.android
 import com.eratw.port.core.diag.DiagnosticDomain
 import com.eratw.port.core.diag.DiagnosticOutcome
 import com.eratw.port.core.fn.NativeMethodRegistry
+import com.eratw.port.core.mod.JobScheduler
 import com.eratw.port.core.mod.ModDeclarationAdapter
 import com.eratw.port.core.mod.ModRuntimeHost
 import com.eratw.port.core.patch.ManifestCodec
@@ -11,12 +12,14 @@ import com.eratw.port.modapi.ArchetypeDecl
 import com.eratw.port.modapi.EraMod
 import com.eratw.port.modapi.JobDecl
 import com.eratw.port.modapi.JobHandler
+import com.eratw.port.modapi.JobTemplateDecl
 import com.eratw.port.modapi.ModContext
 import com.eratw.port.modapi.ModManifest
 import com.eratw.port.modapi.PhaseDecl
 import java.nio.file.Files
 import java.nio.file.Path
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -107,6 +110,63 @@ class TurnBoundaryPhaseWireTest {
         override fun onTurnBoundary() {
             turns++
         }
+    }
+
+    /** 同时绑定相位与任务，记录跨包生产派发顺序。 */
+    private class OrderedMod(
+        private val trace: MutableList<String>,
+        private val label: String,
+        private val jobId: String,
+    ) : EraMod {
+        override fun onLoad(context: ModContext) {
+            context.phases.subscribe("DAY_START") { trace += "$label:phase" }
+            context.jobs.bind(jobId) { trace += "$label:job" }
+        }
+
+        override fun onEnable() { Unit }
+        override fun onDisable() { Unit }
+        override fun onUnload() { Unit }
+    }
+
+    /** onLoad 排一个动态任务，onEnable 失败后其绑定和实例都应回滚。 */
+    private class FailingJobMod(private val jobId: String, private val templateKey: String) : EraMod {
+        var fired: Int = 0
+            private set
+
+        override fun onLoad(context: ModContext) {
+            context.jobs.bind(jobId) { fired++ }
+            context.jobs.scheduleOnce(templateKey, 0L)
+        }
+
+        override fun onEnable() {
+            error("enable-boom")
+        }
+
+        override fun onDisable() { Unit }
+        override fun onUnload() { Unit }
+    }
+
+    /** 只声明并绑定动态任务，记录跨包模板 priority 的生产顺序。 */
+    private class DynamicOrderedMod(
+        private val trace: MutableList<String>,
+        private val label: String,
+        private val templateKey: String,
+    ) : EraMod {
+        override fun onLoad(context: ModContext) {
+            context.jobs.scheduleOnce(templateKey, 0L)
+            context.jobs.bindTemplate(templateKey) { trace += label }
+        }
+
+        override fun onEnable() { Unit }
+        override fun onDisable() { Unit }
+        override fun onUnload() { Unit }
+    }
+
+    private class EmptyMod : EraMod {
+        override fun onLoad(context: ModContext) { Unit }
+        override fun onEnable() { Unit }
+        override fun onDisable() { Unit }
+        override fun onUnload() { Unit }
     }
 
     // ------------------------------------------------------------------
@@ -271,5 +331,123 @@ class TurnBoundaryPhaseWireTest {
 
         assertEquals("关态 = 装配链零接触（无会话，TIME 读数与 time 相位都无从发生）", null, session)
         assertTrue("关态不得产生任何日志", logs.isEmpty())
+    }
+
+    @Test
+    fun `前置包没有任务处理器也不会吞掉后置包到期任务`() {
+        val root = tempGameRoot()
+        writeManifest(
+            root,
+            "mod_a.manifest",
+            ModManifest(packageId = "mod.a", jobs = listOf(JobDecl("a", firstDay = 0L))),
+        )
+        writeManifest(
+            root,
+            "mod_b.manifest",
+            ModManifest(packageId = "mod.b", jobs = listOf(JobDecl("b", firstDay = 0L))),
+        )
+        val b = PhaseJobMod("b", emptyList(), mutableListOf())
+        val session = attach(root, VariableStore(), listOf("mod.a" to EmptyMod(), "mod.b" to b))!!
+        session.onTurnBoundary()
+        assertEquals("后置包任务必须恰好触发一次", 1, b.fired)
+        session.shutdown()
+    }
+
+    @Test
+    fun `全链相位先于任务且跨包任务按priority而非安装序执行`() {
+        val root = tempGameRoot()
+        writeManifest(
+            root,
+            "mod_a.manifest",
+            ModManifest(
+                packageId = "mod.a",
+                jobs = listOf(JobDecl("a", firstDay = 0L, priority = 10)),
+            ),
+        )
+        writeManifest(
+            root,
+            "mod_b.manifest",
+            ModManifest(
+                packageId = "mod.b",
+                jobs = listOf(JobDecl("b", firstDay = 0L, priority = 0)),
+            ),
+        )
+        val trace = mutableListOf<String>()
+        val session = attach(
+            root,
+            VariableStore(),
+            listOf("mod.a" to OrderedMod(trace, "a", "a"), "mod.b" to OrderedMod(trace, "b", "b")),
+        )!!
+        session.onTurnBoundary()
+        assertEquals(listOf("a:phase", "b:phase", "b:job", "a:job"), trace)
+        session.shutdown()
+    }
+
+    @Test
+    fun `生产共享任务按模板priority派发动态实例`() {
+        val root = tempGameRoot()
+        writeManifest(
+            root,
+            "mod_a.manifest",
+            ModManifest(
+                packageId = "mod.a",
+                jobTemplates = listOf(JobTemplateDecl("late", priority = 10)),
+            ),
+        )
+        writeManifest(
+            root,
+            "mod_b.manifest",
+            ModManifest(
+                packageId = "mod.b",
+                jobTemplates = listOf(JobTemplateDecl("early", priority = 0)),
+            ),
+        )
+        val trace = mutableListOf<String>()
+        val session = attach(
+            root,
+            VariableStore(),
+            listOf(
+                "mod.a" to DynamicOrderedMod(trace, "a", "late"),
+                "mod.b" to DynamicOrderedMod(trace, "b", "early"),
+            ),
+        )!!
+        session.onTurnBoundary()
+        assertEquals(listOf("b", "a"), trace)
+        session.shutdown()
+    }
+
+    @Test
+    fun `失败包任务态不被其它活跃包推进且重装后可触发`() {
+        val root = tempGameRoot()
+        writeManifest(
+            root,
+            "mod_a.manifest",
+            ModManifest(
+                packageId = "mod.a",
+                jobs = listOf(JobDecl("a", firstDay = 0L)),
+                jobTemplates = listOf(JobTemplateDecl("once")),
+            ),
+        )
+        writeManifest(
+            root,
+            "mod_b.manifest",
+            ModManifest(packageId = "mod.b", jobs = listOf(JobDecl("b", firstDay = 0L))),
+        )
+        val a = FailingJobMod("a", "once")
+        val b = PhaseJobMod("b", emptyList(), mutableListOf())
+        val session = attach(root, VariableStore(), listOf("mod.a" to a, "mod.b" to b))!!
+        assertNotNull(session.host.failureOf("mod.a"))
+
+        session.onTurnBoundary()
+
+        assertEquals(0, a.fired)
+        assertEquals(1, b.fired)
+        assertEquals(0L, session.host.jobScheduler.nextFireDay("mod.a", "a"))
+        assertTrue(session.host.jobScheduler.instances().isEmpty())
+        assertTrue(session.reinstallRolledBack("mod.a", PhaseJobMod("a", emptyList(), mutableListOf())))
+        session.onTurnBoundary()
+        assertEquals(1, b.fired)
+        assertEquals(JobScheduler.DONE, session.host.jobScheduler.nextFireDay("mod.a", "a"))
+        session.shutdown()
     }
 }

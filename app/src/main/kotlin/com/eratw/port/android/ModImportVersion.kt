@@ -87,6 +87,29 @@ internal fun installedManifestOf(rt2Dir: File, packageId: String): ModuleDescrip
 }
 
 /**
+ * 调用方对产物 manifest 的**作者声明面**（[ModImportController.compileToModule] 的入参）。
+ *
+ * 三个字段各有「没说」的语义与回落口径 —— 缺省 `ModuleDeclarations()` 就是三样都没说，
+ * 正是重编路径（[ModRecompiler]）的形态：盘上产物已定型，重编不再获取新的作者声明。
+ *
+ * - [overrides]：包清单的可选收窄声明（[import] 的同名参数）。`null` = 未声明 ⇒ 同名 ∩
+ *   base 自动推导；这是收窄，**不是**白名单，null 与空表都要走推导（语义见 `OverrideInputs`）。
+ * - [version]：产物 manifest 的版本号。`null` = 作者没自述版本 ⇒ 回落到**盘上旧产物的
+ *   version**，再回落到 [PACK_META_FALLBACK_VERSION]。这条回落是「重编不该把已导入的 v2
+ *   降级成 v1」（否则下一次导入会误报「v2 → v1」）。导入路径恒传非空值（`packMetaOf` 的
+ *   结果，缺元数据时本身就是回落值），老包行为与改造前逐字相同。
+ * - [minApi]：`min-api` 段（作者声明的引擎下限；0 = 不设闸，见 `ModuleDescriptor.minApi`）。
+ *   `null` = 没有作者声明 ⇒ 回落到**盘上旧 manifest 的 `minApi`**——同样是不许重编把已声明
+ *   的下限悄悄抹掉（作者改源重编后包会突然在旧引擎上通过装配）。`/6` 段只在非 0 时写
+ *   （见 `ManifestCodec`）。
+ */
+internal data class ModuleDeclarations(
+    val overrides: List<String>? = null,
+    val version: String? = null,
+    val minApi: Int? = null,
+)
+
+/**
  * 成功页的版本读数行（纯函数，判据与 [ImportedPatchDetail.resourceSummaryLine] 同款）。
  *
  * - 首次安装 ⇒ null（整行不出；成功详情行已说「导入成功」）；

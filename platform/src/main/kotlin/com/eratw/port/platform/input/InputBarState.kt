@@ -103,7 +103,7 @@ data class InputBarState(
         get() = submit == Submit.PRERUN
 
     /**
-     * 双击（右键等价物）能否跳过消息：只在 WAIT 系等待时成立，理由见类文档
+     * 双击（右键等价物）与右上角跳过开关能否跳过消息：只在 WAIT 系等待时成立，理由见类文档
      * 「双击跳过只在 WAIT 系生效」。宿主不存在 / VM 已停时同样不可用（与 [canSubmit] 同闸，
      * `MainWindow.cs:924`）。
      */

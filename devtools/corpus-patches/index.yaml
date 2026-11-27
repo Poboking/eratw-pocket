@@ -214,7 +214,11 @@ patches:
     # 编号顺延（组长 11-15 合流）：本地 lane 原拟 CB-010/011/012，与 origin/main
     # 已合流的同号补丁（DLC 设定页 / ASK_CHOICES / 魔理沙颜绘）撞号 ⇒ 顺延至 013/014/015。
     # 补丁注记内编号同步改号，fixed sha 按 261111 真根重算（离线套用器 + git apply 双证）。
-    fixed-sha256: c30a0cb72bf41f197b5254014c91c4a91c56a41a6b9de1513d166daa0676b1c8
+    fixed-sha256: a064b0552d54573a58116c7d1855b65fdbc79deeebe2622286da65f858365f7d
+    # 11-26 全量复检修正：原版清零行 `CFLAG:12:998 = 0` / `CFLAG:118:998 = 0` 落在
+    # SKIP_118 标签之后，CHARANUM 13..118 的存档会被 118 守卫连带跳过 12 的清零
+    # ⇒ 每次启动都重跑 RESET_KOJO_CHARA(12)。本次把两行清零分别移入各自守卫块内
+    #（12 清零在 SKIP_12 前、118 清零在 SKIP_118 前），三档角色数行为均与原版一致。
     # skip 两项 = 261017 退役根 + 4.980 canonical 基准根（头部②类：非本链出包对象、
     # 保持基准原始字节；两版病灶仍在、未修）。
     skip-sha256: cdb8eddf242ce6e70c885135f80a7bf946f099a00db0a834ac7037f1150083db,296dec36424d870743e47014115c66e070fa7599c95f0755baee94b720410ded
@@ -555,3 +559,56 @@ patches:
     status: 已适配（补丁 CB-033）——编译期应用，玩家获得修复 = 重新出包
     summary: 料理界面 @COOKING_UI 的 `ELSEIF ITEM:SELECT_ING <= 0` 补 `SELECT_ING >= 0 &&` 守卫（镜像同函数 :134 既有守卫），消除 SELECT_ING=-1 时 ITEM:-1 越界；只改一行 + 注记，SELECT_ING>=0 路径行为零变化
     evidence: specs/corpus-bugs.md §1 CB-033 行；上报正文（0.2.47，315 起/86 机）栈 `COM413 行122 → COOKING_UI 行292(物理293)`；C# 锚 `VariableToken.cs:1326`（Int1DConstantToken.CheckElement：arguments[0]<0 即抛 OoRVarArg，原版同形）/ `:1371`（Str1DConstantToken 同形）
+  - id: CB-034
+    target: 魔改内容/qol/QOL_USERCOM.ERH
+    patch: CB-034.patch
+    bad-sha256: 6db7de74ed8788a321d667bb8ddcebf8c79db3af95e9bb783f7ff8bd0cbaff6d
+    fixed-sha256: f3560d8f1f448a0dd992e18c1475d51b70c6905b3c9a64cd1ec6a58e8506d015
+    # 平台适配三联补丁之声明位（CB-035 置位 / CB-036 重派发，三链必须同批在册）：
+    # 触屏端无鼠标悬停提示，原版「子选单选完还要再点一次原指令才执行」在触屏上表现成
+    # 「点弹窗选项没反应/卡死」（玩家 2026-11-26 报红：红茶/演奏 + 号稳定复现）。
+    # 信号变量跨函数读写（@COM_OPTION_BODY 写、@USERCOM 读）⇒ 必须是全局；ERB 函数外
+    # #DIM 原版按 InvalidSharp 丢弃（ErbLoader.cs:413-423），全局只从 ERH 装载
+    # （Process.cs:309/:313）⇒ 声明落本 ERH（同文件 COM_ALTER_* 同型先例）。
+    # 非存档瞬态量，不加 SAVEDATA。skip = 4.980 canonical 基准根（头部②类：非本链
+    # 出包对象，保持原始字节）；261017 退役根该目标缺席，按「目标缺席=跳过留痕」自然豁免。
+    skip-sha256: af9968cc5d362f03fe31d680dead7696383883e6384784f8a0bd413e9b0d65d8
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-034，主人 11-26 指令「选单选项选完之后立刻执行」）——编译期应用，玩家获得适配 = 重新出包
+    summary: QOL_USERCOM.ERH 在 COM_ALTER_* 块后插入瞬态全局 #DIM COM_OPTION_SELECTED（非存档）+ 注记块——@COM_OPTION_BODY 选中有效变体时置 1（CB-035）、@USERCOM 收到 1 就在收尾 CLEARLINE 后按指令号重派发执行（CB-036）；只加不删
+    evidence: specs/corpus-bugs.md §1 CB-034 行；语料锚 QOL_USERCOM.ERB:296-300（选中判定）与 USERCOM.ERB:388-392（负值分支 RETURN -1）；C# 锚 ErbLoader.cs:413-423（ERB 函数外 #DIM 丢弃）+ Process.cs:309/:313（全局只从 ERH 装载）
+  - id: CB-035
+    target: 魔改内容/qol/QOL_USERCOM.ERB
+    patch: CB-035.patch
+    bad-sha256: cb92ea9f78dae4b5f64b04ded973f0429cfa076dd81da0c2d67eb2049939fc6f
+    fixed-sha256: 0c5e4ec2bff85e0bb96b13b5af2d9d8379b4fce263d2122841150231ff9e2892
+    # 平台适配三联补丁之置位（声明见 CB-034，重派发见 CB-036）：只在既有选中分支
+    # （MOUSE_BTN == 1 && INRANGE(INPUT_VALUES, 0, OPTIONNUM)）内追加一行置 1，
+    # 取消（点弹窗外空提交取默认值 -1 / 无效键盘输入）路径信号保持 0，原版行为不变。
+    # skip = 4.980 canonical 基准根（头部②类）；261017 退役根目标缺席自然豁免。
+    skip-sha256: 90222a870997a32f0f36360aa6ade62227dd8f6aee8bd341a29a550816a1fead
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-035，主人 11-26 指令）——编译期应用，玩家获得适配 = 重新出包
+    summary: 在 @COM_OPTION_BODY 选中分支（QOL_USERCOM.ERB:298 SETVAR @"COM_ALTER_{COM_ID}" 之后）追加 COM_OPTION_SELECTED = 1 置位行 + 注记；取消路径（MOUSE_BTN != 1 或越界值）不置位、零行为差；只加不删
+    evidence: specs/corpus-bugs.md §1 CB-035 行；语料锚 QOL_USERCOM.ERB:291-302（INPUT -1, 1 / MOUSE_BTN = RESULT:1 / IF MOUSE_BTN == 1 选中判定）
+  - id: CB-036
+    target: コマンド関連/USERCOM.ERB
+    patch: CB-036.patch
+    bad-sha256: 7c99e5a7271567db8c93f8e1a6a86b8f20d84709216b3ece68f6df4f86821eee
+    fixed-sha256: 893f1826d1ed69b6d5151f5a3a3715e9172e34c4c19ad5893c15090622884092
+    # 平台适配三联补丁之重派发（声明见 CB-034，置位见 CB-035）：两个 hunk。
+    # ① 函数顶（#DIM 块后、入口守卫前）插标签 $COM_OPTION_REPLAY——这一位是刻意选在
+    #    CALL Add_Custom_USERCOM(RESULT) 与 IF TARGET/KOJO_CHECK(TARGET,"COM_BLOCKED")
+    #    两道入口守卫**之前**：重派发必须与「玩家手动再点一次原指令」走同一条入口，
+    #    否则被角色 COM_BLOCKED 拦下的指令会被自动执行（第一版落在 $LOOP_USERCOM 会
+    #    跳过这两道守卫，复检时改正）。反向 GOTO 到函数顶有本文件 :327/:339 先例。
+    # ② 负值分支：LOCAL = ABS(RESULT) 记指令号 + 清信号；TRYCALLFORM 与收尾 CLEARLINE
+    #    之后见信号 1 就 RESULT = LOCAL + GOTO COM_OPTION_REPLAY；取消/无变体时信号 0
+    #    （COM_OPTION_BODY:183 提前 RETURN）⇒ 原版 RETURN -1 一字不差。
+    # skip = 4.980 canonical 基准根（头部②类）；261017 退役根 ERB 面为空，目标缺席按
+    # planCorpusPatches:414-417 跳过留痕（出包面只读 corpus 目标，不涉 game 根判红）。
+    skip-sha256: f8d61ca287a824160aaac89a165489b6930556b2b6b613e5bd5b68fdd4319e0a
+    corpus: eraTW4.981-261111-EAGLOV3
+    status: 已适配（补丁 CB-036，主人 11-26 指令）——编译期应用，玩家获得适配 = 重新出包
+    summary: 在 @USERCOM 加 13 行（标签 2 行 + 分支注释 4 行 + 记指令号/清信号 2 行 + 重派发判定 5 行）——函数顶插 $COM_OPTION_REPLAY（入口守卫之前），负值分支见选中信号即 RESULT = 指令号并 GOTO 该标签，重走 Add_Custom_USERCOM + KOJO_CHECK(COM_BLOCKED) + $LOOP_USERCOM 全链；取消/无变体保持原版 RETURN -1
+    evidence: specs/corpus-bugs.md §1 CB-036 行；语料锚 USERCOM.ERB:15-27（入口守卫：Add_Custom_USERCOM / IF RESULT == -1 / IF TARGET + KOJO_CHECK COM_BLOCKED）、:28（$LOOP_USERCOM）、:327/:339（GOTO 函数顶先例）、:93-134（分发守卫链）；QOL_USERCOM.ERB:183-184（无变体 ID 提前返回）、:296-300（选中判据）；玩家报红 2026-11-26「点弹窗选项没有出现正确的指令效果，红茶和演奏的+号都是如此」

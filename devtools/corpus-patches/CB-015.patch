@@ -3,19 +3,21 @@
 @@ -181,14 +181,26 @@
  ;做一次剧本的重置
  IF modding_version < 20250908
-+	;【CB-015】注记：12 / 118 同样是按作者环境装载序硬编码的角色序号，存档角色数不足时 CFLAG 第 1 参越界、启动即崩（与下方 139 同族）；照既有 CHARANUM 守卫口径跳过不存在的角色。
++	;【CB-015】注记：12 / 118 同样是按作者环境装载序硬编码的角色序号，存档角色数不足时 CFLAG 第 1 参越界、启动即崩（与下方 139 同族）；照既有 CHARANUM 守卫口径跳过不存在的角色。清零行随各自块移入守卫内，避免 13..118 人档连带跳过 12 的清零。
 +	SIF CHARANUM <= 12
 +		GOTO CB015_SKIP_12
  	SIF CFLAG:12:998
  		CALL RESET_KOJO_CHARA(12)
++	CFLAG:12:998 = 0
 +$CB015_SKIP_12
 +	SIF CHARANUM <= 118
 +		GOTO CB015_SKIP_118
  	SIF CFLAG:118:998
  		CALL RESET_KOJO_CHARA(118)
- 	CFLAG:12:998 = 0
- 	CFLAG:118:998 = 0
++	CFLAG:118:998 = 0
 +$CB015_SKIP_118
+-	CFLAG:12:998 = 0
+-	CFLAG:118:998 = 0
  ENDIF
 +;【CB-015】注记：角色序号 139 按作者环境装载序硬编码（意指 CSV/Chara/Chara139 典.csv 的菅牧典），实际序号随 DLC 与角色增减漂移；
 +;存档角色数不足 140 时 CFLAG 第 1 参 139 越界、启动即崩（角色数 136 实报 3 份）。照下方既有 CHARANUM 守卫口径，跳过不存在的角色。

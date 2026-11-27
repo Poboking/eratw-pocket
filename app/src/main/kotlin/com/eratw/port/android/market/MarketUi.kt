@@ -1,30 +1,32 @@
 package com.eratw.port.android.market
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import com.eratw.port.android.ModImportCopy
 import com.eratw.port.android.modImportFailureTitle
@@ -35,13 +37,21 @@ import com.eratw.port.android.ui.EratwGhostButton
 import com.eratw.port.android.ui.EratwInk
 import com.eratw.port.android.ui.EratwText
 import com.eratw.port.android.ui.EratwTextTone
+import com.eratw.port.android.ui.design.ShellButton
+import com.eratw.port.android.ui.design.ShellDisclosureHeader
+import com.eratw.port.android.ui.design.ShellEdgeFades
+import com.eratw.port.android.ui.design.ShellField
 import com.eratw.port.android.ui.design.ShellFilterChip
 import com.eratw.port.android.ui.design.ShellGroupHeader
 import com.eratw.port.android.ui.design.ShellListBadge
 import com.eratw.port.android.ui.design.ShellListRow
-import com.eratw.port.android.ui.design.ShellField
-import com.eratw.port.android.ui.design.ShellRuleLabel
+import com.eratw.port.android.ui.design.ShellMotion
+import com.eratw.port.android.ui.design.ShellProgress
+import com.eratw.port.android.ui.design.ShellSkeletonRow
+import com.eratw.port.android.ui.design.ShellSideFades
+import com.eratw.port.android.ui.design.ShellSpace
 import com.eratw.port.android.ui.design.ShellType
+import com.eratw.port.android.ui.design.ShellVisibility
 
 /**
  * 市场全屏覆盖层（CONTRACT-MKM-W1 §2 mkm-ui 判据 3）。外壳照 [com.eratw.port.android.ModImportChrome]
@@ -108,14 +118,27 @@ internal fun MarketChrome(
             EratwButtonRow { EratwGhostButton(text = copy.closeButton, onClick = actions.onDismiss) }
             return@EratwDialogCard
         }
-        Spacer(Modifier.height(6.dp))
+        // 页头收边：标题块与筛选/列表之间原来只是一段空白，三行文字直接压到 chips 带上，
+        // 读不出「上面是这张卡的抬头」。一条发丝线把抬头与名单分开，不动排版只定层级。
+        Spacer(Modifier.height(10.dp))
+        MarketHairline()
+        Spacer(Modifier.height(10.dp))
         MarketFilterChips(state = state, copy = copy, actions = actions)
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(ShellSpace.CardGap))
         MarketScrollArea(state = state, copy = copy, actions = actions, modifier = Modifier.weight(1f))
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(10.dp))
+        // 页脚收边：底栏是固定区（拉取 / 关闭），不该和滚动内容糊在同一片黑里。
+        MarketHairline()
+        Spacer(Modifier.height(10.dp))
         MarketFooter(state = state, copy = copy, actions = actions)
     }
     MarketUninstallDialog(state = state, copy = copy, actions = actions)
+}
+
+/** 覆盖层内的横向发丝线（抬头 / 底栏各一条）：比卡片描边亮一档、比正文弱三档。 */
+@Composable
+private fun MarketHairline() {
+    HorizontalDivider(color = EratwInk.hairline(), thickness = ShellSpace.Hairline)
 }
 
 /** 过滤 chips（全部 + 收藏档 + 四 kind；gameId 只作徽章展示不过滤，契约 §0 裁定 7）。 */
@@ -125,8 +148,17 @@ private fun MarketFilterChips(
     copy: MarketCopy,
     actions: MarketChromeActions,
 ) {
-    Column {
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    // 原来 kind 档与收藏档各占一行：两排 44dp 的方片叠起来是一堵墙，把名单又压低一行。
+    // 现在并成一条横向可滚的单排——档位是会随收藏集出现/消失的「一串」，不是两段版面；
+    // 收藏档与 kind 档之间加一道竖发丝，交代「这两个维度可以叠加」而不是同一组里的邻居。
+    // 窄屏上这排必溢出，右端挂一条侧边渐隐：档位被硬切半枚比「还有档位」更难看。
+    val chipScroll = rememberScrollState()
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(chipScroll),
+            horizontalArrangement = Arrangement.spacedBy(MARKET_CHIP_GAP),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             MarketRowParts.MarketChip(
                 text = copy.filterAll,
                 selected = state.filterKind == null,
@@ -139,12 +171,16 @@ private fun MarketFilterChips(
                     onClick = { actions.onFilterKind(kind) },
                 )
             }
-        }
-        // 收藏档（CONTRACT-MKM-STATS-UI §1 D2）：与 kind 维度可叠加的独立 toggle，
-        // 空收藏集整行不摆（空集下过滤恒空组，摆出来只会让玩家看到一屏空白）。
-        if (state.favorites.isNotEmpty()) {
-            Spacer(Modifier.height(4.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            // 收藏档（CONTRACT-MKM-STATS-UI §1 D2）：与 kind 维度可叠加的独立 toggle，
+            // 空收藏集整档不摆（空集下过滤恒空组，摆出来只会让玩家看到一屏空白）。
+            if (state.favorites.isNotEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .padding(horizontal = 2.dp)
+                        .width(1.dp)
+                        .height(MARKET_CHIP_RULE_HEIGHT)
+                        .background(EratwInk.border()),
+                )
                 MarketRowParts.MarketChip(
                     text = copy.filterFavorites,
                     selected = state.favoritesOnly,
@@ -152,6 +188,11 @@ private fun MarketFilterChips(
                 )
             }
         }
+        ShellSideFades(
+            start = chipScroll.canScrollBackward,
+            end = chipScroll.canScrollForward,
+            color = EratwInk.raised(),
+        )
     }
 }
 
@@ -163,12 +204,22 @@ private fun MarketScrollArea(
     actions: MarketChromeActions,
     modifier: Modifier = Modifier,
 ) {
-    Column(modifier = modifier.verticalScroll(rememberScrollState())) {
-        MarketIndexSection(state = state, copy = copy, actions = actions)
-        Spacer(Modifier.height(10.dp))
-        MarketInstalledSection(state = state, copy = copy, actions = actions)
-        Spacer(Modifier.height(10.dp))
-        MarketEndpointSection(state = state, copy = copy, actions = actions)
+    val scrollState = rememberScrollState()
+    Box(modifier = modifier) {
+        Column(modifier = Modifier.fillMaxSize().verticalScroll(scrollState)) {
+            MarketIndexSection(state = state, copy = copy, actions = actions)
+            Spacer(Modifier.height(MARKET_SECTION_GAP))
+            MarketInstalledSection(state = state, copy = copy, actions = actions)
+            Spacer(Modifier.height(MARKET_SECTION_GAP))
+            MarketEndpointSection(state = state, copy = copy, actions = actions)
+        }
+        // 名单滚到上下边界时，行卡会在半高状态被硬裁断（读成「切了一刀」）；两条渐隐把
+        // 「还有内容」讲成淡出。底色取卡面色而不是页面黑底，否则会在卡上糊出一条亮带。
+        ShellEdgeFades(
+            top = scrollState.canScrollBackward,
+            bottom = scrollState.canScrollForward,
+            color = EratwInk.raised(),
+        )
     }
 }
 
@@ -181,7 +232,11 @@ private fun MarketIndexSection(
 ) {
     val snap = state.snapshot
     if (snap == null) {
+        // 首读本机列表：一句实话 + 三行呼吸占位。原来只有一句 11sp 小字，卡体空一片，
+        // 看不出「正在读」而像「什么都没有」；占位与设置页首扫同一档（ShellSkeletonRow）。
         EratwText(text = copy.indexLoading, tone = EratwTextTone.NOTE)
+        Spacer(Modifier.height(ShellSpace.CardGap))
+        ShellSkeletonRow(lines = MARKET_SKELETON_LINES)
         return
     }
     when (val idx = snap.index) {
@@ -205,7 +260,6 @@ private fun MarketIndexSection(
                 EratwText(text = it, tone = EratwTextTone.NOTE, colorOverride = EratwInk.amber())
             }
             for (group in state.groups) {
-                Spacer(Modifier.height(8.dp))
                 MarketGroupSection(group = group, state = state, copy = copy, actions = actions)
             }
         }
@@ -224,10 +278,10 @@ private fun MarketGroupSection(
         subtitle = MarketReadouts.groupCountPhrase(copy, group.rows.size),
         accent = EratwInk.accent(),
     )
-    Spacer(Modifier.height(4.dp))
+    Spacer(Modifier.height(ShellSpace.CardGap))
     for (row in group.rows) {
         MarketRowParts.MarketPackRow(row = row, state = state, copy = copy, actions = actions)
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(ShellSpace.CardGap))
     }
 }
 
@@ -263,7 +317,7 @@ private fun MarketInstalledSection(
         accent = EratwInk.accent(),
         trailing = sweepSlot,
     )
-    Spacer(Modifier.height(4.dp))
+    Spacer(Modifier.height(ShellSpace.CardGap))
     if (snap.installed.isEmpty()) {
         // 空态两句：主句说为什么空着，副句说这一步怎么做（market-view.ts INSTALLED_EMPTY :546-549）
         EratwText(text = copy.installedEmptyTitle, tone = EratwTextTone.NOTE)
@@ -272,7 +326,7 @@ private fun MarketInstalledSection(
     }
     for (row in state.installedRows) {
         MarketRowParts.MarketInstalledCard(row = row, state = state, copy = copy, actions = actions)
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(ShellSpace.CardGap))
     }
 }
 
@@ -284,35 +338,51 @@ private fun MarketEndpointSection(
     actions: MarketChromeActions,
 ) {
     val endpoint = state.snapshot?.endpoint ?: return
-    ShellRuleLabel(text = copy.endpointTitle)
-    Spacer(Modifier.height(4.dp))
-    EratwText(text = copy.endpointIntro, tone = EratwTextTone.NOTE)
-    EratwText(text = MarketEndpointUi.endpointStatus(copy, endpoint), tone = EratwTextTone.NOTE)
-    // 显式读数：当前生效的那串地址（market-source.ts SourceRowUi.address :89）
-    EratwText(text = endpoint, tone = EratwTextTone.MUTED)
-    Spacer(Modifier.height(4.dp))
-    OutlinedTextField(
-        value = state.endpointDraft,
-        onValueChange = actions.onEndpointDraftChange,
-        singleLine = true,
-        textStyle = ShellType.Body,
-        colors = ShellField.outlined(),
-        modifier = Modifier.fillMaxWidth(),
+    // 端点编辑是「改一个源地址」的高级操作，不是市场页的主业。原来它常驻在名单末尾：
+    // 三句说明 + 一串地址 + 输入框 + 两颗按钮，把整页最低处压成一块设置面板，既抢名单的
+    // 视线，也和「浏览 / 安装」的主语气不是一回事。现在默认收成一行：标题 + 当前档位；
+    // 展开才出正文。收起态那句话照旧在（玩家不会以为这里还是默认源）。
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    ShellDisclosureHeader(
+        title = copy.endpointTitle,
+        expanded = expanded,
+        onToggle = { expanded = !expanded },
+        accent = EratwInk.accent(),
+        badge = MarketEndpointUi.endpointStatus(copy, endpoint),
     )
-    Spacer(Modifier.height(4.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        EratwFilledButton(
-            text = copy.endpointSave,
-            onClick = actions.onEndpointSave,
-            enabled = state.installingKey == null,
+    ShellVisibility(
+        visible = expanded,
+        enter = ShellMotion.disclosureEnter(),
+        exit = ShellMotion.disclosureExit(),
+    ) {
+        EratwText(text = copy.endpointIntro, tone = EratwTextTone.NOTE)
+        Spacer(Modifier.height(MARKET_FIELD_GAP))
+        // 显式读数：当前生效的那串地址（market-source.ts SourceRowUi.address :89）
+        EratwText(text = endpoint, tone = EratwTextTone.MUTED)
+        Spacer(Modifier.height(MARKET_FIELD_GAP))
+        OutlinedTextField(
+            value = state.endpointDraft,
+            onValueChange = actions.onEndpointDraftChange,
+            singleLine = true,
+            textStyle = ShellType.Body,
+            colors = ShellField.outlined(),
+            modifier = Modifier.fillMaxWidth(),
         )
-        // 恢复默认走同一条保存通路（空草稿 = reset，market-source.ts :189-196）；只在覆盖态出现（showReset :129）
-        if (MarketEndpointUi.isOverridden(endpoint)) {
-            EratwGhostButton(
-                text = copy.endpointReset,
-                onClick = actions.onEndpointReset,
+        Spacer(Modifier.height(MARKET_FIELD_GAP))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            EratwFilledButton(
+                text = copy.endpointSave,
+                onClick = actions.onEndpointSave,
                 enabled = state.installingKey == null,
             )
+            // 恢复默认走同一条保存通路（空草稿 = reset，market-source.ts :189-196）；只在覆盖态出现（showReset :129）
+            if (MarketEndpointUi.isOverridden(endpoint)) {
+                EratwGhostButton(
+                    text = copy.endpointReset,
+                    onClick = actions.onEndpointReset,
+                    enabled = state.installingKey == null,
+                )
+            }
         }
     }
 }
@@ -413,8 +483,14 @@ private object MarketRowParts {
             )
             MarketStatsLine(row = row, state = state, copy = copy, actions = actions)
             MarketRowActionArea(row = row, state = state, copy = copy, actions = actions)
-            if (expanded) {
-                Spacer(Modifier.height(6.dp))
+            // 详情是行级的二级内容：展开/收起走与设置页行级展开同一档节奏（rowEnter/Exit），
+            // 不再整块瞬移；容器仍是 ShellVisibility，正文永远一列，不会像第十三批那样叠放。
+            ShellVisibility(
+                visible = expanded,
+                enter = ShellMotion.rowEnter(),
+                exit = ShellMotion.rowExit(),
+            ) {
+                Spacer(Modifier.height(MARKET_FIELD_GAP))
                 MarketRowDetails(row = row, copy = copy)
             }
         }
@@ -440,10 +516,20 @@ private object MarketRowParts {
             )
             Spacer(Modifier.weight(1f))
             val favorited = MarketContract.favoriteKey(row.entry.kind, row.entry.id) in state.favorites
-            EratwGhostButton(
-                text = if (favorited) copy.favoriteAdded else copy.favoriteAdd,
+            // 收藏是纯本地的次行动（不动包、不走网络）：原来它是描边钮，和下方「安装」的实心钮
+            // 抢同一层的重量，一行里出现两颗框钮像并排的两个主动作。现在降成文本钮 ——
+            // 有框的只留主行动；已收藏靠「字换 + 字色转 accent」两个信号，不只靠颜色。
+            TextButton(
                 onClick = { actions.onToggleFavorite(row) },
-            )
+                modifier = Modifier.heightIn(min = ShellSpace.RowMinHeight),
+                contentPadding = ShellButton.CompactPadding,
+                colors = ShellButton.text(if (favorited) EratwInk.accent() else EratwInk.textDim()),
+            ) {
+                Text(
+                    text = if (favorited) copy.favoriteAdded else copy.favoriteAdd,
+                    style = ShellType.Label,
+                )
+            }
         }
     }
 
@@ -482,7 +568,7 @@ private object MarketRowParts {
             )
         }
         if (installingThis) {
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(MARKET_FIELD_GAP))
             MarketProgressBar(progress = state.progress)
         }
         val actionText = when (row.action) {
@@ -490,8 +576,10 @@ private object MarketRowParts {
             MarketViewModel.MarketRowAction.UPDATE -> copy.actionUpdate
             MarketViewModel.MarketRowAction.NONE -> null
         }
-        if (actionText != null) {
-            Spacer(Modifier.height(6.dp))
+        // 正在装的那一行不再摆按钮：进度带下面跟一颗「安装」灰钮，既点不动又读成「尚未开始」；
+        // 忙态本身已由进度带与禁用态交代（别的行的按钮仍禁用，那是另一件事）。
+        if (actionText != null && !installingThis) {
+            Spacer(Modifier.height(MARKET_FIELD_GAP))
             EratwFilledButton(
                 text = actionText,
                 onClick = { actions.onInstall(row) },
@@ -500,17 +588,18 @@ private object MarketRowParts {
         }
     }
 
-    /** 安装进度条：总数已知给确定性比例，未知给不定态（不编假百分比，market-panel.ts:253-260）。 */
+    /** 安装进度条：总数已知给确定性比例，未知给匀速扫描（不编假百分比，market-panel.ts:253-260）。 */
     @Composable
     fun MarketProgressBar(progress: MarketViewModel.MarketProgress?) {
         val frac = progress?.takeIf { it.totalBytes > 0 }?.let {
             (it.doneBytes.toFloat() / it.totalBytes.toFloat()).coerceIn(0f, 1f)
         }
-        if (frac == null) {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        } else {
-            LinearProgressIndicator(progress = { frac }, modifier = Modifier.fillMaxWidth())
-        }
+        // 轨道与带高交给 ShellProgress：与设置页首扫、口上卡读清单是同一档细带。
+        ShellProgress(
+            accent = EratwInk.accent(),
+            progress = frac,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 
     /** 详情展开区：license / summary / sourceUrl / 文件计数（机器读数只进这一层）。 */
@@ -558,11 +647,15 @@ private object MarketRowParts {
                 ),
                 tone = EratwTextTone.NOTE,
             )
-            EratwText(text = row.sourceLabel, tone = EratwTextTone.MUTED)
-            row.digestPrefix?.let {
-                EratwText(text = copy.fill(copy.installedDigestFormat, it), tone = EratwTextTone.MUTED)
+            // 来源与摘要前缀并成一行：两行 11sp 灰字上下叠会让每张已装卡多出一截，而它们
+            // 都是「这条记录是从哪来的」——同一件事拆两行只是变长，不是变清楚。
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                EratwText(text = row.sourceLabel, tone = EratwTextTone.MUTED, modifier = Modifier.weight(1f))
+                row.digestPrefix?.let {
+                    EratwText(text = copy.fill(copy.installedDigestFormat, it), tone = EratwTextTone.MUTED)
+                }
             }
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(MARKET_FIELD_GAP))
             // 装进游戏 + 卸载同行：两颗键共用 installingKey 一把单飞闸（market-panel.ts:279-283——
             // 漏了互斥会把成功演成失败；判据单源在 MarketBridgeUi.bridgeImportEnabled）。
             // 装无确认门（W3-UI2 裁定 4）：桥的旧版清理随导入自动做，不弹框。
@@ -635,3 +728,18 @@ private val MARKET_CARD_MAX_WIDTH = 680.dp
 private val MARKET_CARD_MAX_HEIGHT = 620.dp
 private val MARKET_CONFIRM_MAX_WIDTH = 420.dp
 private val MARKET_CONFIRM_MAX_HEIGHT = 320.dp
+
+/** 筛选片间距：档位之间只留一口气，合成一条连续的带。 */
+private val MARKET_CHIP_GAP = 6.dp
+
+/** 收藏档与 kind 档之间的竖发丝高度：比片矮一半，读成「分隔」而不是「另一枚片」。 */
+private val MARKET_CHIP_RULE_HEIGHT = 18.dp
+
+/** 三个分区（索引 / 已装 / 端点）之间的留白：比行间距大一档，隔开「另一件事」。 */
+private val MARKET_SECTION_GAP = 14.dp
+
+/** 行内元素间距（元信息 → 统计 → 动作 → 进度）：同一张卡里的节奏值。 */
+private val MARKET_FIELD_GAP = 8.dp
+
+/** 首读占位行数：三行足够读出「在加载」，再多就比真名单还长。 */
+private const val MARKET_SKELETON_LINES = 3

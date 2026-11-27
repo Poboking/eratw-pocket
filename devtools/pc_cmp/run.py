@@ -108,7 +108,10 @@ def fixture_src_dir(spec):
     return p
 
 
-EVIDENCE = os.path.join(WT_ROOT, "<internal-workdir>", "evidence", "pc-cmp")
+# 公开分仓：内部证据目录不随公开仓发布 ⇒ 证据落**同级暂存目录**（与 RUN_BASE 同口径），
+# 不写进仓内以免脏工作树。（占位符 <internal-workdir> 不能直接当目录名用 —— 含 <> 在
+# Windows 上非法。）
+EVIDENCE = os.path.join(os.path.dirname(WT_ROOT), ".pc-cmp-evidence")
 
 
 def shared_root():

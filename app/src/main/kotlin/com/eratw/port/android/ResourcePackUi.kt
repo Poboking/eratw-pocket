@@ -2,6 +2,7 @@ package com.eratw.port.android
 
 import com.eratw.port.platform.storage.MaterialTarget
 import com.eratw.port.platform.storage.ResourcePackCleanupReport
+import com.eratw.port.platform.storage.ResourcePackProgress
 import com.eratw.port.platform.storage.ResourcePackStatus
 import com.eratw.port.platform.storage.StructureNote
 import com.eratw.port.platform.storage.StructureNoteKind
@@ -13,7 +14,7 @@ import com.eratw.port.platform.storage.StructureNoteKind
  * 只有「投放了多少文件 / 覆盖了多少 / 跳过了什么」三件事。状态转移全在
  * [ResourcePackUiReducer] 里，Compose 层只渲染，不做判定。
  *
- * 结果态分两段：**导入四态**（成功 / 部分成功 / 失败 / 进行中）与**清理两态**（清理中 /
+ * 结果态分两段：**导入五态**（成功 / 部分成功 / 失败 / 进行中 / 未开始）与**清理两态**（清理中 /
  * 清理结束）。导入的「成功」由 [ResourcePackImportBatch] 判定（单包成功 iff 真有文件落盘），
  * 不是「install 没抛」；清理跑完（删没删到东西都算跑完）落 [ResourcePackUiState.Cleared]，
  * 整批没做成才复用 [ResourcePackUiState.Failed]。两段都带一份现状读数：「页面上已导入什么」
@@ -71,8 +72,25 @@ sealed interface ResourcePackUiState {
 
     data class Idle(override val status: ResourcePackStatus?) : ResourcePackUiState
 
+    /**
+     * 导入进行态。[progress] 是平台层最近一条读数（null = 线程刚起、还没报到第一条）：
+     * 卡片上的进度块**只在有读数时才画明细**，读数为 null 时仍是既有的那句进行态
+     * 加不定态扫描带——两个状态都不许出现「一片静止」的画面。
+     */
     data class Importing(
         val sourceCount: Int,
+        override val status: ResourcePackStatus?,
+        val progress: ResourcePackProgress? = null,
+    ) : ResourcePackUiState
+
+    /**
+     * 这次请求没有开始（单飞闸被判占）。[message] 是已拼好的玩家句，[status] 保留旧读数。
+     *
+     * 单独一档而不是塞进 [Failed]：文件系统一个字节都没动，说「失败」会让玩家以为导入坏了；
+     * 也不塞进 [Importing]（那会把真正在跑的那张卡的进行态顶掉）。
+     */
+    data class Blocked(
+        val message: String,
         override val status: ResourcePackStatus?,
     ) : ResourcePackUiState
 
@@ -117,6 +135,14 @@ sealed interface ResourcePackUiState {
 
 sealed interface ResourcePackEvent {
     data class ImportStarted(val sourceCount: Int) : ResourcePackEvent
+    /**
+     * 平台层的一条进度读数（失败/停住时也可能来不了：这时卡上仍画不定态扫描带）。
+     * 只在 [ResourcePackUiState.Importing] 上生效 —— 结果态已经落定之后迟到的进度
+     * 不许把卡片拉回进行态。
+     */
+    data class ImportProgressed(val progress: ResourcePackProgress) : ResourcePackEvent
+    /** 单飞闸拒绝：这次没开始，卡上照实说一句（[message] 已按当前语言拼好）。 */
+    data class ImportBlocked(val message: String, val status: ResourcePackStatus?) : ResourcePackEvent
     data class ImportSucceeded(val summary: ResourcePackImportSummary, val status: ResourcePackStatus?) : ResourcePackEvent
     data class ImportPartial(
         val summary: ResourcePackImportSummary,
@@ -141,6 +167,13 @@ object ResourcePackUiReducer {
 
     fun reduce(state: ResourcePackUiState, event: ResourcePackEvent): ResourcePackUiState = when (event) {
         is ResourcePackEvent.ImportStarted -> ResourcePackUiState.Importing(event.sourceCount, state.status)
+        // 只在进行态吃进度：收尾之后（Succeeded / Failed / Blocked …）迟到的那几条直接丢掉，
+        // 否则卡片会闪回「正在写入」，而线程其实已经结束了。
+        is ResourcePackEvent.ImportProgressed -> when (state) {
+            is ResourcePackUiState.Importing -> state.copy(progress = event.progress)
+            else -> state
+        }
+        is ResourcePackEvent.ImportBlocked -> ResourcePackUiState.Blocked(event.message, event.status)
         is ResourcePackEvent.ImportSucceeded -> ResourcePackUiState.Succeeded(event.summary, event.status)
         is ResourcePackEvent.ImportPartial ->
             ResourcePackUiState.Partial(event.summary, event.failedPacks, event.status)
@@ -152,6 +185,7 @@ object ResourcePackUiReducer {
         is ResourcePackEvent.StatusRefreshed -> when (state) {
             is ResourcePackUiState.Idle -> state.copy(status = event.status)
             is ResourcePackUiState.Importing -> state.copy(status = event.status)
+            is ResourcePackUiState.Blocked -> state.copy(status = event.status)
             is ResourcePackUiState.Succeeded -> state.copy(status = event.status)
             is ResourcePackUiState.Partial -> state.copy(status = event.status)
             is ResourcePackUiState.Failed -> state.copy(status = event.status)

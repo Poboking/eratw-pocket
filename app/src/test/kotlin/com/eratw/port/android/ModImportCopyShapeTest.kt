@@ -34,11 +34,20 @@ class ModImportCopyShapeTest {
         "closeButton" to ModImportCopy::closeButton,
         "importingStageText" to ModImportCopy::importingStageText,
         "importingFilesFormat" to ModImportCopy::importingFilesFormat,
+        "stageReading" to ModImportCopy::stageReading,
+        "stageCompiling" to ModImportCopy::stageCompiling,
+        "stageWriting" to ModImportCopy::stageWriting,
+        "stageFinishing" to ModImportCopy::stageFinishing,
+        "stateTagImporting" to ModImportCopy::stateTagImporting,
+        "stateTagSucceeded" to ModImportCopy::stateTagSucceeded,
+        "stateTagFailed" to ModImportCopy::stateTagFailed,
         "cardSucceededFormat" to ModImportCopy::cardSucceededFormat,
         "cardFailedFormat" to ModImportCopy::cardFailedFormat,
         "failureTitleCompile" to ModImportCopy::failureTitleCompile,
         "failureTitleIdentity" to ModImportCopy::failureTitleIdentity,
         "failureTitleStorage" to ModImportCopy::failureTitleStorage,
+        "failureTitlePassword" to ModImportCopy::failureTitlePassword,
+        "failureTitleArchive" to ModImportCopy::failureTitleArchive,
         "failureTitleUnexpected" to ModImportCopy::failureTitleUnexpected,
         "succeededDetailFormat" to ModImportCopy::succeededDetailFormat,
         "assetPackSucceededDetailFormat" to ModImportCopy::assetPackSucceededDetailFormat,
@@ -59,6 +68,9 @@ class ModImportCopyShapeTest {
         "reportStoredFilesFormat" to ModImportCopy::reportStoredFilesFormat,
         "noFilesPicked" to ModImportCopy::noFilesPicked,
         "zipUnpackFailedFormat" to ModImportCopy::zipUnpackFailedFormat,
+        "zipNeedPasswordFormat" to ModImportCopy::zipNeedPasswordFormat,
+        "zipWrongPasswordFormat" to ModImportCopy::zipWrongPasswordFormat,
+        "archiveUnsupportedFormat" to ModImportCopy::archiveUnsupportedFormat,
         "zipNoEntriesFormat" to ModImportCopy::zipNoEntriesFormat,
         "zipLooksLikeAssetPackFormat" to ModImportCopy::zipLooksLikeAssetPackFormat,
         "zipTooManyEntriesFormat" to ModImportCopy::zipTooManyEntriesFormat,
@@ -67,6 +79,7 @@ class ModImportCopyShapeTest {
         "zipBombSuspectFormat" to ModImportCopy::zipBombSuspectFormat,
         "zipDuplicateEntryFormat" to ModImportCopy::zipDuplicateEntryFormat,
         "dedupSkippedWarningFormat" to ModImportCopy::dedupSkippedWarningFormat,
+        "archiveSkippedWarningFormat" to ModImportCopy::archiveSkippedWarningFormat,
         "saveSourceFailedFormat" to ModImportCopy::saveSourceFailedFormat,
         "readBaseFailedFormat" to ModImportCopy::readBaseFailedFormat,
         "readArchivedFailedFormat" to ModImportCopy::readArchivedFailedFormat,
@@ -145,7 +158,11 @@ class ModImportCopyShapeTest {
         "failureGuidanceAuthorFormat" to ModImportCopy::failureGuidanceAuthorFormat,
         "failureGuidanceStorageFormat" to ModImportCopy::failureGuidanceStorageFormat,
         "failureGuidanceUnexpectedFormat" to ModImportCopy::failureGuidanceUnexpectedFormat,
+        "failureGuidancePasswordFormat" to ModImportCopy::failureGuidancePasswordFormat,
+        "failureGuidanceArchiveFormat" to ModImportCopy::failureGuidanceArchiveFormat,
         "copyErrorReportButton" to ModImportCopy::copyErrorReportButton,
+        "zipPasswordFieldLabel" to ModImportCopy::zipPasswordFieldLabel,
+        "zipPasswordRetryButton" to ModImportCopy::zipPasswordRetryButton,
         "copyWarningsButton" to ModImportCopy::copyWarningsButton,
         "errorReportTitle" to ModImportCopy::errorReportTitle,
         "errorReportKindFormat" to ModImportCopy::errorReportKindFormat,
@@ -185,20 +202,25 @@ class ModImportCopyShapeTest {
         //           + 4（task-178 批导入结果面：汇总计数 / 逐包成功行 / 逐包失败行 / 入口卡摘要）
         //           + 5（task-179/187 代码闸提示面：提示句 + 总闸关 / 未信任 / 身份损坏 /
         //                 多版本残留四个原因）
-        //           + 3（task-183 批结果折叠面：成功折叠行 / 失败折叠行 / 收起开关）。
+        //           + 3（task-183 批结果折叠面：成功折叠行 / 失败折叠行 / 收起开关）
+        //           + 6（KI-ZIP-PWD 加密 zip 面：失败标题 / 导向行 / 待输密码 / 密码不对 /
+        //                 输入框标签 / 重试按钮）
+        //           + 4（KI-ARCHIVE-GUIDE 非 zip 容器面：失败标题 / 失败正文 / 混合选择告警 / 导向行）。
         // G3 静默洞补锁（班次 5）：既有两个计数互相独立——「表加键 + keys.size 与
         // expectedPerCopy 双双跟上、唯独显式清单漏点名」时，新键整键逃过下面四条形状闸
         // （2026-11-20 班次以探针键实测：漂移态五条全绿静默通过）。本断言把三件事锁成
         // 一个算式：显式清单 + lang == 全表构造属性 == toString 的 '=' 计数，漏点名先红。
-        val expectedPerCopy = 125
+        val expectedPerCopy = 142
         assertEquals(
-            "键数算式：124 = 60（基线）+ 5（CM zip 闸）+ 1（DC 引擎 API）+ 1（引擎太新提示）+ " +
+            "键数算式：141 = 60（基线）+ 5（CM zip 闸）+ 1（DC 引擎 API）+ 1（引擎太新提示）+ " +
                 "1（MODDX3 纯资源包）+ 1（ERAFIN-C3 成品包）+ 11（S4 媒体面）+ 12（导入预览面）+ " +
                 "6（批导入预览面）+ 2（代码产物面：暂存校验 / 落盘）+ 4（批导入结果面：汇总 / 成功行 / " +
                 "失败行 / 卡片摘要）+ 5（代码闸提示面：提示句 + 四个原因）+ " +
                 "3（批结果折叠面：成功折叠行 / 失败折叠行 / 收起开关）+ " +
-                "12（KI-4 报错专页 10：导向×3 / 复制按钮×2 / 报告词×4 / Toast + KI-8 预览替换 2）",
-            124,
+                "12（KI-4 报错专页 10：导向×3 / 复制按钮×2 / 报告词×4 / Toast + KI-8 预览替换 2）+ " +
+                "6（KI-ZIP-PWD 加密 zip 面）+ 4（KI-ARCHIVE-GUIDE 非 zip 容器面）+ " +
+                "7（KI-IMPORT-UX：进度四段 + 头部状态签三枚）",
+            141,
             keys.size,
         )
         assertEquals(

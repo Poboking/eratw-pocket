@@ -308,8 +308,39 @@ def first_byte_diff(a: bytes, b: bytes) -> int:
     return n if len(a) != len(b) else -1
 
 
-def compare_dirs(kotlin_dir: str, rust_dir: str, expect_file: str | None) -> None:
-    """四件套逐个 sha256 全等 + 可选 --expect 登记对照；红则抛 ParityFail（点名首个差异）。"""
+def firstdiff_exe() -> str | None:
+    """`firstdiff` 二进制的落点（Cargo release 目录，与 semdiff/erbcc 同处）。
+
+    没有就说清楚怎么产（`cargo build --release --bin firstdiff`），不静默降级成
+    「只报字节偏移」——降级会让调用方以为拿到了定位。
+    """
+    for cand in (
+        os.path.join(RS_DIR, "target", "release", "firstdiff.exe"),
+        os.path.join(RS_DIR, "target", "release", "firstdiff"),
+    ):
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def describe_first_diff(kotlin_dir: str, rust_dir: str) -> str:
+    """对不等的两腿产物跑 `firstdiff`，把「段/函数/pc/行/两侧指令字」拼进失败信息。"""
+    exe = firstdiff_exe()
+    if not exe:
+        return ("\n  首个差异定位需要 firstdiff：cargo build --release --bin firstdiff"
+                "（tools/erbcc-rs）")
+    r = run_capture([exe, kotlin_dir, rust_dir], cwd=APP_ROOT)
+    text = (decode(r.stdout) + decode(r.stderr)).strip()
+    if not text:
+        return f"\n  firstdiff 退出码 {r.returncode} 且无输出"
+    return "\n" + "\n".join("  " + line for line in text.splitlines())
+
+
+def compare_dirs(kotlin_dir: str, rust_dir: str, expect_file: str | None,
+                 first_diff: bool = False) -> None:
+    """四件套逐个 sha256 全等 + 可选 --expect 登记对照；红则抛 ParityFail（点名首个差异）。
+    `first_diff=True` 时再叠一层 `firstdiff` 定位（段/函数/pc/行/两侧指令字）。
+    """
     ka_rows = four_piece(kotlin_dir)
     ra_rows = four_piece(rust_dir)
     log("四件套读数（Kotlin 腿 vs Rust 腿）：")
@@ -330,8 +361,11 @@ def compare_dirs(kotlin_dir: str, rust_dir: str, expect_file: str | None) -> Non
             b = open(rp, "rb").read()
             off = first_byte_diff(a, b)
             detail = f"；首个字节差在偏移 {off}（A 长 {len(a)} / B 长 {len(b)}）"
+        locate = ""
+        if first_diff:
+            locate = describe_first_diff(kotlin_dir, rust_dir)
         raise ParityFail(
-            f"双跑不一致：{len(diffs)}/4 件不等，首个差异 = {first}{detail}\n"
+            f"双跑不一致：{len(diffs)}/4 件不等，首个差异 = {first}{detail}{locate}\n"
             f"  期望（Kotlin 腿）: {kp}\n  实际（Rust 腿）  : {rp}"
         )
     if expect_file:
@@ -404,7 +438,7 @@ def cmd_parity(ns: argparse.Namespace) -> int:
             fake_compile_leg(ns.rust_exe, corpus, r_dir)
         else:
             rust_compile_leg(rust_exe, classpath, corpus, r_dir, ns.limit, "parity")
-        compare_dirs(k_dir, r_dir, ns.expect)
+        compare_dirs(k_dir, r_dir, ns.expect, ns.first_diff)
     finally:
         if ns.keep:
             log(f"--keep：产物留在 {base_out}")
@@ -1018,6 +1052,8 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--classpath-file", dest="classpath_file", help="同上，显式文件态")
     pp.add_argument("--rust-exe", help="覆盖 Rust CLI 路径（selftest 用它挂假腿）")
     pp.add_argument("--keep", action="store_true", help="保留临时产物（默认跑完删除）")
+    pp.add_argument("--first-diff", dest="first_diff", action="store_true",
+                    help="红时叠一层 firstdiff 定位（段/函数/pc/行/两侧指令字；需先 cargo build --release --bin firstdiff）")
     pp.set_defaults(fn=cmd_parity)
 
     rp = sub.add_parser("regen", help="在当前机器重生成 tests/data 基准并打印新旧 sha 对照")

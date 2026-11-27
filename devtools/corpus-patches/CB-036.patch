@@ -1,0 +1,28 @@
+--- a/コマンド関連/USERCOM.ERB
++++ b/コマンド関連/USERCOM.ERB
+@@ -12,5 +12,7 @@
+ #DIM DYNAMIC なだめ判定
+ #DIM DYNAMIC CAN_BE_UNLOKED_ROOM_SAVE
+ 
++; 【CB-036】子选单自动重派发的入口：落点必须在下面两道入口守卫之前，才能与「玩家手动再点一次原指令」逐句等价（含 KOJO_CHECK COM_BLOCKED 的角色拦截）
++$COM_OPTION_REPLAY
+ ;addition custom code, handle custom COM values
+ CALL Add_Custom_USERCOM(RESULT)
+@@ -387,6 +387,17 @@
+ ;指令选项----------------------------
+ ELSEIF INRANGE(RESULT, -1000, -1)
++	; 【CB-036】子选单选完立即执行：原版选完还要再点一次原指令（COM_OPTION 只设
++	; COM_ALTER 后 RETURN -1 重绘列表），触屏端像「点了没反应」。选中时信号被
++	; CB-035 置 1（取消/无变体时保持 0），这里记下指令号并清信号，收尾 CLEARLINE
++	; 后见 1 就回到函数入口重派发 —— 与手动再点一次走同一条入口守卫 + 分发链。
++	LOCAL = ABS(RESULT)
++	COM_OPTION_SELECTED = 0
+ 	CLEARLINE 1
+ 	TRYCALLFORM COM_OPTION(ABS(RESULT))
+ 	CLEARLINE LINECOUNT - UI_STARTLINE
++	IF COM_OPTION_SELECTED
++		RESULT = LOCAL
++		COM_OPTION_SELECTED = 0
++		GOTO COM_OPTION_REPLAY
++	ENDIF
+ 	RETURN -1

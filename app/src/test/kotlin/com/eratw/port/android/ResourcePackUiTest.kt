@@ -1,5 +1,7 @@
 package com.eratw.port.android
 
+import com.eratw.port.platform.storage.ResourcePackPhase
+import com.eratw.port.platform.storage.ResourcePackProgress
 import com.eratw.port.platform.storage.ResourcePackStatus
 import com.eratw.port.platform.storage.StructureNote
 import com.eratw.port.platform.storage.StructureNoteKind
@@ -75,6 +77,56 @@ class ResourcePackUiTest {
         )
         assertTrue(state is ResourcePackUiState.Failed)
         assertEquals(status, state.status)
+    }
+
+    @Test
+    fun `进度读数只在进行态落地`() {
+        val progress = ResourcePackProgress(
+            phase = ResourcePackPhase.WRITING,
+            doneFiles = 3,
+            totalFiles = 10,
+            doneBytes = 1_024,
+            totalBytes = 4_096,
+            currentName = "resources/背景图/00/a.webp",
+        )
+        var state: ResourcePackUiState = ResourcePackUiState.Idle(status)
+        state = ResourcePackUiReducer.reduce(state, ResourcePackEvent.ImportStarted(1))
+        assertTrue(state is ResourcePackUiState.Importing)
+        // 线程刚起、第一条读数还没到：进行态不许造一个假进度。
+        assertEquals(null, (state as ResourcePackUiState.Importing).progress)
+
+        state = ResourcePackUiReducer.reduce(state, ResourcePackEvent.ImportProgressed(progress))
+        assertTrue(state is ResourcePackUiState.Importing)
+        val importing = state as ResourcePackUiState.Importing
+        assertEquals(progress, importing.progress)
+        assertEquals(status, importing.status)
+
+        // 结果态落定之后迟到的进度不许把卡片拉回进行态（否则会闪回「正在写入」）。
+        val settled = ResourcePackUiReducer.reduce(state, ResourcePackEvent.ImportSucceeded(summary, status))
+        assertTrue(settled is ResourcePackUiState.Succeeded)
+        val late = ResourcePackUiReducer.reduce(settled, ResourcePackEvent.ImportProgressed(progress))
+        assertTrue(late is ResourcePackUiState.Succeeded)
+        assertEquals(settled, late)
+    }
+
+    @Test
+    fun `单飞闸拒绝落成可见的未开始态而不是静默`() {
+        val blocked = ResourcePackUiReducer.reduce(
+            ResourcePackUiState.Idle(status),
+            ResourcePackEvent.ImportBlocked(copy.importBlockedText, status),
+        )
+        assertTrue(blocked is ResourcePackUiState.Blocked)
+        // 句子来自文案表（不是壳层硬编码），读数照旧保留。
+        assertEquals(copy.importBlockedText, (blocked as ResourcePackUiState.Blocked).message)
+        assertEquals(status, blocked.status)
+
+        // 读数刷新照常携带，但不把「未开始」顶回 Idle（玩家还得看见那句提醒）。
+        val refreshed = ResourcePackUiReducer.reduce(blocked, ResourcePackEvent.StatusRefreshed(status))
+        assertTrue(refreshed is ResourcePackUiState.Blocked)
+
+        // 下一次真的开始了：从 Blocked 推进到 Importing 不被卡住。
+        val started = ResourcePackUiReducer.reduce(blocked, ResourcePackEvent.ImportStarted(1))
+        assertTrue(started is ResourcePackUiState.Importing)
     }
 
     @Test

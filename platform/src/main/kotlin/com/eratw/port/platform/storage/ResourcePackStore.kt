@@ -172,6 +172,13 @@ data class MaterialEntry(
 interface MaterialSource {
     val label: String
     fun entries(): List<MaterialEntry>
+
+    /**
+     * 同一份清单，但每发现一批条目就回调一次**已发现数**（[ResourcePackStore.installSource]
+     * 拿它画扫描阶段的「已发现 N 个」）。默认直落 [entries]：内存 / 测试源没有可汇报的
+     * 中间态；SAF 目录树实现覆写它（逐层查 DocumentsContract，几百个文件能查好几秒）。
+     */
+    fun entriesWithProgress(onDiscovered: (Int) -> Unit): List<MaterialEntry> = entries()
 }
 
 /** 本机目录源：递归列出文件（跳过隐藏目录与 `__MACOSX`），按相对路径排序保证编号可复现。 */
@@ -179,7 +186,9 @@ class FolderMaterialSource(private val folder: File) : MaterialSource {
 
     override val label: String get() = folder.name
 
-    override fun entries(): List<MaterialEntry> {
+    override fun entries(): List<MaterialEntry> = entriesWithProgress {}
+
+    override fun entriesWithProgress(onDiscovered: (Int) -> Unit): List<MaterialEntry> {
         if (!folder.isDirectory) return emptyList()
         val out = ArrayList<MaterialEntry>()
         val stack = ArrayDeque<File>()
@@ -202,11 +211,14 @@ class FolderMaterialSource(private val folder: File) : MaterialSource {
                     child.isFile -> {
                         val relative = child.relativeTo(folder).path.replace('\\', '/')
                         out += MaterialEntry(relative, child.length()) { FileInputStream(child) }
+                        // 本机目录通常很快；每 64 条报一次，别让回调本身成为开销。
+                        if (out.size % DISCOVERY_BATCH == 0) onDiscovered(out.size)
                     }
                 }
             }
         }
         out.sortBy { it.name }
+        onDiscovered(out.size)
         return out
     }
 }
@@ -433,7 +445,11 @@ class ResourcePackStore(private val gameRoot: File) {
      * 非目标扩展名（BGM 的说明 txt / 0 字节占位、背景目录里的 readme）不投放、也不计入
      * 「跳过」，折成一条 [StructureNoteKind.MATERIAL_IGNORED_FILES] 读数。
      */
-    fun installSource(source: MaterialSource, target: MaterialTarget): ResourcePackReport {
+    fun installSource(
+        source: MaterialSource,
+        target: MaterialTarget,
+        onProgress: (ResourcePackProgress) -> Unit = {},
+    ): ResourcePackReport {
         var installed = 0
         var bytes = 0L
         var overwritten = 0
@@ -444,14 +460,19 @@ class ResourcePackStore(private val gameRoot: File) {
         val roots = sortedSetOf<String>()
         val samples = ArrayList<String>()
         val notes = ArrayList<StructureNote>()
+        // 进度节流 + 异常隔离：回调是 UI 那条线的事，报不上来也绝不能把导入带死。
+        val emitter = ProgressEmitter(onProgress)
 
         fun skip(entry: String, reason: String) {
             skipped++
             if (samples.size < SKIP_SAMPLES_MAX) samples += "$entry —— $reason"
         }
 
+        emitter.emit(ResourcePackProgress(phase = ResourcePackPhase.SCANNING))
         val entries = try {
-            source.entries()
+            source.entriesWithProgress { discovered ->
+                emitter.emit(ResourcePackProgress(phase = ResourcePackPhase.SCANNING, discovered = discovered))
+            }
         } catch (e: Exception) {
             return ResourcePackReport(
                 installedFiles = 0,
@@ -494,6 +515,40 @@ class ResourcePackStore(private val gameRoot: File) {
                 source.label.ifBlank { "-" },
             )
         }
+        // 计划总量：按目标扩展名先数一遍（纯字符串判断，不读内容）。后面同名冲突 /
+        // 地点满员 / 越界仍会让实落数少于它，所以收尾时由 FINISHED 那一条强制对齐。
+        val planned = plannedTotals(limited, target)
+        emitter.emit(
+            ResourcePackProgress(
+                phase = ResourcePackPhase.WRITING,
+                totalFiles = planned.first,
+                totalBytes = planned.second,
+            ),
+            force = true,
+        )
+
+        /**
+         * 进度用的「已写字节」只增不减：一条写到一半失败时，它前面已写的字节也算「已处理」，
+         * 否则下一条报数会退回这批失败条目的量，进度条倒着走（比没有进度条更像坏了）。
+         * 预算仍按 [bytes]（成功落盘量）算，两者分开，互不污染。
+         */
+        var reportedBytes = 0L
+
+        /** 写一条读数的统一出口：`extraBytes` 用于「正在写的那一条」的字节增量。 */
+        fun reportWriting(name: String?, extraBytes: Long = 0L, force: Boolean = false) {
+            reportedBytes = maxOf(reportedBytes, bytes + extraBytes)
+            emitter.emit(
+                ResourcePackProgress(
+                    phase = ResourcePackPhase.WRITING,
+                    doneFiles = installed,
+                    totalFiles = planned.first,
+                    doneBytes = reportedBytes,
+                    totalBytes = planned.second,
+                    currentName = name,
+                ),
+                force = force,
+            )
+        }
 
         val indexRows = ArrayList<Pair<String, String>>()
         var otherIndexNames: MutableSet<String>? = null
@@ -503,7 +558,7 @@ class ResourcePackStore(private val gameRoot: File) {
         val emptyCsv = ArrayList<String>()
         val overflowDirs = LinkedHashSet<String>()
         var fallbackNoted = false
-        val planned = HashSet<String>()
+        val plannedPaths = HashSet<String>()
         val usedNumbers = HashMap<String, MutableSet<Int>>()
 
         for ((entry, segments) in limited) {
@@ -568,7 +623,7 @@ class ResourcePackStore(private val gameRoot: File) {
                     targetPath = "$dirRel/$fileName"
                 }
             }
-            if (!planned.add(targetPath)) {
+            if (!plannedPaths.add(targetPath)) {
                 skip(entry.name, "同一批里有同名文件")
                 continue
             }
@@ -587,10 +642,19 @@ class ResourcePackStore(private val gameRoot: File) {
             }
             val existed = targetFile.isFile
             val budget = minOf(MAX_ENTRY_BYTES, MAX_TOTAL_BYTES - bytes)
+            // 先把「正在写哪一条」亮出来：小文件之间可能全被节流吃掉，名字不能等到写完了才出现。
+            reportWriting(entry.name)
             val written = try {
-                extractEntry(entry.open(), targetFile, budget)
+                // 分块回调按实际写入量走：一张几百 MB 的图写上一分钟，比例与字节数要一直在动，
+                // 否则玩家看到的仍是一条不动的杠。
+                extractEntry(entry.open(), targetFile, budget) { chunk ->
+                    reportWriting(entry.name, extraBytes = chunk)
+                }
             } catch (e: Exception) {
                 // SAF 源可能抛 SecurityException / FileNotFoundException，都按单条失败处理。
+                // 失败那条已写了一半的字节必须**强制**报出去：常规读数被节流吃掉的话，
+                // 下一条会从 0 重新报，进度条倒着走（比没有进度条更像坏了）。
+                reportWriting(entry.name, force = true)
                 skip(entry.name, e.message ?: "写入失败")
                 continue
             }
@@ -598,6 +662,7 @@ class ResourcePackStore(private val gameRoot: File) {
             installed++
             if (existed) overwritten++
             if (autoRename) renamed++
+            reportWriting(entry.name, force = installed >= planned.first)
             roots += targetPath.substringBefore('/')
             if (target == MaterialTarget.BACKGROUND) {
                 val relBody = targetPath.removePrefix("$RESOURCES_DIR/$BACKGROUND_DIR/")
@@ -636,6 +701,17 @@ class ResourcePackStore(private val gameRoot: File) {
             notes += StructureNote(StructureNoteKind.MATERIAL_IGNORED_FILES, ignored.toString())
         }
 
+        emitter.emit(
+            ResourcePackProgress(
+                phase = ResourcePackPhase.INDEXING,
+                doneFiles = installed,
+                totalFiles = maxOf(planned.first, installed),
+                // 收尾阶段只报「已处理到哪」：字节同样取只增不减的那份，别再退回失败条目。
+                doneBytes = maxOf(reportedBytes, bytes),
+                totalBytes = maxOf(planned.second, bytes),
+            ),
+            force = true,
+        )
         var generatedIndex: String? = null
         if (target == MaterialTarget.BACKGROUND && backgroundImage && !backgroundCsv) {
             if (indexRows.isNotEmpty()) {
@@ -685,6 +761,19 @@ class ResourcePackStore(private val gameRoot: File) {
             }
         }
 
+        // 收尾那条把分母对齐到**实落数**：计划数可能因同名 / 满员 / 越界而多于实落数，
+        // 让进度条停在 97% 再跳到结果态，读起来像「少了一点」。这一条只是把最后一帧
+        // 拉满（结果态马上接手，「跳过 N 项」由报告说）。
+        emitter.emit(
+            ResourcePackProgress(
+                phase = ResourcePackPhase.FINISHED,
+                doneFiles = installed,
+                totalFiles = installed,
+                doneBytes = bytes,
+                totalBytes = bytes,
+            ),
+            force = true,
+        )
         return ResourcePackReport(
             installedFiles = installed,
             installedBytes = bytes,
@@ -702,12 +791,47 @@ class ResourcePackStore(private val gameRoot: File) {
     }
 
     /**
+     * 计划总量（纯判断，不读内容）：按目标扩展名数一遍打算投放的条数与声明字节。
+     *
+     * 只用来给进度条一个**分母**——同名冲突 / 地点 0-9 满员 / 路径越界仍会让实落数少于它，
+     * 因此收尾的 FINISHED 那条会把 total 对齐到 max(计划, 实落)。
+     *
+     * **有一条声明了 0 / 负 size（SAF 提供方不给）时整批退回按文件数出比例**：否则分母
+     * 只算了知道大小的那些，写着写着比例就早到 100%，玩家会以为「写完了但卡着不动」。
+     */
+    private fun plannedTotals(
+        entries: List<Pair<MaterialEntry, List<String>>>,
+        target: MaterialTarget,
+    ): Pair<Int, Long> {
+        var files = 0
+        var bytes = 0L
+        var unknownSizes = false
+        for ((entry, segments) in entries) {
+            val ext = extensionOf(segments.last())
+            val accepted = when (target) {
+                MaterialTarget.BACKGROUND -> ext in IMAGE_EXTENSIONS || ext == "csv"
+                MaterialTarget.BGM -> ext == "mp3"
+            }
+            if (!accepted) continue
+            files++
+            if (entry.size > 0L) bytes += entry.size else unknownSizes = true
+        }
+        return files to if (unknownSizes) 0L else bytes
+    }
+
+    /**
      * 落一个条目：临时文件 → 写满 → fsync → rename（同目录，POSIX 原子覆盖）。
      *
      * [maxBytes] 是单文件与整批剩余额度取小：压缩包声明的大小可以撒谎，实际字节
-     * 始终按写入量核对。
+     * 始终按写入量核对。[onChunk] 每写满一个缓冲回调累计写入量（给进度条用：
+     * 单张几百 MB 的图也要有连续读数）。
      */
-    private fun extractEntry(input: InputStream, target: File, maxBytes: Long): Long {
+    private fun extractEntry(
+        input: InputStream,
+        target: File,
+        maxBytes: Long,
+        onChunk: (Long) -> Unit = {},
+    ): Long {
         val parent = target.parentFile
         if (parent != null && !parent.isDirectory && !parent.mkdirs() && !parent.isDirectory) {
             throw IOException("无法创建目录：${parent.absolutePath}")
@@ -728,6 +852,7 @@ class ResourcePackStore(private val gameRoot: File) {
                             throw IOException("超出单文件或本批总量上限（${maxBytes / MIB} MiB）")
                         }
                         out.write(buffer, 0, read)
+                        onChunk(written)
                     }
                     out.flush()
                     out.fd.sync()
@@ -1314,6 +1439,51 @@ class ResourcePackStore(private val gameRoot: File) {
 
 /** 素材包压缩格式：zip 走 JDK 自带 ZipFile，7z 走 commons-compress。 */
 private enum class PackFormat { ZIP, SEVEN_ZIP }
+
+/**
+ * 进度回调的**节流壳**：同一批导出的调用点只管给读数，这里决定「多久放行一次」。
+ *
+ * - 强制放行（[emit] 的 `force`）：阶段切换与收尾。阶段只有四条，漏一条玩家就会看到
+ *   「扫描中」挂到结束，所以这几条不吃节流。
+ * - 扫描阶段：已发现数**变化够多**（[SCANNING_REPORT_STEP] 条）或间隔到点才放行。
+ *   列一个目录才回调一次，节流全按时间会把它吃掉、卡上只剩「正在扫描」不动；但完全
+ *   不节流，上万目录的 SAF 树就会变成每秒几十上百次 UI 重组——所以取「按增量放行」。
+ * - 写入阶段按时间节流（约 8 次/秒）：分块回调是每 64KB 一次，不限流会把 UI 线程压垮。
+ * - 回调抛异常一律吞掉：进度是旁路信息，UI 那条线坏了也不能把正在写的文件带死
+ *   （真出问题由结果态的失败报告兜底，而不是让导入停在半路）。
+ */
+private class ProgressEmitter(private val sink: (ResourcePackProgress) -> Unit) {
+
+    private var lastEmitMs = 0L
+    private var lastDiscovered = -1
+
+    fun emit(progress: ResourcePackProgress, force: Boolean = false) {
+        val scanning = progress.phase == ResourcePackPhase.SCANNING
+        if (scanning && progress.discovered == lastDiscovered) return
+        val now = System.nanoTime() / NANOS_PER_MILLI
+        val quiet = now - lastEmitMs < PROGRESS_EMIT_INTERVAL_MS
+        val scanStepReached = scanning && progress.discovered - lastDiscovered >= SCANNING_REPORT_STEP
+        if (!force && quiet) {
+            // 扫描阶段额外放行「又攒够一批」的那次，让万级目录也能推进已发现数。
+            if (!scanStepReached) return
+        }
+        lastEmitMs = now
+        if (scanning) lastDiscovered = progress.discovered
+        runCatching { sink(progress) }
+    }
+}
+
+/** 纳秒 → 毫秒的换算（节流用；常量而非裸 1000）。 */
+private const val NANOS_PER_MILLI = 1_000_000L
+
+/** 目录枚举每发现这么多条就回报一次（回调本身要廉价）。 */
+private const val DISCOVERY_BATCH = 64
+
+/** 进度节流间隔：约 8 次/秒，肉眼连续、又不会让 Compose 每写一个缓冲就重组一次。 */
+private const val PROGRESS_EMIT_INTERVAL_MS = 120L
+
+/** 扫描阶段按增量放行的门槛：已发现数每涨这么多条就放行一次（防止万级目录刷爆 UI 线程）。 */
+private const val SCANNING_REPORT_STEP = 8
 
 /**
  * zip / 7z 的统一条目视图。

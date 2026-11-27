@@ -5,7 +5,6 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.WindowInsetsController
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -25,7 +24,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -45,7 +43,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
+import com.eratw.port.android.ui.design.ShellButton
 import com.eratw.port.android.ui.design.ShellShape
+import com.eratw.port.android.ui.design.ShellSpace
 import com.eratw.port.android.ui.design.ShellType
 
 /**
@@ -285,13 +285,10 @@ internal fun EratwFilledButton(
     Button(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier.height(40.dp),
+        modifier = modifier.heightIn(min = ShellSpace.RowMinHeight),
         shape = ShellShape.Chip,
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = container,
-            contentColor = EratwInk.text(),
-        ),
+        colors = ShellButton.filled(container),
     ) {
         Text(text = text, style = ShellType.Body)
     }
@@ -313,10 +310,11 @@ internal fun EratwGhostButton(
     OutlinedButton(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier.height(40.dp),
+        modifier = modifier.heightIn(min = ShellSpace.RowMinHeight),
         shape = ShellShape.Chip,
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
-        border = BorderStroke(1.dp, if (enabled) border else border.copy(alpha = 0.35f)),
+        colors = ShellButton.outlined(tone?.content),
+        border = ShellButton.border(border, enabled),
     ) {
         Text(text = text, color = tone?.content ?: EratwInk.text(), style = ShellType.Body)
     }
@@ -333,6 +331,7 @@ internal fun EratwQuietButton(
         onClick = onClick,
         modifier = modifier.fillMaxWidth(),
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+        colors = ShellButton.text(EratwInk.textMuted()),
     ) {
         Text(text = text, color = EratwInk.textMuted(), style = ShellType.Tab)
     }

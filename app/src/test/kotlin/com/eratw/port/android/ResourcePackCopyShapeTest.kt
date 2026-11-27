@@ -39,6 +39,13 @@ class ResourcePackCopyShapeTest {
         "bgmLocationLabel" to ResourcePackCopy::bgmLocationLabel,
         "bgmLocationHint" to ResourcePackCopy::bgmLocationHint,
         "importingStageText" to ResourcePackCopy::importingStageText,
+        "progressScanningText" to ResourcePackCopy::progressScanningText,
+        "progressScanningCountFormat" to ResourcePackCopy::progressScanningCountFormat,
+        "progressWritingText" to ResourcePackCopy::progressWritingText,
+        "progressCountFormat" to ResourcePackCopy::progressCountFormat,
+        "progressCurrentFormat" to ResourcePackCopy::progressCurrentFormat,
+        "progressIndexingText" to ResourcePackCopy::progressIndexingText,
+        "importBlockedText" to ResourcePackCopy::importBlockedText,
         "importedSummaryFormat" to ResourcePackCopy::importedSummaryFormat,
         "importedPartialFormat" to ResourcePackCopy::importedPartialFormat,
         "importedNothingFormat" to ResourcePackCopy::importedNothingFormat,
@@ -100,10 +107,10 @@ class ResourcePackCopyShapeTest {
 
     @Test
     fun `三档条目数相等且与显式键清单对账`() {
-        // data class 的 toString 逐个列构造属性：1 个 lang + 54 条键 = 55 个 '='。
+        // data class 的 toString 逐个列构造属性：1 个 lang + 61 条键 = 62 个 '='。
         // 表里的值不许带 '=' 字符（有就换一种计数法，别硬绕）。
-        assertEquals(54, keys.size)
-        CopyShapeGate.assertKeyCount("ResourcePackCopy", copies, keys, expectedPerCopy = 55)
+        assertEquals(61, keys.size)
+        CopyShapeGate.assertKeyCount("ResourcePackCopy", copies, keys, expectedPerCopy = 62)
     }
 
     @Test

@@ -22,8 +22,8 @@ import com.eratw.port.modapi.InteractionHookDecl
 import com.eratw.port.modapi.InteractionPhase
 import com.eratw.port.modapi.InteractionResult
 import com.eratw.port.modapi.ModContext
-import com.eratw.port.modapi.ModValue
 import com.eratw.port.modapi.ModManifest
+import com.eratw.port.modapi.ModValue
 import java.nio.file.Files
 import java.nio.file.Path
 import org.junit.After
@@ -539,10 +539,16 @@ class ModPartialInstallConsistencyE2ETest {
     // 夹具
     // ------------------------------------------------------------------
 
+    // 在册测试债的最小机械对齐（KI-GLOBAL-DIM 波登记）：dispatchCall 已加 strRet 且返回 ModValue，
+    // helper 维持原 Long 口径，内部解包，调用点断言不动。
     private fun dispatchTarget(store: VariableStore, original: () -> Long): Long =
-        (FunctionHookWiring.dispatchCall(store, HOOK_KEY, LongArray(0), emptyArray(), strRet = false) { _, _ ->
-            ModValue.of(original())
-        } as ModValue.IntValue).value
+        (FunctionHookWiring.dispatchCall(
+            store,
+            HOOK_KEY,
+            LongArray(0),
+            emptyArray(),
+            strRet = false,
+        ) { _, _ -> ModValue.IntValue(original()) } as ModValue.IntValue).value
 
     /**
      * hook 引擎槽是否仍绑着 pipeline。
