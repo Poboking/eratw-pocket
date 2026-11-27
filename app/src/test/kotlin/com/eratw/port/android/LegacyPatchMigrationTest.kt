@@ -196,7 +196,9 @@ class LegacyPatchMigrationTest {
     fun `留档源编译失败——不迁移保留旧档且本次导入照常成功并点名原因`() {
         val tmp = tempDir()
         val mods = modsDir(tmp)
-        // 老用户盘：一个坏留档源（函数头之前的全局 #DIM ⇒ 常量闸 I6 编译硬拒，改判后仍真失败）+ 并集旧档。
+        // 老用户盘：一个坏留档源（调用 base 函数省略实参 ⇒ I6-④ 整包编译硬拒）+ 并集旧档。
+        // 2026-11-26 KI-GLOBAL-DIM：函数外全局 #DIM 已放行；函数体内形态会命中文件级容错门
+        // （见 BAD_SOURCE KDoc），两者都不能当「整包失败」夹具。
         File(mods, "K16_BAD.ERB").writeBytes(BAD_SOURCE.toByteArray(Charsets.UTF_8))
         val union = File(mods, ModImportController.UNION_PATCH_NAME).apply { writeBytes(byteArrayOf(0)) }
 
@@ -212,8 +214,8 @@ class LegacyPatchMigrationTest {
             detail.parseWarnings.any { it.contains("存量 .patch 未迁移") },
         )
         assertTrue(
-            "告警带出编译失败判据与定位（全局 #DIM ⇒ GLOBAL_COUNT + 文件:行号）：${detail.parseWarnings}",
-            detail.parseWarnings.any { it.contains("GLOBAL_COUNT") && it.contains("K16_BAD.ERB") },
+            "告警带出编译失败判据与定位（I6-④ 省略实参 ⇒ A_DEF + 文件:行号）：${detail.parseWarnings}",
+            detail.parseWarnings.any { it.contains("A_DEF") && it.contains("K16_BAD.ERB") },
         )
     }
 
@@ -307,12 +309,19 @@ class LegacyPatchMigrationTest {
         private const val SOURCE_C = "@B_C\nRETURN 0\n"
 
         /**
-         * 函数头之前的全局 #DIM ⇒ 常量闸硬拒（core-vm/src/main/kotlin/com/eratw/port/core/compile/
-         * PatchCompiler.kt:1033-1039 抛 PatchCompileException；不变量 I6 / R7 铁律 3）。
-         * d6da78151 只把「撞 base 同名函数」改成覆盖装载 + 告警，这一面在改判前后都真编译失败
-         * （同闸先例 = ModImportControllerTest「I6 二——全局 DIM 补丁被编译期拒绝且文案含文件与行号」）。
+         * 留档源编译失败的夹具 = **I6-④ 省略实参**硬拒（空 param-defaults 侧车 + 补丁调用
+         * base 函数 `A_DEF`（mini 侧车 3 形参）只给 1 个实参，PatchCompiler 步骤 12 抛）。
+         *
+         * 2026-11-26 KI-GLOBAL-DIM 改判后本夹具换过两次，血泪教训记在这里：
+         * - 函数外全局 `#DIM` 已放行，不能再当失败夹具；
+         * - **函数体内**全局侧 `#DIM` 的报错文案是「#DIM 解析失败（原版 CodeEE）」——
+         *   含「解析失败」四字 ⇒ 命中 `PatchCompiler.compile` 的文件级容错门
+         *   （`isTolerableParseFailure`），多源场景下只会丢掉该文件续编、整包照样成功。
+         *   实测拿它当「整包编译失败」夹具会静默变成「迁移成功」（warnings 全空 +
+         *   旧并集档被删）。
+         * I6-④ 的「省略了实参」不在容错词表内、也不按文件归因，是稳定整包硬拒。
          */
-        private const val BAD_SOURCE = "#DIM GLOBAL_COUNT = 5\n@B_BAD\nRETURN 0\n"
+        private const val BAD_SOURCE = "@B_BAD\nCALL A_DEF(1)\nRETURN 0\n"
     }
 }
 

@@ -198,6 +198,14 @@ class MainActivity : ComponentActivity() {
     private var lastDerivedHint: String? = null
 
     /**
+     * 跳过开关最近一次自动补 skip 的等待点序号（[GameHost.inputWaitGeneration]）。
+     *
+     * 同一等待点只补一次：一条 skip 被消费后 VM 会连跑多个无值等待，直到取值等待才停；
+     * 只看 [ShellState.awaitingAnyKey] 无法区分「这一条还没被消费」与「已经换到新等待」。
+     */
+    private var lastAutoSkipWaitGen: Long = -1L
+
+    /**
      * 本次 Activity 实例建 [consoleView] 时用的**列数守护下限**（同一个 SharedPreferences
      * 值也派生「显示大小」倍率 [UiPrefs.fontScale]，所以只比这一个数就够了）。
      *
@@ -2727,10 +2735,12 @@ class MainActivity : ComponentActivity() {
      *   （[handleConsoleTap] / [handleSkip]），并把**执行结果**回填给控制器
      *   （[TouchGestureController.noteTapExecuted]）—— 第二击要不要算跳过，取决于第一击
      *   到底有没有推进。
-     * - 长按：postDelayed 到 500ms 取按钮提示（原版 PC 的 hover ToolTip）。阈值直接引用
-     *   [TouchGestureController.DEFAULT_LONG_PRESS_MS]，与控制器判「长按不算单击」同源，
-     *   两处不会漂移。**空白处长按抬手即跳过**（复刻 PC 双击快进的手势面，2026-11-11
-     *   群友追加）；长按按钮只弹提示卡、不跳过。
+     * - 长按：postDelayed 到 500ms 取按钮提示（原版 PC 的 hover ToolTip）/ 遮罩取色。
+     *   阈值直接引用 [TouchGestureController.DEFAULT_LONG_PRESS_MS]，与控制器判「长按不算单击」
+     *   同源，两处不会漂移。长按**不产生跳过**：2026-11-11 曾把「空白处长按抬手」接到
+     *   [handleSkip]，2026-11-26 按玩家反馈移除 —— 手机阅读时手指按住屏幕很常见，500ms
+     *   阈值下会被当成快进，且跳过态会跨 CONTINUE 等待延续，表现为「原版的指令后停顿失效、
+     *   一直往下跳」（根因与系统等待边界的清零口径见 core-vm 的 ConsoleBeginHost）。
      */
     private fun attachGestures() {
         // 拖动行数的零头累加器（判据与出处见 ScrollLineAccumulator）：只在一次按下之内累加。
@@ -2744,16 +2754,6 @@ class MainActivity : ComponentActivity() {
         var lastY = 0f
         var lastX = 0f
         /**
-         * 本次长按是否已经用掉（弹了按钮提示卡）——抬手据此决定「长按空白跳过」要不要走。
-         *
-         * 长按有两条出口：①落在按钮上 ⇒ 弹 `title` 提示卡（原版 hover ToolTip，
-         * `EmueraConsole.cs:1891-1917`），这一下**不**跳过 —— 玩家是在看说明，不是在快进；
-         * ②落在空白处 ⇒ 复制 PC 的双击快进（[handleSkip]）。旗子由 [longPressTick] 在
-         * 取到提示时置真，每次 [MotionEvent.ACTION_DOWN] 复位。
-         */
-        var longPressShowedHint = false
-
-        /**
          * 长按按钮 → 显示它的 `title`（原版 PC 的 hover ToolTip）。
          *
          * 原版鼠标指着按钮时控制台取 `ConsoleButtonString.Title` 弹 ToolTip
@@ -2764,9 +2764,7 @@ class MainActivity : ComponentActivity() {
          * 长按**遮罩图**则取色投喂输入通道（INPUT(6/3,color) 消费面的手势半段，
          * 判定与投喂口径见 [pickMappedColorAt]）；与提示卡同闸同拍，两件事互不挤占。
          *
-         * 长按**空白处**在抬手时走「跳过」（见 [TouchGestureController.Action.LongPress]
-         * 的 UP 分支与 [longPressShowedHint]）：这里只负责把「弹没弹提示卡」记下来，
-         * 抬手那次跳过由绑定点执行 —— 取色等待的 `canSkip` 为假，两者不会打架。
+         * 长按**空白处**不产生任何输入（跳过已在 2026-11-26 移除，见 [attachGestures] 类文档）。
          *
          * 触发条件与控制器判「长按不是点击」的分界同源：**纵向位移不足半行**才算长按
          * （横向不参与滚动判定，见 [TouchGestureController] 类文档）。但横挥要另设闸：
@@ -2781,11 +2779,7 @@ class MainActivity : ComponentActivity() {
             if (!shell.inputVisible && !scrolled &&
                 abs(lastY - downY) < halfLine && abs(lastX - downX) < horizontalSlop
             ) {
-                consoleView.tooltipAt(downX, downY)?.let {
-                    shell.tooltip = it
-                    // 长按落在按钮上 = 玩家在看说明 ⇒ 抬手不跳过（见 longPressShowedHint）。
-                    longPressShowedHint = true
-                }
+                consoleView.tooltipAt(downX, downY)?.let { shell.tooltip = it }
                 pickMappedColorAt(downX, downY)
             }
         }
@@ -2804,7 +2798,6 @@ class MainActivity : ComponentActivity() {
                         scrollLines.reset()
                         scrolled = false
                         tracking = true
-                        longPressShowedHint = false
                         downX = event.x
                         downY = event.y
                         lastY = event.y
@@ -2897,24 +2890,11 @@ class MainActivity : ComponentActivity() {
                                     consoleView.scrollRows(action.scrollRowsSteps)
                                 }
                                 TouchGestureController.Action.LongPress -> {
-                                    // 长按空白 = 跳过（2026-11-11 群友：PC 双击能快进、模拟器没有）。
-                                    // 走的就是双击跳过那条 [handleSkip]（自带 canSkip 闸、同一
-                                    // submitSkip 路径、同一框镜像），一次长按只推一次；长按按钮
-                                    // 弹过提示卡则不跳（[longPressShowedHint]）。
-                                    //
-                                    // 回填 advanced 用**真实结果**：手势层判 LongPress 不看 canSkip
-                                    // （它只作用于双击配对），执行期长按因此可能一次都没提交 ——
-                                    // 那种情况必须记 advanced=false，否则玩家下一次正常点击会被
-                                    // 当成双击的第二击而多跳一步。
-                                    // 输入条展开时不跳过，与单击通道同口径：单击路径由
-                                    // handleConsoleTap 专门分支「先收起输入条、不推进」挡着
-                                    // （设计上那一下的意图是「收键盘」），长按若照旧跳过，
-                                    // 就会把玩家正在打的草稿当跳过文本交出去再清空
-                                    // （handleSkip 会 submitSkip(shell.input) + 清框）——
-                                    // 玩家看到的是「打字停顿一下，字没了，还多翻一屏」。
-                                    if (!longPressShowedHint && !shell.inputVisible) {
-                                        touch.noteTapExecuted(advanced = handleSkip(), hitButton = false)
-                                    }
+                                    // 长按不再映射任何输入（2026-11-26 移除「空白处长按跳过」：
+                                    // 手机阅读时按住屏幕很常见，500ms 阈值会把「停住的手指」当成
+                                    // 快进；跳过态跨 CONTINUE 等待延续，玩家看到的就是原版
+                                    // 「指令后停顿」失效、一直往下跳）。长按只保留提示卡/取色，
+                                    // 两者都在 [longPressTick] 里完成，抬手无事可做。
                                 }
                                 // None：抬手无可产出。
                                 else -> Unit
@@ -3394,6 +3374,26 @@ class MainActivity : ComponentActivity() {
     private fun noFocusWait(): Boolean = host?.pendingRequest()?.noFocus == true
 
     /**
+     * 跳过开关（默认关，2026-11-26）：右上角双箭头图标点亮时，每个「按任意键继续」页
+     * 自动补一条 skip。交给引擎按原版 `MesSkip` 语义（`EmueraConsole.cs:1451-1456`）连跑
+     * 后续无值等待，撞到取值等待（指令菜单）自停；`FORCEWAIT` 的 stopMesSkip 刹车页必须
+     * 放过（同 :1453 的 `!inputReq.StopMesskip`），否则原版的「指令后停顿」会被吞掉。
+     * 同一等待只补一次（waitGeneration 去重）；输入条展开时让位给玩家草稿。
+     */
+    private fun autoSkipTick(state: InputBarState) {
+        val active = host ?: return
+        val eligible = shell.skipping && state.canSkip && !shell.inputVisible &&
+            !active.awaitingAnyKeyStopsSkip()
+        if (!eligible) return
+        val waitGen = active.inputWaitGeneration()
+        if (waitGen != lastAutoSkipWaitGen) {
+            lastAutoSkipWaitGen = waitGen
+            active.submitSkip("")
+            consoleView.requestRedraw()
+        }
+    }
+
+    /**
      * pump 每帧把壳层状态刷进 [ShellState]（值不变时 `mutableStateOf` 不触发重组）。
      *
      * 选项栏按 [OPTION_SCAN_MS] 节流 + 指纹去重：读的是 `GameHost.currentOptions()` ——
@@ -3430,6 +3430,7 @@ class MainActivity : ComponentActivity() {
         // 每帧无条件刷（mutableStateOf 值不变不触发重组），不能放在下面 250ms 的
         // 选项扫描节流之后 —— 那一段每帧早退，会让脚钮的出现/消失慢半拍。
         shell.awaitingAnyKey = state.awaitingAnyKey
+        autoSkipTick(state)
         // WIRE-5：当前等待请求的宏预填开关镜像进壳层（单一来源 = InputRequest.macroEnabled；
         // state.macroEnabled 由 InputBarState.of 从 pending.macroEnabled 推导，壳层不另存真源）。
         shell.macroEnabled = state.macroEnabled

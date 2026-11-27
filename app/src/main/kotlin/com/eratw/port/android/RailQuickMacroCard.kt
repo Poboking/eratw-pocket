@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -28,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.eratw.port.android.ui.EratwInk
 import com.eratw.port.android.ui.design.ShellAlertDialog
+import com.eratw.port.android.ui.design.ShellButton
 import com.eratw.port.android.ui.design.ShellDialogActions
 import com.eratw.port.android.ui.design.ShellField
 import com.eratw.port.android.ui.design.ShellRowHairline
@@ -452,10 +452,7 @@ private fun MacroManualInput(
     )
     TextButton(
         enabled = draft.pendingValue.isNotBlank() && !draft.stepQuotaFull,
-        colors = ButtonDefaults.textButtonColors(
-            contentColor = EratwInk.accent(),
-            disabledContentColor = EratwInk.textMuted(),
-        ),
+        colors = ShellButton.text(EratwInk.accent()),
         onClick = { onDraftChange(draft.appendStep()) },
     ) {
         Text(text = text.railQuickMacroAddStep, style = ShellType.Tab)

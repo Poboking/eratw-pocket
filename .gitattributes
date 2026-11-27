@@ -9,3 +9,7 @@ app/src/main/assets/mods/rt2/*.manifest text eol=lf
 
 # ENGCOMPAT：引擎兼容层夹具的 sha256 是闸的判据本身，同上钉 LF。
 devtools/fixtures/engine-compat/** text eol=lf
+
+# 加密口上 zip 夹具（AES-128/192/256 与传统 ZipCrypto 的逐字节复现凭据）整棵按 binary
+# 处理：autocrlf 不得改它一个字节，解密读数对拍才对得上。
+app/src/test/resources/zipcrypto/** binary

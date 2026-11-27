@@ -409,6 +409,7 @@ class SettingsStringsModTest {
             "modRuntimeOverviewHint" to { s: SettingsStrings -> s.modRuntimeOverviewHint },
             "modRuntimeOverviewActive" to { s: SettingsStrings -> s.modRuntimeOverviewActive },
             "modRuntimeOverviewInactive" to { s: SettingsStrings -> s.modRuntimeOverviewInactive },
+            "modRuntimeOverviewBadge" to { s: SettingsStrings -> s.modRuntimeOverviewBadge(2, 3) },
             "modRuntimeOverviewNone" to { s: SettingsStrings -> s.modRuntimeOverviewNone },
             "modRuntimeOverviewEmpty" to { s: SettingsStrings -> s.modRuntimeOverviewEmpty },
             "modRuntimeOverviewFailure" to { s: SettingsStrings -> s.modRuntimeOverviewFailure("boom") },
@@ -424,7 +425,7 @@ class SettingsStringsModTest {
                 s.modRuntimeOverviewSettingsChangedMissing
             },
         )
-        assertEquals("新增文案条目数变了（现有 16 条 = 既有 15 条 + 存储超限提示 1 条）", 16, keys.size)
+        assertEquals("新增文案条目数变了（现有 17 条 = 既有 15 条 + 存储超限提示 1 条 + 运行中计数 1 条）", 17, keys.size)
         keys.forEach { (name, getter) ->
             val texts = all.map(getter)
             texts.forEach { assertTrue("$name 有一档空文案", it.isNotEmpty()) }
@@ -446,6 +447,9 @@ class SettingsStringsModTest {
 
     /** 概览既有参数化文案的三语原值（占位符漏档会只剩半句）。 */
     private fun assertOverviewParamCopy(all: List<SettingsStrings>) {
+        assertEquals("运行中 2/3", all[0].modRuntimeOverviewBadge(2, 3))
+        assertEquals("Running 2/3", all[1].modRuntimeOverviewBadge(2, 3))
+        assertEquals("稼働 2/3", all[2].modRuntimeOverviewBadge(2, 3))
         assertEquals("装载失败：boom", all[0].modRuntimeOverviewFailure("boom"))
         assertEquals("Load failure: boom", all[1].modRuntimeOverviewFailure("boom"))
         assertEquals("読み込み失敗：boom", all[2].modRuntimeOverviewFailure("boom"))

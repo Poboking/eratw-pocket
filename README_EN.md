@@ -39,7 +39,7 @@ standalone on desktop.
 | `tools/apkpack/` | APK content self-check: manifest / shards / STORED / compression accounting |
 | `tools/report-endpoint/` | Cloudflare Worker template for the error-report endpoint (placeholder domain and KV id) |
 | `docs/` | Design docs, golden-runbook, and an interactive prototype; indexed in [docs/README.md](docs/README.md) |
-| `badges/` | Fallback snapshot for the player-count / active-today badges (the README reads the live Worker shields endpoint directly, so refreshes are only minutes behind; CI keeps these JSON files fresh so the two badge lines can be pointed back to raw.githubusercontent if the endpoint fails or moves) |
+| `badges/` | In-repo SVGs for the player-count / active-today / download badges (the README reads these three SVGs directly, and CI regenerates them on a schedule — that sidesteps the shields dynamic endpoint timing out behind proxies); the JSON files next to them are the data source for the SVGs |
 | `gradle/libs.versions.toml` | Single source for dependency coordinates and Android / Kotlin versions |
 
 ## Build

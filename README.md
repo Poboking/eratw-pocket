@@ -38,7 +38,7 @@
 | `tools/apkpack/` | APK 内容自检：清单 / 分片 / STORED / 压缩口径逐类对账 |
 | `tools/report-endpoint/` | 错误上报 Cloudflare Worker 模板（端点与 KV id 均为占位） |
 | `docs/` | 设计稿、golden 采集手册与可交互原型；索引见 [docs/README.md](docs/README.md) |
-| `badges/` | 玩家数 / 活跃数徽章的回退快照（README 现在直连 Worker 的 shields 端点，刷新延迟只有几分钟；这份 JSON 由 CI 定时刷新，端点故障或迁移时可把徽章两行改回 raw.githubusercontent） |
+| `badges/` | 玩家数 / 活跃数 / 下载数徽章的仓内 SVG（README 直连这三份 SVG，CI 定时重生成，绕开 shields 动态端点在代理链上的超时）；同目录的 JSON 是 SVG 的数据源 |
 | `gradle/libs.versions.toml` | 全仓依赖坐标与 Android / Kotlin 版本的单源 |
 
 ## 构建

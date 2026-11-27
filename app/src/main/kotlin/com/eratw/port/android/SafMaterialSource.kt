@@ -32,7 +32,9 @@ internal class SafFileMaterialSource(
     private val uris: List<Uri>,
 ) : MaterialSource {
 
-    override fun entries(): List<MaterialEntry> {
+    override fun entries(): List<MaterialEntry> = entriesWithProgress {}
+
+    override fun entriesWithProgress(onDiscovered: (Int) -> Unit): List<MaterialEntry> {
         val out = ArrayList<MaterialEntry>(uris.size)
         for (uri in uris) {
             val name = UriNames.displayNameOf(resolver, uri, fallback = null)
@@ -42,7 +44,11 @@ internal class SafFileMaterialSource(
             out += MaterialEntry(name, SafMaterialSources.sizeOf(resolver, uri)) {
                 resolver.openInputStream(uri) ?: throw IOException("打不开 $name")
             }
+            // 多选列表可能很长：每 16 条报一次已发现数（进度回调内部还有节流）。
+            // 逐条上报会把一次导入变成上百次 UI 重组，白烧一个核。
+            if (out.size % SAF_DISCOVERY_BATCH == 0) onDiscovered(out.size)
         }
+        onDiscovered(out.size)
         return out
     }
 }
@@ -53,7 +59,9 @@ internal class SafTreeMaterialSource(
     private val treeUri: Uri,
 ) : MaterialSource {
 
-    override fun entries(): List<MaterialEntry> {
+    override fun entries(): List<MaterialEntry> = entriesWithProgress {}
+
+    override fun entriesWithProgress(onDiscovered: (Int) -> Unit): List<MaterialEntry> {
         val rootId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull()
             ?: return emptyList()
         val out = ArrayList<MaterialEntry>()
@@ -98,6 +106,9 @@ internal class SafTreeMaterialSource(
                     }
                 }
             }
+            // 一个目录查完就报一次已发现数：SAF 的耗时几乎全在「逐层列目录」上，
+            // 按目录报才能让玩家看到扫描阶段真的在动（回调内部另有 120ms 节流）。
+            onDiscovered(out.size)
         }
         out.sortBy { it.name }
         return out
@@ -126,3 +137,6 @@ internal object SafMaterialSources {
         }
     }.getOrNull() ?: -1L
 }
+
+/** 多选文件枚举时每这么多条报一次已发现数（回调内部另有节流）。 */
+private const val SAF_DISCOVERY_BATCH = 16

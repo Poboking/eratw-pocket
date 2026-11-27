@@ -26,6 +26,8 @@ internal fun modImportFailureGuidance(kind: ModImportFailureKind, copy: ModImpor
     when (kind) {
         ModImportFailureKind.COMPILE, ModImportFailureKind.IDENTITY -> copy.failureGuidanceAuthorFormat
         ModImportFailureKind.STORAGE -> copy.failureGuidanceStorageFormat
+        ModImportFailureKind.PASSWORD -> copy.failureGuidancePasswordFormat
+        ModImportFailureKind.ARCHIVE -> copy.failureGuidanceArchiveFormat
         ModImportFailureKind.UNEXPECTED -> copy.failureGuidanceUnexpectedFormat
     }
 

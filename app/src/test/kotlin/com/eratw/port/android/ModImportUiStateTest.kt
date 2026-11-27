@@ -79,10 +79,12 @@ class ModImportUiStateTest {
     }
 
     @Test
-    fun `四类失败都有各自的报错页标题`() {
+    fun `五类失败都有各自的报错页标题`() {
         assertEquals("补丁编译失败（未落盘）", modImportFailureTitle(ModImportFailureKind.COMPILE))
         assertEquals("补丁与游戏本体不符", modImportFailureTitle(ModImportFailureKind.IDENTITY))
         assertEquals("存储失败", modImportFailureTitle(ModImportFailureKind.STORAGE))
+        assertEquals("压缩包需要解压密码", modImportFailureTitle(ModImportFailureKind.PASSWORD))
+        assertEquals("这个压缩包本机打不开", modImportFailureTitle(ModImportFailureKind.ARCHIVE))
         assertEquals("内部错误", modImportFailureTitle(ModImportFailureKind.UNEXPECTED))
     }
 

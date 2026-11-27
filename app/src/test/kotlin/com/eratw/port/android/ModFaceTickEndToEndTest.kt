@@ -40,15 +40,15 @@ import org.junit.Test
  * 与既有测试的分工（别混）：
  * - `ModContextFaceAuditFixture`（DH 波）证明「24 个作者面在真装配下都能注册/可读」；
  * - 本文件证明「**注册成功 ≠ tick 时真会派发**」：注册只说明面可达，派发要靠真回合边界。
- * - 真 tick 唯一入口 = [ModRuntimeSession.onTurnBoundary]（`ModRuntimeAssembly.kt:1537`），
- *   其内部逐 driver 调 `driver.tickTurn(day, phasePlan)`（`ModRuntimeAssembly.kt:1560` →
- *   `GameTickDriver.kt:47`）。本文件全部用例只经这个入口推进，不直调 `GameTickDriver` /
+ * - 真 tick 唯一入口 = [ModRuntimeSession.onTurnBoundary]，其内部先逐 driver 调
+ *   `driver.tickTurn(day, phasePlan, runJobs = false)` 派发相位，再对全链共享任务调度器
+ *   调一次 `runDue`。本文件全部用例只经这个入口推进，不直调 `GameTickDriver` /
  *   `DecisionPipeline.run` / `InteractionPipeline.run` —— 否则证明的只是「组件能跑」，
  *   不是「生产节拍真会把五面接上」。
  *
  * 证据面（宿主日志，非玩家可见文案，不进域文案表）：相位 + 到期任务合并读数行
- * `mod.tick day=… phaseHandlers=… jobs=… phases=…`（`ModRuntimeAssembly.kt:1580-1585`）、
- * 外轮仲裁读数行 `mod.arbitration … outcome=COMPLETED …`（同文件 1591 的仲裁缝）、
+ * `mod.tick day=… phaseHandlers=… jobs=… phases=…`（`ModRuntimeSession.onTurnBoundary`）、
+ * 外轮仲裁读数行 `mod.arbitration … outcome=COMPLETED …`（同文件仲裁缝）、
  * PHASE/DECISION 诊断环、以及作者面 `context.timing.samples()` 的 `tick` scope。
  */
 class ModFaceTickEndToEndTest {

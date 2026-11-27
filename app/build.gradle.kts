@@ -450,8 +450,9 @@ android {
         // 0.2.48 / 24（2026-11-19）：一键出包工具按发版要求自动抬号。
         // 0.2.481 / 25（2026-11-20）：一键出包工具按发版要求自动抬号。
         // 0.2.484 / 28（2026-11-26）：一键出包工具按发版要求自动抬号。
-        versionCode = 28
-        versionName = "0.2.484"
+        // 0.2.486 / 30（2026-11-27）：一键出包工具按发版要求自动抬号。
+        versionCode = 30
+        versionName = "0.2.486"
         // SHELL-PROFILE：第三方包用版本账本的值覆盖上面的 eraTW 号段（缺省 -P 时空 ⇒ 不覆盖）。
         // 覆盖写在字面量之后，pack_one 仍按第一处 `versionCode = <n>` 抬 eraTW 的号，互不干扰。
         if (versionCodeOverride > 0) versionCode = versionCodeOverride

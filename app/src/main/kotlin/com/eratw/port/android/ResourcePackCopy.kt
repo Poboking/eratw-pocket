@@ -58,6 +58,23 @@ data class ResourcePackCopy(
 
     /** 导入线程跑起来后的进行态那句（选完包、还没出结果）。 */
     val importingStageText: String,
+    /** 进度：正在枚举来源（还没开始写文件）。 */
+    val progressScanningText: String,
+    /** 进度：扫描阶段已发现的文件数：{0}=个数。 */
+    val progressScanningCountFormat: String,
+    /** 进度：正在逐条写入游戏根。 */
+    val progressWritingText: String,
+    /** 进度：已写文件数与字节：{0}=已写 {1}=计划 {2}=字节串。 */
+    val progressCountFormat: String,
+    /** 进度：正在写的那一条：{0}=文件名。 */
+    val progressCurrentFormat: String,
+    /** 进度：文件写完、正在收尾（生成索引）。 */
+    val progressIndexingText: String,
+    /**
+     * 单飞闸拒绝（上一次导入 / 清理还在进行）：卡上照实说这次没开始。
+     * 静默 return 会让玩家以为按钮点坏了——这条就是补那个洞。
+     */
+    val importBlockedText: String,
     /** 全部包成功的汇总：{0}=已装文件数 {1}=包数 {2}=覆盖数 {3}=跳过数。 */
     val importedSummaryFormat: String,
     /** 部分包成功的汇总：{0}=已装文件数 {1}=成功包数 {2}=失败包数。 */
@@ -188,6 +205,13 @@ data class ResourcePackCopy(
             bgmLocationLabel = "地点名",
             bgmLocationHint = "直接选音频时用这个地点名，留空放进「自定义」",
             importingStageText = "正在导入素材…",
+            progressScanningText = "正在扫描来源…",
+            progressScanningCountFormat = "已发现 {0} 个文件",
+            progressWritingText = "正在写入…",
+            progressCountFormat = "已写入 {0}/{1} 个文件 · {2}",
+            progressCurrentFormat = "当前：{0}",
+            progressIndexingText = "正在收尾（生成索引）…",
+            importBlockedText = "上一次导入或清理还没结束，这次没有开始。请等它完成后再试。",
             importedSummaryFormat = "已导入 {0} 个文件（来源 {1} 个）；覆盖 {2} 个，跳过 {3} 项。",
             importedPartialFormat = "已导入 {0} 个文件（成功 {1} 个来源，{2} 个来源失败）。",
             importedNothingFormat = "没有导入任何素材。\n{0}",
@@ -253,6 +277,15 @@ data class ResourcePackCopy(
             bgmLocationLabel = "Location",
             bgmLocationHint = "Used as the location when picking audio files directly; empty means 自定义",
             importingStageText = "Importing assets...",
+            progressScanningText = "Scanning the source...",
+            progressScanningCountFormat = "Found {0} files",
+            progressWritingText = "Writing files...",
+            progressCountFormat = "Written {0}/{1} files · {2}",
+            progressCurrentFormat = "Now: {0}",
+            progressIndexingText = "Finishing up (writing the index)...",
+            importBlockedText =
+                "The previous import or clearing has not finished, so this one did not start. " +
+                    "Try again once it completes.",
             importedSummaryFormat = "Imported {0} files from {1} source(s); {2} overwritten, {3} skipped.",
             importedPartialFormat = "Imported {0} files; {1} source(s) succeeded, {2} failed.",
             importedNothingFormat = "Nothing was imported.\n{0}",
@@ -323,6 +356,15 @@ data class ResourcePackCopy(
             bgmLocationLabel = "地点名",
             bgmLocationHint = "音声を直接選ぶときの地点名。空欄なら「自定义」に入ります",
             importingStageText = "素材を導入しています…",
+            progressScanningText = "ソースを走査しています…",
+            progressScanningCountFormat = "{0} 個のファイルを検出",
+            progressWritingText = "書き込み中…",
+            progressCountFormat = "{0}/{1} ファイル書き込み済み · {2}",
+            progressCurrentFormat = "現在：{0}",
+            progressIndexingText = "仕上げ中（索引を書き込み）…",
+            importBlockedText =
+                "前回の導入または削除がまだ終わっていないため、今回は開始しませんでした。" +
+                    "完了後にもう一度お試しください。",
             importedSummaryFormat = "導入済み：{0} ファイル（{1} 個のソース、上書き {2}、スキップ {3}）。",
             importedPartialFormat = "{0} ファイルを導入（成功 {1} ソース、失敗 {2} ソース）。",
             importedNothingFormat = "素材は1つも導入されませんでした。\n{0}",

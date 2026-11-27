@@ -326,6 +326,8 @@ BUSINESS_WORD_WHITELIST = (
     ("adopt", None, "adoptStrings", "引擎自有 API：Mod 字符串表采纳（ModStringsRegistry），非家族收养语义"),
     ("adopt", None, "adoptGameStateWrite", "引擎自有 API：Mod 状态写面采纳（ModDx4WriteGrantGate），非家族收养语义"),
     ("adopt", None, "adoptPreLoadFaces", "引擎自有 API：Mod 预装载面采纳（ModDx4WriteGrantGate），非家族收养语义"),
+    ("adopt", None, "adoptSnapshot", "引擎自有 API：虚拟角色快照的移交（VirtualCharaNoRegistry.adoptSnapshot），非家族收养语义"),
+    ("adopt", None, "adoptJobScheduler", "引擎自有 API：Mod 作业调度器采纳（ModContextFaces / ModRuntimeHost），非家族收养语义"),
     ("family", "FontSidecar.kt", None, "font family（字体家族，排版域），非家族系统业务"),
     ("family", "EngineProfileData.kt", None, "引擎兼容档族参数/查询（engine compat family），非家族系统业务"),
     ("family", "EngineSurface.kt", None, "引擎兼容档族（engine compat family），非家族系统业务"),

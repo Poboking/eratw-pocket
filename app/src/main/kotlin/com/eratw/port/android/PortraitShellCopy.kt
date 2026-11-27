@@ -137,6 +137,10 @@ data class PortraitShellCopy(
     val orientationLocked: String,
     /** 方向锁开关的读屏标签：未锁定态。 */
     val orientationUnlocked: String,
+    /** 跳过开关的读屏标签：开启态。 */
+    val skipToggleOn: String,
+    /** 跳过开关的读屏标签：关闭态。 */
+    val skipToggleOff: String,
 
     // ---------------------------------------------------------------- 通用对话框按钮（Yes/No）
     /** 通用「是」：死循环告警的强制结束（原版 `Dialog.ShowPrompt` 的 Yes）。 */
@@ -272,6 +276,8 @@ data class PortraitShellCopy(
             railToggleCollapsed = "选项栏(已收起)",
             orientationLocked = "屏幕方向(已锁定)",
             orientationUnlocked = "屏幕方向(未锁定)",
+            skipToggleOn = "跳过(已开启)",
+            skipToggleOff = "跳过(已关闭)",
             dirtyExitTitle = "上次异常退出",
             dirtyExitBody1 = "上一次游戏在运行中异常结束（闪退或被系统强制结束）。",
             dirtyExitBody2 = "已生成一份错误报告存在手机里。自动上报没能送出时，用下面的按钮把它发给开发者。",
@@ -344,6 +350,8 @@ data class PortraitShellCopy(
             railToggleCollapsed = "Option bar (hidden)",
             orientationLocked = "Orientation (locked)",
             orientationUnlocked = "Orientation (unlocked)",
+            skipToggleOn = "Skip (on)",
+            skipToggleOff = "Skip (off)",
             dirtyExitTitle = "Abnormal exit last time",
             dirtyExitBody1 = "The game ended abnormally last time (a crash, or killed by the system).",
             dirtyExitBody2 = "An error report has been saved on this phone. If the automatic upload did not get " +
@@ -419,6 +427,8 @@ data class PortraitShellCopy(
             railToggleCollapsed = "選択肢バー（非表示）",
             orientationLocked = "画面の向き（ロック中）",
             orientationUnlocked = "画面の向き（ロック解除）",
+            skipToggleOn = "スキップ（オン）",
+            skipToggleOff = "スキップ（オフ）",
             dirtyExitTitle = "前回の異常終了",
             dirtyExitBody1 = "前回、ゲームが実行中に異常終了しました（クラッシュまたはシステムによる強制終了）。",
             dirtyExitBody2 = "エラーレポートを端末に保存しました。自動送信できなかった場合は、下のボタンで開発者へ送ってください。",

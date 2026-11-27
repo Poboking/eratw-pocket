@@ -119,6 +119,7 @@ import com.eratw.port.core.host.ConsoleOption
 import com.eratw.port.core.host.OptionOrigin
 import com.eratw.port.core.host.PALETTE_MIN_SWATCH_RUN
 import com.eratw.port.core.host.paletteSwatchMask
+import com.eratw.port.android.ui.design.ShellButton
 import com.eratw.port.android.ui.design.ShellField
 import com.eratw.port.android.ui.design.ShellShape
 import com.eratw.port.android.ui.design.ShellType
@@ -175,6 +176,17 @@ class ShellState {
      * 隐式的「点任意处」通道显式化；提示语同步换成 [com.eratw.port.platform.input.InputHint.CONTINUE]。
      */
     var awaitingAnyKey by mutableStateOf(false)
+
+    /**
+     * 跳过开关（默认关）：当前这一局是否持续快进正文。
+     *
+     * 语义照原版右键/`Esc` 的 `MesSkip`（`MainWindow.cs:814-816` → `EmueraConsole.cs:1371-1373`）：
+     * 开着时 [MainActivity.refreshShell] 在每个「按任意键继续」等待点补一条 skip，引擎按
+     * `:1451-1456` 的循环一口气跑过所有 `NeedValue=false` 的等待，撞到取值等待（指令菜单）
+     * 自停；`FORCEWAIT` 的 `stopMesSkip` 刹车页不跳（同 `:1453` 的 `!inputReq.StopMesskip`）。
+     * 只活在本次会话，不落盘；进游戏时缺省关。
+     */
+    var skipping by mutableStateOf(false)
 
     /**
      * 当前等待请求的宏预填开关（WIRE-5 / C-MACRO-FLAG@1）—— **镜像**，非独立真源。
@@ -567,6 +579,22 @@ private fun railButtonColors() = ButtonDefaults.buttonColors(
  * `imeAction` + 按键事件（部分第三方输入法确实这么做），原版一次回车只交一条。
  */
 private const val SUBMIT_DEBOUNCE_MS = 250L
+
+/**
+ * 右上角「跳过」快进双箭头的几何（相对 24dp 画布的比例）：两个尖角共用顶/中/底高度。
+ *
+ * 取值的视觉基准（2026-11-26 主人复查「别太突兀」）：左右邻座都是 24dp 画布、2.2px 描边，
+ * 但实际墨迹不一样 —— 方向锁横向墨迹约 89%、键盘约 97%，旧参数（14%–78%）只有约 72%，
+ * 明显偏小。现改成 10%–90%、纵向 24%–76%，墨迹约 88% × 59%，横向对齐方向锁、
+ * 纵向对齐键盘内框；两枚尖角之间留一个描边多的空隙（路径间隙 3.84dp），不会糊成一条折线。
+ * 提成常量同时过 detekt 的 MagicNumber —— 新字面量不在 baseline 里，写着会被当新增红。
+ */
+private const val SKIP_CHEVRON_TOP = 0.24f
+private const val SKIP_CHEVRON_MID = 0.50f
+private const val SKIP_CHEVRON_BOTTOM = 0.76f
+private const val SKIP_CHEVRON_SPAN = 0.32f
+private const val SKIP_CHEVRON_FIRST = 0.10f
+private const val SKIP_CHEVRON_SECOND = 0.58f
 
 /** 连续色块按钮进入**密集调色板模式**后的列数（16×8 的原版调色板折成 8×16）。 */
 internal const val PALETTE_CHIPS_PER_ROW = 8
@@ -1377,6 +1405,7 @@ fun EratwShell(
                             locked = state.orientationLocked,
                             onClick = onOrientationLock,
                         )
+                        SkipToggle(active = state.skipping, onClick = { state.skipping = !state.skipping })
                         InputToggle(active = state.inputVisible, onClick = { state.inputVisible = true })
                         SpiralToggle(
                             expanded = state.railVisible,
@@ -1791,6 +1820,51 @@ private fun DirtyExitReportDialog(
             }
         }
     }
+
+    /**
+     * 右上角的跳过开关（快进双箭头）—— 取代 2026-11-11 的「空白处长按跳过」。
+     *
+     * 语义照原版右键/`Esc` 的 `MesSkip`（`MainWindow.cs:814-816` → `EmueraConsole.cs:1371-1373`）：
+     * 开着的会话里，每个「按任意键继续」等待点都会自动补一条 skip，引擎一口气跑过连续
+     * `NeedValue=false` 的等待，撞到取值等待（指令菜单）自停；`FORCEWAIT` 的刹车页不跳
+     * （[MainActivity.refreshShell] 读 `GameHost.awaitingAnyKeyStopsSkip` 守那一闸）。
+     * 与方向锁/键盘同一套线（24dp、2.2px 描边、圆角端点）与同一条点击抖动动效；
+     * 激活只变线条色、无底色。
+     */
+    @Composable
+    private fun SkipToggle(active: Boolean, onClick: () -> Unit) {
+        val shake = rememberClickShake()
+        val copy = PortraitShellCopy.of(UiPrefs.settingsLanguage(LocalContext.current))
+        ShellIconButton(
+            label = if (active) copy.skipToggleOn else copy.skipToggleOff,
+            onClick = { shake.click(onClick) },
+        ) {
+            Canvas(modifier = Modifier.size(24.dp).rotate(shake.degrees)) {
+                val tone = if (active) ShellIconTone.active else ShellIconTone.idle
+                val stroke = 2.2f * density
+                // 双箭头「⏩」：两个右向尖角，一眼是快进而不是播放/暂停。
+                val top = size.height * SKIP_CHEVRON_TOP
+                val mid = size.height * SKIP_CHEVRON_MID
+                val bottom = size.height * SKIP_CHEVRON_BOTTOM
+                val w = size.width
+                fun chevron(from: Float) {
+                    val tip = from + w * SKIP_CHEVRON_SPAN
+                    drawPath(
+                        Path().apply {
+                            moveTo(from, top)
+                            lineTo(tip, mid)
+                            lineTo(from, bottom)
+                        },
+                        color = tone,
+                        style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round),
+                    )
+                }
+                chevron(w * SKIP_CHEVRON_FIRST)
+                chevron(w * SKIP_CHEVRON_SECOND)
+            }
+        }
+    }
+
 /**
      * 底边的小抓手（取代原来的「上滑输入」大黑条）。
      *
@@ -1955,7 +2029,7 @@ private fun InputBar(
                 modifier = Modifier.width(44.dp).height(40.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
                 shape = ShellShape.Chip,
-                colors = ButtonDefaults.textButtonColors(contentColor = EratwInk.accent()),
+                colors = ShellButton.text(EratwInk.accent()),
             ) {
                 Text("±", style = ShellType.Figure)
             }

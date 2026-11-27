@@ -143,6 +143,32 @@ class ModRuntimeAssemblyWireTest {
         )
     }
 
+    @Test
+    fun `可挂起剧情使用会话同一输入输出缝且读档末尾恢复`() {
+        val host = sourceOf("GameHost.kt")
+        assertTrue(host.contains("consoleSink = fresh.console,"))
+        assertTrue(host.contains("inputSink = fresh.inputSink,"))
+        val assembly = sourceOf("ModRuntimeAssembly.kt")
+        val bindAt = assembly.indexOf("host.durableInteractionHost =")
+        val installAt = assembly.indexOf("val report = host.install(")
+        assertTrue("等待边界必须在作者 onLoad 前装配", bindAt >= 0 && bindAt < installAt)
+        val reconcileAt = assembly.indexOf("reconcilePackageUpgrades()", assembly.indexOf("fun notifySaveLoaded()"))
+        val resumeAt = assembly.indexOf("host.resumeDurableInteractions()", assembly.indexOf("fun notifySaveLoaded()"))
+        assertTrue("续体恢复必须在包升级对账之后", reconcileAt >= 0 && resumeAt > reconcileAt)
+        assertTrue(assembly.contains("captureChunks(storageProvider().globalSectionsSnapshot())"))
+        assertTrue(
+            "global 恢复必须保留当前槽剧情续体",
+            assembly.contains("ModStorageStore.loadGlobal("),
+        )
+        val newGameAt = assembly.indexOf("fun notifyNewGame()")
+        val clearAt = assembly.indexOf("storage.clearDurableInteractions()", newGameAt)
+        assertTrue("新局必须清当前时间线续体", newGameAt >= 0 && clearAt > newGameAt)
+        val restoreAt = assembly.indexOf("override fun restoreRt2(")
+        val remapAt = assembly.indexOf(".remapDurableContexts(ready.remapTable)", restoreAt)
+        val commitAt = assembly.indexOf("ready.commit()", restoreAt)
+        assertTrue("续体重映射必须在实体提交前完成", remapAt > restoreAt && commitAt > remapAt)
+    }
+
     // ------------------------------------------------------------------
     // 行为面 fixture
     // ------------------------------------------------------------------

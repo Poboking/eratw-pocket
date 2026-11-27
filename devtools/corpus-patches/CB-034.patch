@@ -1,0 +1,10 @@
+--- a/魔改内容/qol/QOL_USERCOM.ERH
++++ b/魔改内容/qol/QOL_USERCOM.ERH
+@@ -5,3 +5,7 @@
+ #DIM SAVEDATA COM_ALTER_318
+ #DIM SAVEDATA COM_ALTER_436
++; 【CB-034】子选单选完立即执行的瞬态信号（非存档）：@COM_OPTION_BODY 选中有效变体时置 1
++; （CB-035），@USERCOM 见 1 即在收尾 CLEARLINE 后按指令号 GOTO 函数入口标签 COM_OPTION_REPLAY 重派发
++; （CB-036），不再要求玩家再点一次原指令（原版语义；触屏无悬停提示，弹窗消失后像「点了没反应」）。
++#DIM COM_OPTION_SELECTED
+ #DIM UI_STARTLINE

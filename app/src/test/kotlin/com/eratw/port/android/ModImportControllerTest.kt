@@ -220,14 +220,75 @@ class ModImportControllerTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `I6 二——全局 DIM 补丁被编译期拒绝且文案含文件与行号`() {
+    fun `KI-GLOBAL-DIM——函数外全局 DIM 补丁导入成功且落产物（旧 I6 二反转）`() {
+        // 2026-11-26 改判：因幡帝包 ERH 头文件的函数外全局 `#DIM` 是 PC 原版正道，
+        // 不再整包拒（CONTRACT-KI-GLOBAL-DIM.md）。旧用例断言 Failed(COMPILE) 已反转。
         val tmp = tempDir()
         val controller = controllerIn(tmp, contextOf())
-        val badSource = "#DIM GLOBAL_COUNT = 5\n\n@B_GLOBAL\nRETURN 0\n"
+        val src = "#DIM G_BIG, 5\n\n@B_GLOBAL\nRETURN 0\n"
+        val outcome = controller.import(listOf(PickedModFile("KOJO_GLOBAL.ERB", src.toByteArray(Charsets.UTF_8))))
+
+        val detail = (outcome as? ModImportOutcome.Imported)?.detail
+            ?: throw AssertionError("函数外全局 #DIM 应放行导入，实为 $outcome")
+        val packageId = controller.packageIdFor(listOf("KOJO_GLOBAL.ERB"))
+        val rt2 = File(File(tmp, "mods"), "rt2")
+        assertTrue("补丁产物必须落盘", File(rt2, "$packageId.erbm").isFile)
+        // 全局 #DIM 必须随 manifest 落到 descriptor.globalDims（运行期 declare 的输入）。
+        val descriptor = ManifestCodec.decode(File(rt2, "$packageId.manifest").readBytes())
+        assertTrue(
+            "函数外全局 #DIM 必须进 manifest.globalDims，实际: ${descriptor.globalDims}",
+            descriptor.globalDims.any {
+                it.name.equals("G_BIG", ignoreCase = true) && it.dims.contentEquals(intArrayOf(5))
+            },
+        )
+    }
+
+    @Test
+    fun `KI-GLOBAL-DIM——SAVEDATA与CONST全局声明随manifest保真（因幡帝包形态）`() {
+        // 因幡帝海外版 V8 的 ERH 头文件形态：#DIM CONST + #DIMS SAVEDATA + #DIMS 普通串变量。
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        val src = """
+            #DIM CONST K53C_TEST = 42
+            #DIMS SAVEDATA K53_CHILD_PERSONALITY, 4
+            #DIMS K53_2_接触部位
+            @B_KOJO
+            RETURN 0
+        """.trimIndent() + "\n"
+        val outcome = controller.import(listOf(PickedModFile("K53_DIM.ERB", src.toByteArray(Charsets.UTF_8))))
+        val detail = (outcome as? ModImportOutcome.Imported)?.detail
+            ?: throw AssertionError("因幡帝形态的全局 DIM 声明应放行，实为 $outcome")
+        val packageId = controller.packageIdFor(listOf("K53_DIM.ERB"))
+        val descriptor = ManifestCodec.decode(
+            File(File(File(tmp, "mods"), "rt2"), "$packageId.manifest").readBytes(),
+        )
+        assertTrue(
+            "SAVEDATA 全局串变量必须保真进 globalDims：${descriptor.globalDims}",
+            descriptor.globalDims.any {
+                it.name.equals("K53_CHILD_PERSONALITY", ignoreCase = true) && it.isStr && it.isSavedata
+            },
+        )
+        assertTrue(
+            "普通全局串变量必须保真：${descriptor.globalDims}",
+            descriptor.globalDims.any { it.name == "K53_2_接触部位" && it.isStr },
+        )
+        assertTrue(
+            "CONST 声明也要带进 globalDims 供对账：${descriptor.globalDims}",
+            descriptor.globalDims.any { it.name.equals("K53C_TEST", ignoreCase = true) && it.isConst },
+        )
+    }
+
+    @Test
+    fun `KI-GLOBAL-DIM——函数内全局侧 DIM 仍编译期拒绝且文案含文件与行号`() {
+        // 函数内 GLOBAL/SAVEDATA/CHARADATA 仍是原版装载错误（UserDefinedVariableData.cs:171-175），
+        // 不随本波放宽。保留一条真失败夹具，供失败面（I5/I7）继续可测。
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        val badSource = "@B_GLOBAL\n#DIM GLOBAL G_SIDE, 1\nRETURN 0\n"
         val outcome = controller.import(listOf(PickedModFile("KOJO_BAD.ERB", badSource.toByteArray(Charsets.UTF_8))))
 
         val failed = outcome as? ModImportOutcome.Failed
-            ?: throw AssertionError("全局 #DIM 必须被拒绝，实为 $outcome")
+            ?: throw AssertionError("函数内 GLOBAL #DIM 必须被拒绝，实为 $outcome")
         assertEquals(ModImportFailureKind.COMPILE, failed.kind)
         assertTrue(
             "错误文案必须带文件名（I7 可定位）：${failed.message}",
@@ -235,9 +296,10 @@ class ModImportControllerTest {
         )
         assertTrue(
             "错误文案必须带人读行号：${failed.message}",
-            failed.message.contains(":1") || failed.message.contains("第 1 行") || failed.message.contains("行:1"),
+            failed.message.contains(":2") || failed.message.contains("第 2 行") || failed.message.contains("行:2"),
         )
-        assertTrue("全局 #DIM 不落产物（I5）", !File(File(tmp, "mods"), "KOJO_BAD.patch").exists())
+        val packageId = controller.packageIdFor(listOf("KOJO_BAD.ERB"))
+        assertTrue("拒绝的补丁不落产物（I5）", !File(File(File(tmp, "mods"), "rt2"), "$packageId.erbm").exists())
     }
 
     @Test
@@ -642,11 +704,13 @@ class ModImportControllerTest {
     }
 
     @Test
-    fun `zip 导入——加密位条目折成 STORAGE（JDK 不解密，读取期抛错）`() {
+    fun `zip 导入——只置本地头加密位、中央目录没声明 ⇒ 认不出加密族仍折 STORAGE`() {
         val tmp = tempDir()
         val controller = controllerIn(tmp, contextOf())
         // 手术置位 ZIP APPNOTE §4.3.7 的 general purpose bit 0（加密位）：
         // local file header 的布局是 signature(4) + version(2) + flags(2)，flags 在 offset 6 小端。
+        // 注意这里**只改本地头**、中央目录照旧声明「未加密」——[ModZipCrypto.inspect] 以中央
+        // 目录为准，认不出加密族 ⇒ 走原来那条「解包失败」面。真加密包的三态见下面三条用例。
         val zip = zipOf("KOJO.ERB" to patchSource.toByteArray(Charsets.UTF_8)).copyOf()
         zip[6] = (zip[6].toInt() or 0x01).toByte()
         val outcome = controller.import(listOf(PickedModFile("locked.zip", zip)))
@@ -654,6 +718,56 @@ class ModImportControllerTest {
             ?: throw AssertionError("加密 zip 必须失败，实为 $outcome")
         assertEquals(ModImportFailureKind.STORAGE, failed.kind)
         assertTrue("文案要点名 zip：${failed.message}", failed.message.contains("locked.zip"))
+    }
+
+    // ------------------------------------------------------------------
+    // 加密 zip 三态（KI-ZIP-PWD）：无密码 / 密码错 / 密码对
+    // 夹具 = 7-Zip 产的 AES-256 包（见 ModZipCryptoTest 的说明：真工具产物，非自造加密器）
+    // ------------------------------------------------------------------
+
+    private fun encryptedFixture(): ByteArray {
+        val stream = javaClass.getResourceAsStream("/zipcrypto/aes256.zip")
+            ?: throw AssertionError("缺夹具 aes256.zip")
+        return stream.use { it.readBytes() }
+    }
+
+    @Test
+    fun `zip 导入——加密包没给密码时单列 PASSWORD 类并点名 zip`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        val outcome = controller.import(listOf(PickedModFile("kojo-locked.zip", encryptedFixture())))
+        val failed = outcome as? ModImportOutcome.Failed ?: throw AssertionError("无密码必须失败，实为 $outcome")
+        assertEquals(ModImportFailureKind.PASSWORD, failed.kind)
+        assertTrue("文案要点名 zip：${failed.message}", failed.message.contains("kojo-locked.zip"))
+        assertTrue("文案要说明需要密码：${failed.message}", failed.message.contains("密码"))
+        assertFalse("失败不落产物（I5）", File(tmp, "mods/rt2").listFiles().orEmpty().isNotEmpty())
+    }
+
+    @Test
+    fun `zip 导入——密码不对仍是 PASSWORD 类，但文案换成「密码不对」`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        val outcome = controller.import(
+            listOf(PickedModFile("kojo-locked.zip", encryptedFixture())),
+            password = "definitely-wrong",
+        )
+        val failed = outcome as? ModImportOutcome.Failed ?: throw AssertionError("密码错必须失败，实为 $outcome")
+        assertEquals(ModImportFailureKind.PASSWORD, failed.kind)
+        assertTrue("文案要点名「密码不对」：${failed.message}", failed.message.contains("密码不对"))
+        assertTrue("文案要点名加密族（玩家好回去核对发布帖）：${failed.message}", failed.message.contains("AES-256"))
+    }
+
+    @Test
+    fun `zip 导入——密码对上就一路到 Imported（解密→解包→编译→落盘）`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        val outcome = controller.import(
+            listOf(PickedModFile("kojo-locked.zip", encryptedFixture())),
+            password = "gege1234",
+        )
+        val imported = outcome as? ModImportOutcome.Imported ?: throw AssertionError("密码对必须导入成功，实为 $outcome")
+        assertEquals("夹具里唯一的 ERB 条目", listOf("M_KOJO_K99_CRYPTO.ERB"), imported.detail.sourceFileNames)
+        assertTrue("产物要真落盘", File(tmp, "mods/rt2/${imported.detail.patchFileName}").isFile)
     }
 
     @Test
@@ -668,6 +782,76 @@ class ModImportControllerTest {
         val failed = outcome as? ModImportOutcome.Failed
             ?: throw AssertionError("无源条目必须失败，实为 $outcome")
         assertEquals(ModImportFailureKind.STORAGE, failed.kind)
+    }
+
+    // ------------------------------------------------------------------
+    // 非 zip 容器（KI-ARCHIVE-GUIDE）：识别 + 指路，不解包
+    // ------------------------------------------------------------------
+
+    /** RAR5 的魔数前 8 字节（[ModArchiveFormats] 只按扩展名判，内容是什么在这里不重要）。 */
+    private fun rarMagic(): ByteArray = "Rar!\u001a\u0007\u0001\u0000".toByteArray(Charsets.ISO_8859_1)
+
+    @Test
+    fun `非 zip 容器——选区只有 rar 时单列 ARCHIVE 并点名容器族与文件`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        val outcome = controller.import(listOf(PickedModFile("kojo_v2.rar", rarMagic())))
+        val failed = outcome as? ModImportOutcome.Failed
+            ?: throw AssertionError("RAR 不该走编译链，实为 $outcome")
+        assertEquals(ModImportFailureKind.ARCHIVE, failed.kind)
+        assertTrue("文案要点名文件：${failed.message}", failed.message.contains("kojo_v2.rar"))
+        assertTrue("文案要点名容器族：${failed.message}", failed.message.contains("RAR"))
+        assertFalse(
+            "识别阶段就失败 ⇒ 盘上零产物（不写源、不写 .erbm）",
+            File(tmp, "mods").walkTopDown().any { it.isFile },
+        )
+    }
+
+    @Test
+    fun `非 zip 容器——7z 与 tar_gz 各自点名自己的族`() {
+        val cases = listOf(
+            "pack.7z" to "7z",
+            "pack.tar.gz" to "gzip",
+        )
+        for ((name, label) in cases) {
+            val tmp = tempDir()
+            val controller = controllerIn(tmp, contextOf())
+            val outcome = controller.import(listOf(PickedModFile(name, byteArrayOf(1, 2, 3))))
+            val failed = outcome as? ModImportOutcome.Failed
+                ?: throw AssertionError("$name 不该走编译链，实为 $outcome")
+            assertEquals("$name 的失败类", ModImportFailureKind.ARCHIVE, failed.kind)
+            assertTrue("$name 要报出自己的族名：${failed.message}", failed.message.contains(label))
+        }
+    }
+
+    @Test
+    fun `非 zip 容器——混合选择里被跳过的那只上告警，可编译源照常导入`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        val outcome = controller.import(
+            listOf(
+                PickedModFile("extra.rar", rarMagic()),
+                PickedModFile("KOJO_PATCH.ERB", patchSource.toByteArray(Charsets.UTF_8)),
+            ),
+        )
+        val detail = (outcome as? ModImportOutcome.Imported)?.detail
+            ?: throw AssertionError("有可编译源就该成功，实为 $outcome")
+        assertEquals("跳过的容器不进源清单", listOf("KOJO_PATCH.ERB"), detail.sourceFileNames)
+        assertTrue(
+            "跳过必须留痕（不静默少一块）：${detail.parseWarnings}",
+            detail.parseWarnings.any { it.contains("extra.rar") && it.contains("RAR") },
+        )
+    }
+
+    @Test
+    fun `非 zip 容器判据按扩展名——同样的 rar 字节改叫 ERB 不走 ARCHIVE 面`() {
+        val tmp = tempDir()
+        val controller = controllerIn(tmp, contextOf())
+        // 反向证明：闸门判的是**文件名**（玩家选中的是什么），不是魔数。改叫 .ERB 之后
+        // 它按普通源进编译链，失败也只会是编译/存储，不该是「这是 RAR 压缩包」。
+        val outcome = controller.import(listOf(PickedModFile("KOJO_RENAMED.ERB", rarMagic())))
+        val failed = outcome as? ModImportOutcome.Failed ?: return
+        assertTrue("改名后不该再报 ARCHIVE：${failed.message}", failed.kind != ModImportFailureKind.ARCHIVE)
     }
 
     /**

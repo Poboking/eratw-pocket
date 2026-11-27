@@ -114,6 +114,11 @@ fun ShellRuleLabel(
  *
  * 选中不只靠底色：描边同色、文字转正文色，读屏靠 `selected` 语义；chip 只表达「筛选/选择」，
  * 不表达「执行」（Material 3 组件语义）。
+ *
+ * **视觉 32dp / 热区 44dp**：原来片体自身就撑到 `RowMinHeight`，一排四五个方片连起来像一堵砖
+ * 墙——片是「一串可扫的档位」，该比按钮矮一档。现在外层仍是 44dp 的可点区（`clickable` 在
+ * 外层，`RowMinHeight` 兜底），里面那层视觉片收到 [CHIP_VISUAL_HEIGHT]；按压叠色按外层给的
+ * interaction source 画在内层，反馈仍落在片体上而不是整条 44dp 空地。
  */
 @Composable
 fun ShellFilterChip(
@@ -131,19 +136,25 @@ fun ShellFilterChip(
     Box(
         modifier = modifier
             .heightIn(min = ShellSpace.RowMinHeight)
-            .clip(ShellShape.Chip)
-            .background(if (selected) EratwInk.panelAlt() else EratwInk.panel())
-            .border(BorderStroke(1.dp, borderColor), ShellShape.Chip)
-            .background(ShellPress.tint(pressSource, EratwInk.text()))
             .clickable(interactionSource = pressSource, indication = null, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = text,
-            color = if (selected) EratwInk.text() else EratwInk.textMuted(),
-            style = ShellType.Label,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-        )
+        Box(
+            modifier = Modifier
+                .heightIn(min = CHIP_VISUAL_HEIGHT)
+                .clip(ShellShape.Chip)
+                .background(if (selected) EratwInk.panelAlt() else EratwInk.panel())
+                .border(BorderStroke(1.dp, borderColor), ShellShape.Chip)
+                .background(ShellPress.tint(pressSource, EratwInk.text())),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = text,
+                color = if (selected) EratwInk.text() else EratwInk.textMuted(),
+                style = ShellType.Label,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        }
     }
 }
 
@@ -159,3 +170,6 @@ fun ShellRowHairline(modifier: Modifier = Modifier) {
 
 // 小节标签分隔线的实体不透明度：只交代「这一段从哪开始」，不做装饰。
 private const val RULE_ALPHA = 0.45f
+
+/** 筛选片的片体高度（视觉层）；外层可点区仍取 [ShellSpace.RowMinHeight]。 */
+private val CHIP_VISUAL_HEIGHT = 32.dp

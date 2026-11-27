@@ -73,22 +73,26 @@ fun ShellAlertDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = actions.onConfirm, enabled = actions.confirmEnabled) {
+            TextButton(
+                onClick = actions.onConfirm,
+                enabled = actions.confirmEnabled,
+                // 禁用态不能只靠「点了没反应」：内容色一起压下去，玩家一眼知道还差什么。
+                colors = ShellButton.text(
+                    if (actions.confirmEnabled) actions.confirmTone ?: EratwInk.accent() else EratwInk.textMuted(),
+                ),
+            ) {
                 Text(
                     text = actions.confirmLabel,
-                    // 禁用态不能只靠「点了没反应」：颜色一起压下去，玩家一眼知道还差什么。
-                    color = if (actions.confirmEnabled) {
-                        actions.confirmTone ?: EratwInk.accent()
-                    } else {
-                        EratwInk.textMuted()
-                    },
                     style = ShellType.Tab,
                 )
             }
         },
         dismissButton = actions.dismissLabel?.let { label ->
             {
-                TextButton(onClick = { (actions.onDismiss ?: onDismissRequest)() }) {
+                TextButton(
+                    onClick = { (actions.onDismiss ?: onDismissRequest)() },
+                    colors = ShellButton.text(EratwInk.textMuted()),
+                ) {
                     Text(text = label, color = EratwInk.textMuted(), style = ShellType.Tab)
                 }
             }

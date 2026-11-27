@@ -34,8 +34,8 @@ class ModImportBatchWireTest {
             source.contains("val event = modImportEventFor("),
         )
         assertTrue(
-            "两条快照（mod 运行总闸 / 代码装载总闸）都必须进请求对象",
-            source.contains("ModImportRequest(picked, readErrors, copy, modRuntimeOn, codeGateOn)"),
+            "三条入参（mod 运行总闸 / 代码装载总闸 / 加密包密码）都必须进请求对象",
+            source.contains("ModImportRequest(picked, readErrors, copy, modRuntimeOn, codeGateOn, password)"),
         )
         assertTrue(
             "事件只经 postModImportEvent 上屏（唯一回 UI 线程落点）",
@@ -61,8 +61,11 @@ class ModImportBatchWireTest {
     fun `单包入口保持原样`() {
         val source = dispatcher()
         assertTrue(
-            "单包仍走 import(...)（既有事件语义与单包测试不受影响）",
-            source.contains("controller.import(request.picked, copy, modRuntimeEnabled = request.modRuntimeEnabled)"),
+            "单包仍走 import(...)（既有事件语义与单包测试不受影响）+ 密码透传",
+            source.contains(
+                "controller.import( request.picked, copy, modRuntimeEnabled = request.modRuntimeEnabled, " +
+                    "password = request.password, )",
+            ),
         )
         assertTrue(
             "单包成功/失败事件形状不变",

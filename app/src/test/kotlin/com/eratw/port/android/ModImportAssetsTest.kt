@@ -373,8 +373,9 @@ class ModImportAssetsTest {
         val tmp = Files.createTempDirectory("eratw-modassets").toFile()
         val controller = controllerIn(tmp)
         val packageId = packageIdOf(controller)
-        // 全局 #DIM 是编译期硬拒（I6-② 同款判据），资源面不得到正式名。
-        val badSource = "#DIM GLOBAL_COUNT = 5\n\n@B_GLOBAL\nRETURN 0\n"
+        // 函数内 GLOBAL #DIM 仍是编译期硬拒（原版装载错误，KI-GLOBAL-DIM 波不放宽该形态），
+        // 资源面不得到正式名。函数外全局 #DIM 已于 2026-11-26 改判放行，不能再当失败夹具。
+        val badSource = "@B_GLOBAL\n#DIM GLOBAL G_SIDE, 1\nRETURN 0\n"
         val zip = zipOf(
             SOURCE_NAME to badSource.toByteArray(Charsets.UTF_8),
             "$packageId.assets/img/a.png" to PNG,

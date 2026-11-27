@@ -1,0 +1,10 @@
+--- a/魔改内容/qol/QOL_USERCOM.ERB
++++ b/魔改内容/qol/QOL_USERCOM.ERB
+@@ -296,5 +296,7 @@
+ IF MOUSE_BTN == 1
+ 	IF INRANGE(INPUT_VALUES, 0, OPTIONNUM)
+ 		SETVAR @"COM_ALTER_{COM_ID}", INPUT_VALUES
++		; 【CB-035】置选中信号（声明见 CB-034）：@USERCOM 见 1 即重派发执行本指令（取消路径保持原版 RETURN -1）
++		COM_OPTION_SELECTED = 1
+ 	ENDIF
+ ENDIF

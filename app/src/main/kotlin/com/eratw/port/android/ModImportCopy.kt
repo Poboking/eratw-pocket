@@ -51,6 +51,25 @@ data class ModImportCopy(
     /** 进行中的一行：{0} 进行中那句、{1} 源文件数。入口卡摘要与覆盖层同用这一条。 */
     val importingFilesFormat: String,
 
+    // ---------------------------------------------------------------- 进度条四段（玩家面）
+    // 与 [ModImportStage] 的内部相位是「多对一」：内部按性能取证切十段，玩家只看这四句。
+    /** 进度条：读取与解包源。 */
+    val stageReading: String,
+    /** 进度条：编译补丁。 */
+    val stageCompiling: String,
+    /** 进度条：写入补丁产物。 */
+    val stageWriting: String,
+    /** 进度条：校验与收尾。 */
+    val stageFinishing: String,
+
+    // ---------------------------------------------------------------- 头部状态签（一句话）
+    /** 覆盖层头部状态签：导入进行中。 */
+    val stateTagImporting: String,
+    /** 覆盖层头部状态签：本次已完成（单包成功 / 批量有成功）。 */
+    val stateTagSucceeded: String,
+    /** 覆盖层头部状态签：本次失败（单包失败 / 批次有失败）。 */
+    val stateTagFailed: String,
+
     // ---------------------------------------------------------------- 入口卡摘要
     /** 最近一次导入成功的摘要行：{0} 补丁产物名。 */
     val cardSucceededFormat: String,
@@ -61,6 +80,15 @@ data class ModImportCopy(
     val failureTitleCompile: String,
     val failureTitleIdentity: String,
     val failureTitleStorage: String,
+    /**
+     * 加密 zip 需要密码（玩家可修复，不是「包坏了」）。
+     *
+     * 单列一条的理由：报错页标题是玩家对失败的第一眼定性；把它混进
+     * [failureTitleStorage] 会让「输入密码就能导入」的包看起来像文件损坏。
+     */
+    val failureTitlePassword: String,
+    /** 非 zip 容器（RAR / 7z …）解不开：玩家可修复，标题不能写成「文件损坏」。 */
+    val failureTitleArchive: String,
     val failureTitleUnexpected: String,
 
     // ---------------------------------------------------------------- 成功页
@@ -118,6 +146,24 @@ data class ModImportCopy(
     val noFilesPicked: String,
     /** 口上 zip 解包失败：{0} zip 名、{1} 异常原话。 */
     val zipUnpackFailedFormat: String,
+    /**
+     * 加密 zip 需要解压密码：{0} zip 名。
+     *
+     * 与 [zipUnpackFailedFormat] 分开的理由：这是**玩家可修复**的失败（输入密码即可），
+     * 壳层据此弹密码框重试；塞进泛化失败面玩家只会以为包坏了。加密族判定与解密见
+     * [ModZipCrypto]（WinZip AES-128/192/256 与传统 ZipCrypto）。
+     */
+    val zipNeedPasswordFormat: String,
+    /** 加密 zip 密码不对或包体校验不过：{0} zip 名、{1} 加密族说明。 */
+    val zipWrongPasswordFormat: String,
+    /**
+     * 选中的是非 zip 容器（[ModArchiveFormats] 认得的 RAR / 7z / tar.gz …）：{0} 文件名、
+     * {1} 容器族名。
+     *
+     * 容器族名（RAR / 7z / TAR …）**不翻译**：那是玩家在压缩软件和发布页上看到的名字，
+     * 译成「RAR 格式压缩包」反而多一层猜测。文案只负责说清「本机解不开 + 怎么改」。
+     */
+    val archiveUnsupportedFormat: String,
     /** zip 里没有可导入条目：{0} zip 名。 */
     val zipNoEntriesFormat: String,
     /**
@@ -140,6 +186,12 @@ data class ModImportCopy(
     val zipDuplicateEntryFormat: String,
     /** 落盘名去重告警（同名取先）：{0} 条目名、{1} 落盘名。 */
     val dedupSkippedWarningFormat: String,
+    /**
+     * 混合选择里被跳过的非 zip 容器：{0} 文件名、{1} 容器族名。
+     *
+     * 必须是可见告警、不是静默跳过：玩家一次选了多个文件时，「少的那一个去哪了」只能靠这行答。
+     */
+    val archiveSkippedWarningFormat: String,
     /** 源留档失败：{0} 异常原话。 */
     val saveSourceFailedFormat: String,
     /** base 编译上下文读取失败：{0} 异常原话。 */
@@ -374,10 +426,24 @@ data class ModImportCopy(
     val failureGuidanceAuthorFormat: String,
     /** 报错页导向行（存储类 = 本机存储问题）：先自查空间 / 权限，仍失败反馈移植版。无槽位。 */
     val failureGuidanceStorageFormat: String,
+    /**
+     * 报错页导向行（加密包 = 缺密码或密码不对）：密码在口上作者的发布页，玩家自己能修。
+     * 无槽位。
+     */
+    val failureGuidancePasswordFormat: String,
+    /**
+     * 报错页导向行（非 zip 容器 = 格式不对，玩家自己能修）：先解压再选 `.ERB`，或重打成 zip。
+     * 无槽位。
+     */
+    val failureGuidanceArchiveFormat: String,
     /** 报错页导向行（未预期 = 内部问题）：带报告反馈移植版。无槽位。 */
     val failureGuidanceUnexpectedFormat: String,
     /** 报错页「复制错误报告」按钮（KI-4：报告拼装见 [modImportErrorReportText]）。 */
     val copyErrorReportButton: String,
+    /** 加密包的密码输入框标签（[ModImportFailureKind.PASSWORD] 才出）。 */
+    val zipPasswordFieldLabel: String,
+    /** 加密包「用这个密码重试」按钮（输入框旁那颗）。 */
+    val zipPasswordRetryButton: String,
     /** 成功页「复制告警清单」按钮（隔离 / 降级 / 告警清单非空才出）。 */
     val copyWarningsButton: String,
     /** 错误报告首行标题（玩家转给口上作者 / 移植版的正文头）。 */
@@ -432,11 +498,20 @@ data class ModImportCopy(
             closeButton = "关闭",
             importingStageText = "正在编译并落盘补丁…",
             importingFilesFormat = "{0}（{1} 个文件）",
+            stageReading = "正在读取并解包口上源…",
+            stageCompiling = "正在编译补丁…",
+            stageWriting = "正在写入补丁产物…",
+            stageFinishing = "正在校验并收尾…",
+            stateTagImporting = "进行中",
+            stateTagSucceeded = "已完成",
+            stateTagFailed = "未完成",
             cardSucceededFormat = "上次导入成功：{0}（重启游戏后生效）",
             cardFailedFormat = "上次导入失败：{0}",
             failureTitleCompile = "补丁编译失败（未落盘）",
             failureTitleIdentity = "补丁与游戏本体不符",
             failureTitleStorage = "存储失败",
+            failureTitlePassword = "压缩包需要解压密码",
+            failureTitleArchive = "这个压缩包本机打不开",
             failureTitleUnexpected = "内部错误",
             succeededDetailFormat = "导入成功：{0}（{1} 个函数 / {2} 条指令，入口 {3}）",
             assetPackSucceededDetailFormat = "纯资源包导入成功：{0}（{1} 条资源）",
@@ -457,6 +532,10 @@ data class ModImportCopy(
             reportStoredFilesFormat = "mods 里的补丁产物：{0}",
             noFilesPicked = "没有选择任何文件",
             zipUnpackFailedFormat = "口上 zip 解包失败（{0}）：可能已加密或文件损坏 —— {1}",
+            zipNeedPasswordFormat = "口上 zip 已加密（{0}），需要解压密码；输入密码后会重新导入",
+            zipWrongPasswordFormat = "口上 zip 密码不对或包体校验失败（{0}）：{1}",
+            archiveUnsupportedFormat =
+                "「{0}」是 {1} 压缩包：移植版只直接读 zip，这个包在本机解不开。",
             zipNoEntriesFormat = "口上 zip 里没有可导入的 .ERB/.ERH 条目：{0}（其余文件已跳过）",
             zipLooksLikeAssetPackFormat = "这看起来是素材包，请到素材导入卡里选择：{0}",
             zipTooManyEntriesFormat = "口上 zip 的条目数超过上限（{0}：最多 {1} 个条目），已拒绝导入 —— 这个包可能是构造出来的异常包",
@@ -465,6 +544,7 @@ data class ModImportCopy(
             zipBombSuspectFormat = "口上 zip 的压缩比超过上限（{0}），已拒绝导入 —— 疑似压缩炸弹",
             zipDuplicateEntryFormat = "口上 zip 里出现重名条目（{0}：{1} 出现了不止一次），已拒绝导入 —— 同名覆盖的语义不明确",
             dedupSkippedWarningFormat = "同名源文件取先：{0}（落盘名 {1} 已被先前的条目占用，本条跳过）",
+            archiveSkippedWarningFormat = "「{0}」是 {1} 压缩包，本机解不开，已跳过（其余文件照常导入）。",
             saveSourceFailedFormat = "保存源文件到 mods 失败：{0}",
             readBaseFailedFormat = "读取游戏产物失败：{0}",
             readArchivedFailedFormat = "读取已留档的口上源失败（{0}）：{1}",
@@ -557,8 +637,12 @@ data class ModImportCopy(
             unknownStorageError = "未知存储错误",
             failureGuidanceAuthorFormat = "这个错误来自口上包自身（不是移植版的问题）：请把下面的报告发给该口上的作者反馈。",
             failureGuidanceStorageFormat = "这是本机存储问题：请检查剩余空间或存储权限后重试；仍失败请反馈给移植版。",
+            failureGuidancePasswordFormat = "这个包是加密的：解压密码由口上作者在发布页公布，找到后在下面输入并点「用这个密码重试」即可。",
+            failureGuidanceArchiveFormat = "请先用解压工具把它解开，再选里面的 .ERB 文件导入；或者重新打包成 zip —— 加密 zip 也能导入。",
             failureGuidanceUnexpectedFormat = "发生了未预期的内部错误：请复制下面的报告反馈给移植版。",
             copyErrorReportButton = "复制错误报告",
+            zipPasswordFieldLabel = "解压密码",
+            zipPasswordRetryButton = "用这个密码重试",
             copyWarningsButton = "复制告警清单",
             errorReportTitle = "口上导入错误报告",
             errorReportKindFormat = "类别：{0}",
@@ -577,11 +661,20 @@ data class ModImportCopy(
             closeButton = "Close",
             importingStageText = "Compiling and writing the patch...",
             importingFilesFormat = "{0} ({1} files)",
+            stageReading = "Reading and unpacking the kojo sources...",
+            stageCompiling = "Compiling the patch...",
+            stageWriting = "Writing the patch artifacts...",
+            stageFinishing = "Verifying and finishing up...",
+            stateTagImporting = "Running",
+            stateTagSucceeded = "Done",
+            stateTagFailed = "Failed",
             cardSucceededFormat = "Last import succeeded: {0} (takes effect after the game restarts)",
             cardFailedFormat = "Last import failed: {0}",
             failureTitleCompile = "Patch compilation failed (nothing was written)",
             failureTitleIdentity = "The patch does not match this game",
             failureTitleStorage = "Storage failure",
+            failureTitlePassword = "The archive needs an extract password",
+            failureTitleArchive = "This archive format cannot be opened here",
             failureTitleUnexpected = "Internal error",
             succeededDetailFormat = "Import succeeded: {0} ({1} functions / {2} instructions, entry {3})",
             assetPackSucceededDetailFormat = "Asset-only pack imported: {0} ({1} resource files)",
@@ -602,6 +695,11 @@ data class ModImportCopy(
             reportStoredFilesFormat = "Patch artifacts in mods: {0}",
             noFilesPicked = "No files were selected",
             zipUnpackFailedFormat = "Failed to unpack the kojo zip ({0}): it may be encrypted or corrupted - {1}",
+            zipNeedPasswordFormat =
+                "The kojo zip is encrypted ({0}); a password is required. Enter it and the import will retry",
+            zipWrongPasswordFormat = "Wrong password or archive check failed for the kojo zip ({0}): {1}",
+            archiveUnsupportedFormat =
+                "\"{0}\" is a {1} archive: the port only reads zip directly, so this file cannot be opened here.",
             zipNoEntriesFormat = "No importable .ERB/.ERH entries in the kojo zip: {0} (other files were skipped)",
             zipLooksLikeAssetPackFormat =
                 "This looks like an asset pack - pick it on the asset import card instead: {0}",
@@ -622,6 +720,9 @@ data class ModImportCopy(
             dedupSkippedWarningFormat =
                 "Kept the first of the same-named sources: {0} (disk name {1} was already taken by an earlier " +
                     "entry, so this one was skipped)",
+            archiveSkippedWarningFormat =
+                "\"{0}\" is a {1} archive and cannot be opened here, so it was skipped " +
+                    "(the other files were imported as usual).",
             saveSourceFailedFormat = "Saving the source files into mods failed: {0}",
             readBaseFailedFormat = "Reading the game build failed: {0}",
             readArchivedFailedFormat = "Reading an archived kojo source failed ({0}): {1}",
@@ -761,7 +862,15 @@ data class ModImportCopy(
             failureGuidanceUnexpectedFormat =
                 "An unexpected internal error occurred: copy the report below and send it " +
                 "to the port developers.",
+            failureGuidancePasswordFormat =
+                "This pack is encrypted: the extract password is published by the pack's author. " +
+                "Enter it below and tap \"Retry with this password\".",
+            failureGuidanceArchiveFormat =
+                "Extract it with an archive tool first and pick the .ERB files inside; or repack it as a zip " +
+                "- encrypted zips are supported too.",
             copyErrorReportButton = "Copy error report",
+            zipPasswordFieldLabel = "Extract password",
+            zipPasswordRetryButton = "Retry with this password",
             copyWarningsButton = "Copy warnings",
             errorReportTitle = "Kojo import error report",
             errorReportKindFormat = "Kind: {0}",
@@ -780,11 +889,20 @@ data class ModImportCopy(
             closeButton = "閉じる",
             importingStageText = "パッチをコンパイルして保存しています…",
             importingFilesFormat = "{0}（{1} ファイル）",
+            stageReading = "口上ソースを読み込んで展開しています…",
+            stageCompiling = "パッチをコンパイルしています…",
+            stageWriting = "パッチ生成物を書き込んでいます…",
+            stageFinishing = "検証して仕上げています…",
+            stateTagImporting = "実行中",
+            stateTagSucceeded = "完了",
+            stateTagFailed = "失敗",
             cardSucceededFormat = "前回の導入は成功：{0}（ゲーム再起動後に有効）",
             cardFailedFormat = "前回の導入は失敗：{0}",
             failureTitleCompile = "パッチのコンパイルに失敗しました（未保存）",
             failureTitleIdentity = "パッチがゲーム本体と一致しません",
             failureTitleStorage = "保存に失敗しました",
+            failureTitlePassword = "書庫に展開パスワードが必要です",
+            failureTitleArchive = "この圧縮形式は本端末では開けません",
             failureTitleUnexpected = "内部エラー",
             succeededDetailFormat = "導入成功：{0}（{1} 個の関数 / {2} 命令、エントリ {3}）",
             assetPackSucceededDetailFormat = "リソースのみパックを導入しました：{0}（リソース {1} 件）",
@@ -805,6 +923,10 @@ data class ModImportCopy(
             reportStoredFilesFormat = "mods のパッチ成果物：{0}",
             noFilesPicked = "ファイルが選択されていません",
             zipUnpackFailedFormat = "口上 zip の展開に失敗しました（{0}）：暗号化または破損の可能性があります —— {1}",
+            zipNeedPasswordFormat = "口上 zip は暗号化されています（{0}）。展開パスワードが必要です。入力すると再取り込みします",
+            zipWrongPasswordFormat = "口上 zip のパスワードが違うか、内容の検証に失敗しました（{0}）：{1}",
+            archiveUnsupportedFormat =
+                "「{0}」は {1} 形式の圧縮ファイルです。移植版が直接読めるのは zip だけなので、この端末では展開できません。",
             zipNoEntriesFormat = "口上 zip に導入できる .ERB/.ERH エントリがありません：{0}（その他のファイルはスキップしました）",
             zipLooksLikeAssetPackFormat =
                 "これは素材パックのようです。素材の導入カードで選んでください：{0}",
@@ -824,6 +946,8 @@ data class ModImportCopy(
                     "同名上書きの意味が不明確です",
             dedupSkippedWarningFormat =
                 "同名ソースは先のものを採用：{0}（保存名 {1} は前のエントリが使用済みのため、これをスキップしました）",
+            archiveSkippedWarningFormat =
+                "「{0}」は {1} 形式の圧縮ファイルで展開できないため、スキップしました（残りのファイルは通常どおり導入しました）。",
             saveSourceFailedFormat = "ソースファイルの mods への保存に失敗：{0}",
             readBaseFailedFormat = "ゲーム成果物の読み取りに失敗：{0}",
             readArchivedFailedFormat = "保存済みの口上ソースの読み取りに失敗（{0}）：{1}",
@@ -940,7 +1064,11 @@ data class ModImportCopy(
             failureGuidanceAuthorFormat = "このエラーは口上パック自身の問題です（移植版の不具合ではありません）。下のレポートを口上の作者へお送りください。",
             failureGuidanceStorageFormat = "端末の保存領域の問題です。空き容量や保存権限を確認して再試行し、それでも失敗する場合は移植版へ報告してください。",
             failureGuidanceUnexpectedFormat = "予期しない内部エラーが発生しました。下のレポートをコピーして移植版へ報告してください。",
+            failureGuidancePasswordFormat = "この書庫は暗号化されています。展開パスワードは口上の作者が公開しています。下に入力して「このパスワードで再試行」を押してください。",
+            failureGuidanceArchiveFormat = "解凍ツールで先に展開し、中の .ERB ファイルを選んで導入してください。zip に詰め直しても構いません（暗号化 zip にも対応）。",
             copyErrorReportButton = "エラーレポートをコピー",
+            zipPasswordFieldLabel = "展開パスワード",
+            zipPasswordRetryButton = "このパスワードで再試行",
             copyWarningsButton = "警告一覧をコピー",
             errorReportTitle = "口上インポートエラーレポート",
             errorReportKindFormat = "種別：{0}",
